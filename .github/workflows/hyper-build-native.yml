@@ -1,0 +1,373 @@
+name: HyperForge — build native core, test every binding
+
+# The canonical Hyper* CI pipeline, extracted from HyperUuid's build-packages.yml and
+# HyperCast's build-native.yml after both went green on all 6 legs: build the Rust core
+# fresh on each real-hardware leg, then run every binding's actual test suite against that
+# leg's freshly-built native library — proving the real FFI load/marshalling path per OS,
+# which cargo test alone cannot exercise. Interpreted-tier bindings run twice: once forced
+# onto the zero-compile fallback (ctypes/Fiddle, via the repo's ${pure_env}=1), once with
+# the native-extension backend (PyO3 everywhere, Magnus on the unix legs) built and staged.
+#
+# The archaeology this file banks, so no Hyper* repo re-learns it (each lesson also
+# commented at the step that pays it):
+#   - Runner labels: macos-26-intel is the current osx-x64 label (macos-13 retired Dec
+#     2025; GitHub winds down x86_64 macOS by Fall 2027); windows-11-arm is GA and free
+#     for public repos.
+#   - JDK pin 23: Temurin ships Windows ARM64 builds for 21 and 23 only (confirmed
+#     against the Adoptium API — 24/25 have no win-arm64 asset).
+#   - Darwin extension linking: a Ruby/Python extension must not link the host runtime —
+#     rb_*/Py_* symbols resolve at load, which needs -undefined dynamic_lookup, declared
+#     in each native crate's .cargo/config.toml (plain cargo builds don't get it from
+#     PyO3/rb-sys the way maturin/rake-compiler builds do).
+#   - PHP never ships native Windows ARM64 (runs under x64 emulation there — can never
+#     load an ARM64 native lib), so the win-arm64 leg skips PHP; win-x64 covers it.
+#   - `php vendor/bin/phpunit` must be invoked through `php` — the Composer proxy is a
+#     shebang script the Windows legs' default pwsh can't execute.
+#   - macOS runners sometimes need xcode-select pointed at full Xcode before Ruby
+#     native-extension builds (mkmf try_link failures otherwise).
+#   - Windows staging spellings: a CPython extension is a renamed DLL (.pyd); Ruby's
+#     DLEXT is .so on Linux and .bundle on macOS.
+#
+# Benchmarking lessons live with the repos' benchmark docs, not here, but two travel with
+# any CI that ever times things: XDEBUG_MODE=off for PHP, and never run benchmarks
+# concurrently with other work.
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: "PascalCase project name (Swift target, e.g. HyperCast)"
+        required: true
+        type: string
+      crate:
+        description: "Lowercase core name (lib{crate}.so / {crate}.dll, python/ruby package dirs, {crate}_native extensions)"
+        required: true
+        type: string
+      pure_env:
+        description: "Env var that forces the zero-compile fallback backend (e.g. HYPERCAST_PURE)"
+        required: true
+        type: string
+      csharp_test_project:
+        description: "Path to the C# test csproj"
+        required: true
+        type: string
+      dotnet_version:
+        description: "setup-dotnet version spec"
+        required: false
+        type: string
+        default: "8.0.x"
+      dotnet_quality:
+        description: "setup-dotnet channel quality (preview until a pinned SDK GAs)"
+        required: false
+        type: string
+        default: "ga"
+      csharp_runtimes_dir:
+        description: "If set, place the native lib at {dir}/{rid}/native/ before dotnet test (repos whose csproj stages from rust/target/release leave this empty)"
+        required: false
+        type: string
+        default: ""
+      jdk_version:
+        description: "Temurin major version (23 is the newest with win-arm64 builds)"
+        required: false
+        type: string
+        default: "23"
+      java_resources_dir:
+        description: "If set, place the native lib at {dir}/{rid}/ before gradlew test (repos whose Gradle stages from rust/target/release leave this empty)"
+        required: false
+        type: string
+        default: ""
+      go:
+        description: "Run the Go binding's suite"
+        required: false
+        type: boolean
+        default: true
+      go_windows:
+        description: "Run Go on the Windows legs too (false for cgo-only bindings until their purego fallback lands)"
+        required: false
+        type: boolean
+        default: true
+      magnus:
+        description: "Build and test the Ruby Magnus extension backend (unix legs)"
+        required: false
+        type: boolean
+        default: true
+      pyo3:
+        description: "Build and test the Python PyO3 extension backend (every leg — Windows needs only the MSVC linker plus CPython's bundled import library)"
+        required: false
+        type: boolean
+        default: true
+      python_editable:
+        description: "true: pip install -e .[test] (repo packages its tests); false: pip install pytest (repo's conftest puts src/ on sys.path)"
+        required: false
+        type: boolean
+        default: false
+      ruby_version:
+        required: false
+        type: string
+        default: "3.4"
+      python_version:
+        required: false
+        type: string
+        default: "3.13"
+      php_version:
+        required: false
+        type: string
+        default: "8.5"
+      swift_version:
+        required: false
+        type: string
+        default: "6.3"
+
+jobs:
+  build-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: macos-26-intel
+            rid: osx-x64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: macos-latest
+            rid: osx-arm64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: windows-latest
+            rid: win-x64
+            lib_name: ${{ inputs.crate }}.dll
+          - os: windows-11-arm
+            rid: win-arm64
+            lib_name: ${{ inputs.crate }}.dll
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build native core (release)
+        working-directory: rust
+        run: cargo build --release
+
+      # Unit tests, each repo's shared conformance corpus, and its counting-allocator
+      # allocation proof, per leg.
+      - name: Run Rust test suite
+        working-directory: rust
+        run: cargo test --release
+
+      - name: Collect native artifact
+        shell: bash
+        run: |
+          mkdir -p out
+          cp "rust/target/release/${{ matrix.lib_name }}" "out/${{ matrix.lib_name }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.rid }}
+          path: out/${{ matrix.lib_name }}
+
+      # C#: the real [LibraryImport] resolution/marshalling path per OS.
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+          dotnet-quality: ${{ inputs.dotnet_quality }}
+
+      - name: Place native lib for C# in-repo testing
+        if: inputs.csharp_runtimes_dir != ''
+        shell: bash
+        run: |
+          mkdir -p "${{ inputs.csharp_runtimes_dir }}/${{ matrix.rid }}/native"
+          cp "out/${{ matrix.lib_name }}" "${{ inputs.csharp_runtimes_dir }}/${{ matrix.rid }}/native/"
+
+      - name: Test C# bindings against this platform's native lib
+        run: dotnet test --project ${{ inputs.csharp_test_project }} -c Release
+
+      # Java: the real FFM downcall path per OS.
+      - uses: actions/setup-java@v6
+        with:
+          distribution: "temurin"
+          java-version: ${{ inputs.jdk_version }}
+
+      - name: Place native lib for Java in-repo testing
+        if: inputs.java_resources_dir != ''
+        shell: bash
+        run: |
+          mkdir -p "${{ inputs.java_resources_dir }}/${{ matrix.rid }}"
+          cp "out/${{ matrix.lib_name }}" "${{ inputs.java_resources_dir }}/${{ matrix.rid }}/"
+
+      - name: Test Java bindings against this platform's native lib
+        working-directory: java
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew test --console=plain
+
+      # Go: cgo and/or purego, whichever backends the repo ships. go_windows=false for
+      # cgo-only bindings until their purego fallback lands.
+      - uses: actions/setup-go@v7
+        if: inputs.go && (inputs.go_windows || runner.os != 'Windows')
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Place native lib for Go in-repo testing
+        if: inputs.go && (inputs.go_windows || runner.os != 'Windows')
+        shell: bash
+        run: |
+          mkdir -p "go/native/${{ matrix.rid }}"
+          cp "out/${{ matrix.lib_name }}" "go/native/${{ matrix.rid }}/"
+
+      - name: Test Go bindings against this platform's native lib
+        if: inputs.go && (inputs.go_windows || runner.os != 'Windows')
+        working-directory: go
+        run: go test ./...
+
+      # Swift: dlopen/dlsym (LoadLibraryW/GetProcAddress on Windows) + @convention(c).
+      # SwiftyLab/setup-swift for its verified windows-11-arm support.
+      - uses: SwiftyLab/setup-swift@v1.14.0
+        with:
+          swift-version: ${{ inputs.swift_version }}
+
+      - name: Place native lib for Swift in-repo testing
+        shell: bash
+        run: |
+          mkdir -p "swift/Sources/${{ inputs.project }}/NativeLibs/${{ matrix.rid }}"
+          cp "out/${{ matrix.lib_name }}" "swift/Sources/${{ inputs.project }}/NativeLibs/${{ matrix.rid }}/"
+
+      - name: Test Swift bindings against this platform's native lib
+        working-directory: swift
+        run: swift test
+
+      # Defensive no-op: GHA macOS runners have hit xcode-select-not-pointed-at-full-Xcode
+      # failures in Ruby native-extension builds.
+      - name: Point Xcode at a full toolchain (works around a Ruby native-extension mkmf issue)
+        if: runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ inputs.ruby_version }}
+          bundler-cache: true
+          working-directory: ruby
+
+      - name: Place native lib for Ruby in-repo testing
+        shell: bash
+        run: |
+          mkdir -p "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}"
+          cp "out/${{ matrix.lib_name }}" "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}/"
+
+      # The Fiddle backend, forced explicitly — the universal zero-compile path every
+      # platform must keep green regardless of whether the Magnus extension exists there.
+      # (bash + export because an env: mapping key can't be an expression.)
+      - name: Test Ruby bindings (Fiddle backend) against this platform's native lib
+        working-directory: ruby
+        shell: bash
+        run: |
+          export ${{ inputs.pure_env }}=1
+          bundle exec rspec
+
+      # The Magnus extension backend, unix legs: built against this leg's Ruby, staged
+      # under the require name (DLEXT: .so on Linux, .bundle on macOS), same suite again
+      # with auto-selection picking it up. Windows stays on Fiddle: RubyInstaller rubies
+      # are MinGW-built — a windows-gnu-target exercise queued for the packaging round.
+      - name: Build Magnus extension
+        if: inputs.magnus && runner.os != 'Windows'
+        working-directory: ruby/native
+        run: cargo build --release
+
+      - name: Stage Magnus extension
+        if: inputs.magnus && runner.os != 'Windows'
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            macOS) cp "ruby/native/target/release/lib${{ inputs.crate }}_native.dylib" "ruby/lib/${{ inputs.crate }}_native.bundle" ;;
+            Linux) cp "ruby/native/target/release/lib${{ inputs.crate }}_native.so" "ruby/lib/${{ inputs.crate }}_native.so" ;;
+          esac
+
+      - name: Test Ruby bindings (Magnus backend)
+        if: inputs.magnus && runner.os != 'Windows'
+        working-directory: ruby
+        run: bundle exec rspec
+
+      # PHP: the built-in ext-ffi path. Skipped on win-arm64 — PHP has never shipped a
+      # native Windows ARM64 build; it runs under x64 emulation there, which can never
+      # load an ARM64 native lib, and the real PHP-as-x64 story is covered by win-x64.
+      - uses: shivammathur/setup-php@v2
+        if: matrix.rid != 'win-arm64'
+        with:
+          php-version: ${{ inputs.php_version }}
+          extensions: ffi
+          tools: composer
+
+      - name: Install PHP dependencies
+        if: matrix.rid != 'win-arm64'
+        working-directory: php
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Place native lib for PHP in-repo testing
+        if: matrix.rid != 'win-arm64'
+        shell: bash
+        run: |
+          mkdir -p "php/src/native/${{ matrix.rid }}"
+          cp "out/${{ matrix.lib_name }}" "php/src/native/${{ matrix.rid }}/"
+
+      - name: Test PHP bindings against this platform's native lib
+        if: matrix.rid != 'win-arm64'
+        working-directory: php
+        # Through `php`, not bare — the Composer proxy is a shebang script the Windows
+        # legs' default pwsh can't execute.
+        run: php vendor/bin/phpunit
+
+      # Python: the ctypes fallback everywhere (forced — also the Pyodide/WASM path),
+      # then the PyO3 extension. The single fixed resource name lib{crate}.so is
+      # deliberate: ctypes loads by path, not extension, so a renamed .dylib/.dll loads
+      # identically.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Place native lib for Python in-repo testing
+        shell: bash
+        run: cp "out/${{ matrix.lib_name }}" "python/src/${{ inputs.crate }}/lib${{ inputs.crate }}.so"
+
+      - name: Test Python bindings (ctypes backend) against this platform's native lib
+        working-directory: python
+        shell: bash
+        run: |
+          export ${{ inputs.pure_env }}=1
+          python -m pip install --upgrade pip
+          if ${{ inputs.python_editable }}; then
+            pip install -e ".[test]"
+          else
+            pip install pytest
+          fi
+          pytest
+
+      # PyO3 on every leg, Windows included — the Python-on-Windows audience is too large
+      # to leave on the fallback, and Windows needs no extra toolchain: the MSVC linker
+      # the core already builds with plus CPython's own import library (inside the
+      # setup-python installation, found by PyO3's build script via the interpreter on
+      # PATH). Staging is the platform's spelling of "extension module": .so on Linux and
+      # macOS alike, .pyd (a renamed DLL) on Windows.
+      - name: Build PyO3 extension
+        if: inputs.pyo3
+        working-directory: python/native
+        run: cargo build --release
+
+      - name: Stage PyO3 extension
+        if: inputs.pyo3
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            macOS)   cp "python/native/target/release/lib${{ inputs.crate }}_native.dylib" "python/src/${{ inputs.crate }}_native.so" ;;
+            Linux)   cp "python/native/target/release/lib${{ inputs.crate }}_native.so" "python/src/${{ inputs.crate }}_native.so" ;;
+            Windows) cp "python/native/target/release/${{ inputs.crate }}_native.dll" "python/src/${{ inputs.crate }}_native.pyd" ;;
+          esac
+
+      - name: Test Python bindings (PyO3 backend)
+        if: inputs.pyo3
+        working-directory: python
+        run: pytest
