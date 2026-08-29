@@ -84,6 +84,13 @@ jobs:
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
 
+      # wasm-tools-net8, not the generic wasm-tools wasm-spike.yml installs — that spike's
+      # own test project targets net10.0, but the actual HyperUuid.csproj being packed here
+      # targets net8.0, and the wasm-tools workload is TFM-band-specific. Confirmed the hard
+      # way: NETSDK1147 named this exact workload when it was missing.
+      - name: Install .NET wasm-tools workload
+        run: dotnet workload install wasm-tools-net8
+
       # Stages runtimes/browser-wasm/{nativeassets,lib}/net8.0/ before packing, so NuGet's
       # own RID-based asset selection picks the browser build up automatically for any
       # consumer building with RuntimeIdentifier=browser-wasm — see HyperUuid.csproj's own
