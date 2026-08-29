@@ -4,24 +4,21 @@ name: HyperForge — publish real NuGet package to nuget.org
 # package bundles real compiled binaries (not source), so this needs build-native's
 # per-platform artifacts already uploaded in the same workflow run before it's called.
 #
-# nuget.org's Trusted Publishing policy matches on (repository owner, repository, workflow
-# file) — confirmed against GitHub's own OIDC docs that the standard claims (workflow_ref,
-# repository, repository_owner) always describe the *calling* workflow, never a reusable
-# workflow's own repo, even when the job actually runs from here via workflow_call. Only
-# the separate job_workflow_ref claim points at this file's own repo, and nuget.org's
-# policy (a plain filename, no repo-qualification) isn't using that one. So a policy scoped
-# to e.g. (SkunkWerkx, HyperUuid, build-packages.yml) matches correctly regardless of this
-# file living in SkunkWerkx/.github — verified before writing this, not assumed.
+# Deliberately does NOT do its own nuget.org login (that was the original design — see git
+# history if curious). Confirmed the hard way, with a real 401, that Trusted Publishing
+# validates the OIDC token's job_workflow_ref claim against the policy's own repo — and
+# job_workflow_ref always names whichever repo the *actual executing workflow file* lives
+# in, which for anything called from here would be SkunkWerkx/.github, never the caller.
+# No policy configuration can satisfy that when the code lives in a different repo than
+# the caller (also confirmed directly: pointing a policy at .github just fails the earlier
+# repository/repository_owner check instead, since that claim genuinely says the caller).
 #
-# The nuget.org login comes from the SkunkWerkx org variable
-# NUGET_TRUSTED_PUBLISHER_USER (currently "buvinghausen"), not a per-caller input: it's not
-# a secret, so a variable is the right primitive, and every Hyper* project's Trusted
-# Publishing policy is expected to be created under the same individual's nuget.org login
-# for now — one place to update if that ever changes, no per-repo parameter to remember.
-# Deliberately NOT the org/package-owner name ("SkunkWerkx") — nuget.org Trusted
-# Publishing's `user` has to be the individual account that *created* the policy (verified
-# the hard way: "SkunkWerkx" 401'd with "No matching trust policy owned by user
-# 'SkunkWerkx' was found... use the username of the policy creator, not the policy owner").
+# So the login has to happen in the *caller's own* workflow (where job_workflow_ref
+# legitimately matches that project's own policy), and the resulting short-lived (1 hour)
+# API key gets passed down here as a secret — the push itself has no repo-identity
+# constraint at all, only the token exchange does. This keeps the actual pack/push/
+# artifact-arranging logic shared across every Hyper* project; only each project's tiny
+# login step and its own nuget.org policy have to be per-repo.
 #
 # Version comes from whatever's committed in the target .csproj's own <Version> — same
 # story as the crates.io leg's Cargo.toml. No tag-vs-dispatch derivation here yet; that's
@@ -46,13 +43,14 @@ on:
         required: false
         type: string
         default: "8.0.x"
+    secrets:
+      NUGET_API_KEY:
+        description: "Short-lived (1 hour) key from the caller's own NuGet/login@v1 step — not a long-lived credential"
+        required: true
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@v7
 
@@ -86,17 +84,9 @@ jobs:
       - name: Pack
         run: dotnet pack ${{ inputs.csproj_path }} -c Release -o nupkg-org
 
-      # Trusted Publishing: no long-lived API key stored anywhere. See
-      # https://learn.microsoft.com/nuget/nuget-org/trusted-publishing.
-      - name: NuGet login (OIDC -> temp API key)
-        uses: NuGet/login@v1
-        id: login
-        with:
-          user: ${{ vars.NUGET_TRUSTED_PUBLISHER_USER }}
-
       - name: Publish to nuget.org
         run: >
           dotnet nuget push "nupkg-org/*.nupkg"
-          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+          --api-key ${{ secrets.NUGET_API_KEY }}
           --source https://api.nuget.org/v3/index.json
           --skip-duplicate
