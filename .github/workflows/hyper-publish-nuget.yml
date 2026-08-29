@@ -13,10 +13,15 @@ name: HyperForge — publish real NuGet package to nuget.org
 # to e.g. (SkunkWerkx, HyperUuid, build-packages.yml) matches correctly regardless of this
 # file living in SkunkWerkx/.github — verified before writing this, not assumed.
 #
-# "SkunkWerkx" is hardcoded below rather than an input: it's not a secret (it's the exact
-# public string at nuget.org/profiles/SkunkWerkx), it's the same org for every Hyper*
-# project calling this, and hardcoding a non-secret constant is more auditable than
-# threading it through as a parameter every caller has to remember to pass.
+# "buvinghausen" is hardcoded below rather than an input: it's not a secret, and hardcoding
+# a non-secret constant is more auditable than threading it through as a parameter every
+# caller has to remember to pass. It's deliberately NOT "SkunkWerkx" — nuget.org Trusted
+# Publishing's `user` has to be the individual account that *created* the policy (verified
+# the hard way: "SkunkWerkx" 401'd with "No matching trust policy owned by user
+# 'SkunkWerkx' was found... use the username of the policy creator, not the policy owner"),
+# not the org/package-owner name shown on the policy itself. If a future Hyper* project's
+# policy gets created under a different individual's nuget.org login, this needs updating
+# to match, same as every project's policy needs its own (repo, workflow file) pairing.
 #
 # Version comes from whatever's committed in the target .csproj's own <Version> — same
 # story as the crates.io leg's Cargo.toml. No tag-vs-dispatch derivation here yet; that's
@@ -87,7 +92,7 @@ jobs:
         uses: NuGet/login@v1
         id: login
         with:
-          user: SkunkWerkx
+          user: buvinghausen
 
       - name: Publish to nuget.org
         run: >
