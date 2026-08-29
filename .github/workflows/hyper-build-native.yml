@@ -350,22 +350,29 @@ jobs:
       # to leave on the fallback, and Windows needs no extra toolchain: the MSVC linker
       # the core already builds with plus CPython's own import library (inside the
       # setup-python installation, found by PyO3's build script via the interpreter on
-      # PATH). Staging is the platform's spelling of "extension module": .so on Linux and
-      # macOS alike, .pyd (a renamed DLL) on Windows.
-      - name: Build PyO3 extension
+      # PATH). maturin develop is the canonical build+stage mechanism (matches maturin's
+      # own mixed-project convention — the compiled extension nests inside the package,
+      # e.g. hyperuuid._native, per [tool.maturin] in pyproject.toml), not a manual
+      # cargo build + per-OS copy: one mechanism instead of two can't drift out of sync
+      # with pyproject.toml the way the old hand-rolled staging did. An explicit
+      # VIRTUAL_ENV avoids depending on a literal ".venv"-named directory or a
+      # platform-specific activate script — maturin just needs to know where to install.
+      - name: Install maturin
         if: inputs.pyo3
-        working-directory: python/native
-        run: cargo build --release
+        run: pip install maturin
 
-      - name: Stage PyO3 extension
+      - name: Create throwaway venv for maturin develop
         if: inputs.pyo3
+        working-directory: python
+        run: python -m venv .venv
+
+      - name: Build and stage PyO3 extension (maturin develop)
+        if: inputs.pyo3
+        working-directory: python
         shell: bash
         run: |
-          case "${{ runner.os }}" in
-            macOS)   cp "python/native/target/release/lib${{ inputs.crate }}_native.dylib" "python/src/${{ inputs.crate }}_native.so" ;;
-            Linux)   cp "python/native/target/release/lib${{ inputs.crate }}_native.so" "python/src/${{ inputs.crate }}_native.so" ;;
-            Windows) cp "python/native/target/release/${{ inputs.crate }}_native.dll" "python/src/${{ inputs.crate }}_native.pyd" ;;
-          esac
+          export VIRTUAL_ENV="$PWD/.venv"
+          maturin develop --release --manifest-path native/Cargo.toml
 
       - name: Test Python bindings (PyO3 backend)
         if: inputs.pyo3
