@@ -6,20 +6,14 @@ name: HyperForge — build abi3 Python wheels for PyPI
 # runners throughout (including linux-arm64 and win-arm64), not QEMU cross-compilation, for
 # the same reliability reasons that matrix already settled on.
 #
-# Each leg needs two separately-compiled artifacts staged before `maturin build`: the
-# ctypes-fallback's plain cdylib (from build-native, downloaded here) and the PyO3
-# extension itself (which maturin builds fresh, in-place, via python/native/Cargo.toml).
-# Verified locally end-to-end on linux-arm64 before this file existed at all — real
-# maturin build, real wheel install in a fresh venv, both backends confirmed working, full
-# test suite green — so this design isn't guessed, just not yet proven on the other 5 legs.
+# Source-only: maturin builds the PyO3 extension fresh, in-place, straight from the checked-
+# out Rust source (python/native/Cargo.toml) — no dependency on build-native's own artifacts.
+# Verified locally end-to-end before this file existed at all — real maturin build, real
+# wheel install in a fresh venv, extension confirmed working, full test suite green.
 
 on:
   workflow_call:
     inputs:
-      crate:
-        description: "Lowercase core name (lib{crate}.so / {crate}.dll — matches hyper-build-native.yml's own artifact naming)"
-        required: true
-        type: string
       python_source_dir:
         description: "Path to the Python package's pyproject.toml directory (e.g. python)"
         required: true
@@ -38,50 +32,31 @@ jobs:
         include:
           - os: ubuntu-latest
             rid: linux-x64
-            lib_name: lib${{ inputs.crate }}.so
             target: x86_64-unknown-linux-gnu
             manylinux: "2_28"
           - os: ubuntu-24.04-arm
             rid: linux-arm64
-            lib_name: lib${{ inputs.crate }}.so
             target: aarch64-unknown-linux-gnu
             manylinux: "2_28"
           - os: macos-26-intel
             rid: osx-x64
-            lib_name: lib${{ inputs.crate }}.dylib
             target: x86_64-apple-darwin
             manylinux: ""
           - os: macos-latest
             rid: osx-arm64
-            lib_name: lib${{ inputs.crate }}.dylib
             target: aarch64-apple-darwin
             manylinux: ""
           - os: windows-latest
             rid: win-x64
-            lib_name: ${{ inputs.crate }}.dll
             target: x86_64-pc-windows-msvc
             manylinux: ""
           - os: windows-11-arm
             rid: win-arm64
-            lib_name: ${{ inputs.crate }}.dll
             target: aarch64-pc-windows-msvc
             manylinux: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: native-${{ matrix.rid }}
-          path: artifacts
-
-      # Same target filename ctypes' _runtime.py already looks up via
-      # importlib.resources.files(__package__).joinpath("libhyperuuid.so") — deliberately
-      # the fixed .so name on every OS (matching hyper-build-native.yml's own Python leg),
-      # since ctypes loads by path, not extension.
-      - name: Stage the ctypes-fallback native library
-        shell: bash
-        run: cp "artifacts/${{ matrix.lib_name }}" "${{ inputs.python_source_dir }}/src/${{ inputs.crate }}/lib${{ inputs.crate }}.so"
 
       # Only builds the extension — abi3-py39 (native/Cargo.toml) is what actually pins the
       # wheel's runtime ABI floor to 3.9+, independent of this interpreter's own version.

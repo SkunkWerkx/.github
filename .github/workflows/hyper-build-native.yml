@@ -4,9 +4,12 @@ name: HyperForge — build native core, test every binding
 # HyperCast's build-native.yml after both went green on all 6 legs: build the Rust core
 # fresh on each real-hardware leg, then run every binding's actual test suite against that
 # leg's freshly-built native library — proving the real FFI load/marshalling path per OS,
-# which cargo test alone cannot exercise. Interpreted-tier bindings run twice: once forced
-# onto the zero-compile fallback (ctypes/Fiddle, via the repo's ${pure_env}=1), once with
-# the native-extension backend (PyO3 everywhere, Magnus on the unix legs) built and staged.
+# which cargo test alone cannot exercise. Ruby runs twice: once forced onto the zero-compile
+# Fiddle fallback (via the repo's ${pure_env}=1), once with the Magnus extension backend
+# (unix legs) built and staged. Python has no fallback — PyO3 (every leg, via maturin
+# develop) is the only backend; a distributable package that lands at native speed without
+# needing a compiler is the whole point of shipping real wheels, so there's nothing left for
+# a fallback to buy.
 #
 # The archaeology this file banks, so no Hyper* repo re-learns it (each lesson also
 # commented at the step that pays it):
@@ -96,11 +99,6 @@ on:
         required: false
         type: boolean
         default: true
-      python_editable:
-        description: "true: pip install -e .[test] (repo packages its tests); false: pip install pytest (repo's conftest puts src/ on sys.path)"
-        required: false
-        type: boolean
-        default: false
       ruby_version:
         required: false
         type: string
@@ -321,42 +319,25 @@ jobs:
         # legs' default pwsh can't execute.
         run: php vendor/bin/phpunit
 
-      # Python: the ctypes fallback everywhere (forced — also the Pyodide/WASM path),
-      # then the PyO3 extension. The single fixed resource name lib{crate}.so is
-      # deliberate: ctypes loads by path, not extension, so a renamed .dylib/.dll loads
-      # identically.
+      # Python: the PyO3 extension only — no ctypes fallback anymore, so no zero-compile
+      # path and no Pyodide/WASM story either (dropped together; real per-platform wheels
+      # make the "no compiler needed to install" goal already, and Pyodide can come back
+      # if that's ever actually needed). Windows needs no extra toolchain beyond what the
+      # core already builds with: the MSVC linker plus CPython's own import library (inside
+      # the setup-python installation, found by PyO3's build script via the interpreter on
+      # PATH).
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ inputs.python_version }}
 
-      - name: Place native lib for Python in-repo testing
-        shell: bash
-        run: cp "out/${{ matrix.lib_name }}" "python/src/${{ inputs.crate }}/lib${{ inputs.crate }}.so"
-
-      - name: Test Python bindings (ctypes backend) against this platform's native lib
-        working-directory: python
-        shell: bash
-        run: |
-          export ${{ inputs.pure_env }}=1
-          python -m pip install --upgrade pip
-          if ${{ inputs.python_editable }}; then
-            pip install -e ".[test]"
-          else
-            pip install pytest
-          fi
-          pytest
-
-      # PyO3 on every leg, Windows included — the Python-on-Windows audience is too large
-      # to leave on the fallback, and Windows needs no extra toolchain: the MSVC linker
-      # the core already builds with plus CPython's own import library (inside the
-      # setup-python installation, found by PyO3's build script via the interpreter on
-      # PATH). maturin develop is the canonical build+stage mechanism (matches maturin's
-      # own mixed-project convention — the compiled extension nests inside the package,
-      # e.g. hyperuuid._native, per [tool.maturin] in pyproject.toml), not a manual
-      # cargo build + per-OS copy: one mechanism instead of two can't drift out of sync
-      # with pyproject.toml the way the old hand-rolled staging did. An explicit
-      # VIRTUAL_ENV avoids depending on a literal ".venv"-named directory or a
-      # platform-specific activate script — maturin just needs to know where to install.
+      # maturin develop is the canonical build+stage mechanism (matches maturin's own mixed-
+      # project convention — the compiled extension nests inside the package, e.g.
+      # hyperuuid._native, per [tool.maturin] in pyproject.toml). An explicit VIRTUAL_ENV
+      # avoids depending on a literal ".venv"-named directory or a platform-specific activate
+      # script — maturin just needs to know where to install. Testing goes straight through
+      # this, not `pip install -e`: pip's own editable-install path through maturin's PEP 517
+      # backend defaults to a debug build and would silently rebuild (and reinstall over) the
+      # release extension this step just staged — confirmed locally, not assumed.
       - name: Install maturin
         if: inputs.pyo3
         run: pip install maturin
@@ -374,7 +355,9 @@ jobs:
           export VIRTUAL_ENV="$PWD/.venv"
           maturin develop --release --manifest-path native/Cargo.toml
 
-      - name: Test Python bindings (PyO3 backend)
+      - name: Test Python bindings
         if: inputs.pyo3
         working-directory: python
-        run: pytest
+        run: |
+          pip install pytest
+          pytest
