@@ -115,10 +115,14 @@ jobs:
 
           lib_dest="${{ inputs.runtimes_dir }}/browser-wasm/lib/net8.0"
           mkdir -p "$lib_dest"
-          # Passing RuntimeIdentifier explicitly adds an extra {rid}/ subdirectory to the
-          # output path (bin-browser/Release/net8.0/browser-wasm/, not .../net8.0/ directly)
-          # — confirmed with a real local build, not assumed.
-          cp bin-browser/Release/net8.0/browser-wasm/*.dll "$lib_dest/"
+          # BaseOutputPath is relative to the *project file's* own directory, not this
+          # job's working directory — confirmed the hard way, a real CI failure ("cannot
+          # stat ... No such file or directory") from assuming otherwise. Passing
+          # RuntimeIdentifier explicitly also adds an extra {rid}/ subdirectory on top
+          # (.../net8.0/browser-wasm/, not .../net8.0/ directly) — confirmed with a real
+          # local build.
+          csproj_dir=$(dirname "${{ inputs.csproj_path }}")
+          cp "$csproj_dir/bin-browser/Release/net8.0/browser-wasm/"*.dll "$lib_dest/"
 
       - name: Pack
         run: dotnet pack ${{ inputs.csproj_path }} -c Release -o nupkg-org
