@@ -1,0 +1,88 @@
+name: HyperForge — pack a NuGet package for nuget.org
+
+# Companion to hyper-publish-crate.yml, for the C# binding — but unlike that one, this only
+# packs and uploads, it never publishes. Two confirmed, independent reasons the actual
+# login+push can't live here:
+#
+# 1. nuget.org Trusted Publishing validates the OIDC token's job_workflow_ref claim against
+#    the policy's own repo, and job_workflow_ref always names wherever the executing
+#    workflow file physically lives (here, SkunkWerkx/.github) — never the caller. No
+#    policy configuration can satisfy that when the code lives in a different repo than
+#    the caller (confirmed with a real 401 both ways: pointing the policy at HyperUuid, and
+#    pointing it at .github instead).
+# 2. Even a pre-obtained key can't be handed down as a job output either — GitHub redacts
+#    any job output the runner has flagged as a secret before it's sent to another job at
+#    all (confirmed against GitHub's own community docs), so "log in once, pass the key
+#    down" doesn't work regardless of which repo does the logging in.
+#
+# So the split is: this job does everything up to and including `dotnet pack`, and uploads
+# the result as a plain build artifact (not a secret, not a job output — artifacts aren't
+# subject to either restriction above). The caller then downloads that artifact in its own
+# tiny local job, logs in fresh from its own workflow file, and pushes — see HyperUuid's
+# release.yml for that half.
+
+on:
+  workflow_call:
+    inputs:
+      crate:
+        description: "Lowercase core name (lib{crate}.so / {crate}.dll — matches hyper-build-native.yml's own artifact naming)"
+        required: true
+        type: string
+      csproj_path:
+        description: "Path to the C# package's own .csproj"
+        required: true
+        type: string
+      runtimes_dir:
+        description: "Directory to arrange runtimes/{rid}/native/ under before packing (e.g. csharp/HyperUuid/runtimes)"
+        required: true
+        type: string
+      dotnet_version:
+        required: false
+        type: string
+        default: "8.0.x"
+      artifact_name:
+        description: "Name for the uploaded .nupkg artifact — the caller downloads it by this name"
+        required: false
+        type: string
+        default: "nuget-org-package"
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: native-*
+          path: artifacts
+
+      - name: Arrange runtimes/{rid}/native/ layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A LIB_NAMES=(
+            [linux-x64]=lib${{ inputs.crate }}.so
+            [linux-arm64]=lib${{ inputs.crate }}.so
+            [osx-x64]=lib${{ inputs.crate }}.dylib
+            [osx-arm64]=lib${{ inputs.crate }}.dylib
+            [win-x64]=${{ inputs.crate }}.dll
+            [win-arm64]=${{ inputs.crate }}.dll
+          )
+          for rid in "${!LIB_NAMES[@]}"; do
+            dest="${{ inputs.runtimes_dir }}/$rid/native"
+            mkdir -p "$dest"
+            cp "artifacts/native-$rid/${LIB_NAMES[$rid]}" "$dest/"
+          done
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Pack
+        run: dotnet pack ${{ inputs.csproj_path }} -c Release -o nupkg-org
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: nupkg-org/*.nupkg
