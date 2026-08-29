@@ -1,0 +1,35 @@
+name: HyperForge — publish Rust core to crates.io
+
+# Companion to hyper-build-native.yml: where that one builds and tests the core on every
+# platform, this one publishes it. Unlike the NuGet/Maven pack jobs (which bundle every
+# platform's native artifact and so need build-native's output first), a crates.io publish
+# ships source only — no native artifact, no matrix, just one `cargo publish` from a single
+# runner. Reusable as-is by any Hyper* project with a rust/-shaped core crate.
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: "Path to the crate's own directory (the one with Cargo.toml)"
+        required: false
+        type: string
+        default: "rust"
+    secrets:
+      CARGO_REGISTRY_TOKEN:
+        required: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # --locked: publish exactly what Cargo.lock pins, not a fresh re-resolution against
+      # whatever's newest on crates.io the moment this runs.
+      - name: cargo publish
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
