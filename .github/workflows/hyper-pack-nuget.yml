@@ -45,6 +45,11 @@ on:
         required: false
         type: string
         default: "nuget-org-package"
+      wasm_artifact_name:
+        description: "Name of the wasm32-unknown-emscripten staticlib artifact from hyper-build-wasm.yml"
+        required: false
+        type: string
+        default: "wasm-emscripten-staticlib"
 
 jobs:
   pack:
@@ -79,10 +84,44 @@ jobs:
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
 
+      # Stages runtimes/browser-wasm/{nativeassets,lib}/net8.0/ before packing, so NuGet's
+      # own RID-based asset selection picks the browser build up automatically for any
+      # consumer building with RuntimeIdentifier=browser-wasm — see HyperUuid.csproj's own
+      # WASM comments for the full story. Unconditional, not an opt-in: WASM isn't optional
+      # or spike-only for this binding anymore.
+      - name: Download wasm32-unknown-emscripten staticlib
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.wasm_artifact_name }}
+          path: wasm-artifact
+
+      - name: Stage browser-wasm nativeassets and build the browser assembly variant
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_dest="${{ inputs.runtimes_dir }}/browser-wasm/nativeassets/net8.0"
+          mkdir -p "$native_dest"
+          cp wasm-artifact/lib${{ inputs.crate }}.a "$native_dest/"
+
+          dotnet build ${{ inputs.csproj_path }} -c Release \
+            -p:RuntimeIdentifier=browser-wasm -p:BaseOutputPath=bin-browser/
+
+          lib_dest="${{ inputs.runtimes_dir }}/browser-wasm/lib/net8.0"
+          mkdir -p "$lib_dest"
+          # Passing RuntimeIdentifier explicitly adds an extra {rid}/ subdirectory to the
+          # output path (bin-browser/Release/net8.0/browser-wasm/, not .../net8.0/ directly)
+          # — confirmed with a real local build, not assumed.
+          cp bin-browser/Release/net8.0/browser-wasm/*.dll "$lib_dest/"
+
       - name: Pack
         run: dotnet pack ${{ inputs.csproj_path }} -c Release -o nupkg-org
 
+      # Both files, not just *.nupkg: dotnet nuget push auto-detects and pushes a sibling
+      # .snupkg from the same folder, but only if it actually made it this far — the
+      # artifact hand-off is a real boundary, not just the push command's own glob.
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}
-          path: nupkg-org/*.nupkg
+          path: |
+            nupkg-org/*.nupkg
+            nupkg-org/*.snupkg
