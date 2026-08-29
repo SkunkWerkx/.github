@@ -1,0 +1,97 @@
+name: HyperForge — publish real NuGet package to nuget.org
+
+# Companion to hyper-publish-crate.yml, for the C# binding. Unlike that one, a NuGet
+# package bundles real compiled binaries (not source), so this needs build-native's
+# per-platform artifacts already uploaded in the same workflow run before it's called.
+#
+# nuget.org's Trusted Publishing policy matches on (repository owner, repository, workflow
+# file) — confirmed against GitHub's own OIDC docs that the standard claims (workflow_ref,
+# repository, repository_owner) always describe the *calling* workflow, never a reusable
+# workflow's own repo, even when the job actually runs from here via workflow_call. Only
+# the separate job_workflow_ref claim points at this file's own repo, and nuget.org's
+# policy (a plain filename, no repo-qualification) isn't using that one. So a policy scoped
+# to e.g. (SkunkWerkx, HyperUuid, build-packages.yml) matches correctly regardless of this
+# file living in SkunkWerkx/.github — verified before writing this, not assumed.
+#
+# "SkunkWerkx" is hardcoded below rather than an input: it's not a secret (it's the exact
+# public string at nuget.org/profiles/SkunkWerkx), it's the same org for every Hyper*
+# project calling this, and hardcoding a non-secret constant is more auditable than
+# threading it through as a parameter every caller has to remember to pass.
+#
+# Version comes from whatever's committed in the target .csproj's own <Version> — same
+# story as the crates.io leg's Cargo.toml. No tag-vs-dispatch derivation here yet; that's
+# a later refinement once the manual-bump workflow proves out across a few real releases.
+
+on:
+  workflow_call:
+    inputs:
+      crate:
+        description: "Lowercase core name (lib{crate}.so / {crate}.dll — matches hyper-build-native.yml's own artifact naming)"
+        required: true
+        type: string
+      csproj_path:
+        description: "Path to the C# package's own .csproj"
+        required: true
+        type: string
+      runtimes_dir:
+        description: "Directory to arrange runtimes/{rid}/native/ under before packing (e.g. csharp/HyperUuid/runtimes)"
+        required: true
+        type: string
+      dotnet_version:
+        required: false
+        type: string
+        default: "8.0.x"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: native-*
+          path: artifacts
+
+      - name: Arrange runtimes/{rid}/native/ layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A LIB_NAMES=(
+            [linux-x64]=lib${{ inputs.crate }}.so
+            [linux-arm64]=lib${{ inputs.crate }}.so
+            [osx-x64]=lib${{ inputs.crate }}.dylib
+            [osx-arm64]=lib${{ inputs.crate }}.dylib
+            [win-x64]=${{ inputs.crate }}.dll
+            [win-arm64]=${{ inputs.crate }}.dll
+          )
+          for rid in "${!LIB_NAMES[@]}"; do
+            dest="${{ inputs.runtimes_dir }}/$rid/native"
+            mkdir -p "$dest"
+            cp "artifacts/native-$rid/${LIB_NAMES[$rid]}" "$dest/"
+          done
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Pack
+        run: dotnet pack ${{ inputs.csproj_path }} -c Release -o nupkg-org
+
+      # Trusted Publishing: no long-lived API key stored anywhere. See
+      # https://learn.microsoft.com/nuget/nuget-org/trusted-publishing.
+      - name: NuGet login (OIDC -> temp API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: SkunkWerkx
+
+      - name: Publish to nuget.org
+        run: >
+          dotnet nuget push "nupkg-org/*.nupkg"
+          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
