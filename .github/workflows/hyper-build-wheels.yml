@@ -83,9 +83,13 @@ jobs:
         shell: bash
         run: cp "artifacts/${{ matrix.lib_name }}" "${{ inputs.python_source_dir }}/src/${{ inputs.crate }}/lib${{ inputs.crate }}.so"
 
+      # Only builds the extension — abi3-py39 (native/Cargo.toml) is what actually pins the
+      # wheel's runtime ABI floor to 3.9+, independent of this interpreter's own version.
+      # 3.9 itself has no Windows-ARM64 installer (python.org's win-arm64 builds start at
+      # 3.11), so this uses hyper-build-native.yml's own established default instead.
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.9"
+          python-version: "3.13"
 
       - uses: PyO3/maturin-action@v1
         with:
