@@ -28,8 +28,9 @@ name: HyperForge — build native core, test every binding
 #     Magnus doesn't target that; Fiddle covers Windows). Gated by the `magnus` input.
 #   - php (ext-php-rs): a benchmark spike, not wired into the shipped Composer package
 #     (that's ext-ffi, tested in test-php below) — compiled here purely so it can't
-#     silently bit-rot, no phpunit run against it. win-arm64 skipped, matching PHP's own
-#     never-shipped-native-win-arm64 constraint.
+#     silently bit-rot, no phpunit run against it. All Windows legs skipped: ext-php-rs
+#     gates its Windows path on a nightly-only Rust feature, incompatible with the stable
+#     toolchain every leg here builds on (confirmed by a real E0554 failure, not assumed).
 #
 # skip_unchanged (ci.yml passes true; release.yml leaves the default false, so a real
 # publish always tests everything) drives a `paths` job that decides, per PR, which of the
@@ -288,6 +289,16 @@ jobs:
           bundler-cache: true
           working-directory: ruby
 
+      # The Magnus suite's own cross-backend agreement checks ("agrees with the Fiddle
+      # backend on...") load Fiddle's path alongside Magnus's to compare them — needs this
+      # staged here too, not just in test-ruby-fiddle's own job.
+      - name: Place native lib for Ruby in-repo testing
+        if: inputs.magnus && runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}"
+          cp "out/${{ matrix.lib_name }}" "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}/"
+
       - name: Build Ruby (Magnus) extension
         if: inputs.magnus && runner.os != 'Windows'
         working-directory: rust
@@ -308,16 +319,19 @@ jobs:
         run: bundle exec rspec
 
       # PHP (ext-php-rs feature): compile-check only, no phpunit — this is a benchmark
-      # spike, not the shipped backend (that's ext-ffi, in test-php below).
+      # spike, not the shipped backend (that's ext-ffi, in test-php below). Windows
+      # excluded entirely, not just win-arm64: ext-php-rs's Windows path gates on
+      # `#![feature(abi_vectorcall)]`, a nightly-only Rust feature, and every leg here
+      # builds on stable — confirmed by a real E0554 failure on win-x64, not assumed.
       - uses: shivammathur/setup-php@v2
-        if: inputs.php_native_spike && matrix.rid != 'win-arm64'
+        if: inputs.php_native_spike && runner.os != 'Windows'
         with:
           php-version: ${{ inputs.php_version }}
           extensions: ffi
           tools: composer
 
       - name: Build PHP (ext-php-rs) extension (benchmark spike, compile-check only)
-        if: inputs.php_native_spike && matrix.rid != 'win-arm64'
+        if: inputs.php_native_spike && runner.os != 'Windows'
         working-directory: rust
         run: cargo build --release --features php
 
