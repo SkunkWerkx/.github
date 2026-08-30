@@ -39,7 +39,7 @@ on:
       dotnet_version:
         required: false
         type: string
-        default: "8.0.x"
+        default: "10.0.x"
       artifact_name:
         description: "Name for the uploaded .nupkg artifact — the caller downloads it by this name"
         required: false
@@ -84,14 +84,14 @@ jobs:
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
 
-      # wasm-tools-net8, not the generic wasm-tools wasm-spike.yml installs — that spike's
-      # own test project targets net10.0, but the actual HyperUuid.csproj being packed here
-      # targets net8.0, and the wasm-tools workload is TFM-band-specific. Confirmed the hard
-      # way: NETSDK1147 named this exact workload when it was missing.
+      # Plain wasm-tools, not a TFM-suffixed variant (an earlier note here referenced
+      # wasm-tools-net8, from when 8.0.x was the pinned SDK) — confirmed against the 10.0.x
+      # SDK band `dotnet workload search wasm` only lists `wasm-tools`/`wasm-experimental`,
+      # no suffixed ID.
       - name: Install .NET wasm-tools workload
-        run: dotnet workload install wasm-tools-net8
+        run: dotnet workload install wasm-tools
 
-      # Stages runtimes/browser-wasm/{nativeassets,lib}/net8.0/ before packing, so NuGet's
+      # Stages runtimes/browser-wasm/{nativeassets,lib}/net10.0/ before packing, so NuGet's
       # own RID-based asset selection picks the browser build up automatically for any
       # consumer building with RuntimeIdentifier=browser-wasm — see HyperUuid.csproj's own
       # WASM comments for the full story. Unconditional, not an opt-in: WASM isn't optional
@@ -106,23 +106,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          native_dest="${{ inputs.runtimes_dir }}/browser-wasm/nativeassets/net8.0"
+          native_dest="${{ inputs.runtimes_dir }}/browser-wasm/nativeassets/net10.0"
           mkdir -p "$native_dest"
           cp wasm-artifact/lib${{ inputs.crate }}.a "$native_dest/"
 
           dotnet build ${{ inputs.csproj_path }} -c Release \
             -p:RuntimeIdentifier=browser-wasm -p:BaseOutputPath=bin-browser/
 
-          lib_dest="${{ inputs.runtimes_dir }}/browser-wasm/lib/net8.0"
+          lib_dest="${{ inputs.runtimes_dir }}/browser-wasm/lib/net10.0"
           mkdir -p "$lib_dest"
           # BaseOutputPath is relative to the *project file's* own directory, not this
           # job's working directory — confirmed the hard way, a real CI failure ("cannot
           # stat ... No such file or directory") from assuming otherwise. Passing
           # RuntimeIdentifier explicitly also adds an extra {rid}/ subdirectory on top
-          # (.../net8.0/browser-wasm/, not .../net8.0/ directly) — confirmed with a real
+          # (.../net10.0/browser-wasm/, not .../net10.0/ directly) — confirmed with a real
           # local build.
           csproj_dir=$(dirname "${{ inputs.csproj_path }}")
-          cp "$csproj_dir/bin-browser/Release/net8.0/browser-wasm/"*.dll "$lib_dest/"
+          cp "$csproj_dir/bin-browser/Release/net10.0/browser-wasm/"*.dll "$lib_dest/"
 
       - name: Pack
         run: dotnet pack ${{ inputs.csproj_path }} -c Release -o nupkg-org
