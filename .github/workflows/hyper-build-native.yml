@@ -150,19 +150,6 @@ on:
         required: false
         type: string
         default: "6.3"
-      release_artifacts:
-        description: >-
-          Produce and upload the real, release-shippable artifacts this job's own light PR-time
-          build can't (a genuine manylinux-compliant PyO3 wheel via maturin, the compiled Ruby
-          Magnus extension) — additive to, not a replacement for, the plain cargo build/test
-          steps every PR already gets. False on every PR (the extra wheel/gem build is real
-          wall-clock a PR's own artifact would never ship anyway); the caller sets this true only
-          on its own release-dispatch trigger. Consolidated into this same per-leg matrix instead
-          of a second job spinning up the same 6 runners again from scratch to rebuild the
-          identical python/ruby-feature crate a second time.
-        required: false
-        type: boolean
-        default: false
 
 jobs:
   build-native:
@@ -257,25 +244,14 @@ jobs:
           pip install pytest
           pytest
 
-      # The real, manylinux-compliant (on Linux) wheel maturin-action builds — genuinely
-      # different from the plain `cargo build` above, which only produces a raw importable
-      # .so for this leg's own test, not something PyPI would accept. Additive: runs in the
-      # same per-leg job that already has the right Rust target/toolchain set up, instead of a
-      # second workflow spinning up these same 6 runners again to rebuild the identical
-      # python-feature crate from scratch. Gated off PRs — a PR's wheel would never ship.
-      - uses: PyO3/maturin-action@v1
-        if: inputs.pyo3 && inputs.release_artifacts
-        with:
-          working-directory: python
-          target: ${{ matrix.target }}
-          manylinux: ${{ matrix.manylinux != '' && matrix.manylinux || 'off' }}
-          args: --release --out dist
-
-      - uses: actions/upload-artifact@v7
-        if: inputs.pyo3 && inputs.release_artifacts
-        with:
-          name: pypi-wheels-${{ matrix.rid }}
-          path: python/dist/*.whl
+      # No maturin/real-wheel build here, deliberately: a wheel bakes its version into its
+      # own filename and metadata at build time, and CI runs before any release tag exists —
+      # a wheel built here would always be stamped with whatever pyproject.toml/Cargo.toml
+      # happened to say at PR time, not the eventual release version. CI's job is proving
+      # this compiles and passes its own tests (the plain `cargo build`/pytest above already
+      # does that), not producing a release-shippable, version-stamped artifact it can't get
+      # right. The real wheel gets built once, at actual release time, once the version is
+      # genuinely known — see hyperuuid's own release.yml.
 
       # Ruby (Magnus feature), unix legs only.
       - name: Point Xcode at a full toolchain (works around a Ruby native-extension mkmf issue)
@@ -314,10 +290,11 @@ jobs:
           esac
 
       # The compiled Magnus extension itself, for a caller to package into a real precompiled
-      # RubyGems platform gem — same "build once here, don't rebuild in a second job" reasoning
-      # as the PyO3 wheel above. Gated off PRs for the same reason too.
+      # RubyGems platform gem later. Unlike a wheel or a .gem, a bare compiled extension
+      # carries no version metadata of its own — it's a reusable artifact regardless of PR vs.
+      # release, so unlike the wheel above this is always uploaded, no gating needed.
       - uses: actions/upload-artifact@v7
-        if: inputs.magnus && inputs.release_artifacts && runner.os != 'Windows'
+        if: inputs.magnus && runner.os != 'Windows'
         with:
           name: ruby-native-${{ matrix.rid }}
           path: ruby/lib/${{ inputs.crate }}_native.*
