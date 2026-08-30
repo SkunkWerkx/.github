@@ -20,6 +20,11 @@ name: HyperForge — pack a NuGet package for nuget.org
 # subject to either restriction above). The caller then downloads that artifact in its own
 # tiny local job, logs in fresh from its own workflow file, and pushes — see HyperUuid's
 # release.yml for that half.
+#
+# Only ever called from a release workflow now, not from CI: a .nupkg bakes its version
+# into its own filename and metadata at pack time (source_run_id is required, no same-run
+# fallback), so packing has to happen once the real version is actually known — a plain CI
+# run has no correct version to give it yet.
 
 on:
   workflow_call:
@@ -50,6 +55,15 @@ on:
         required: false
         type: string
         default: "wasm-emscripten-staticlib"
+      source_run_id:
+        description: >
+          Workflow run ID to pull native-*/wasm artifacts from. A version bakes into a
+          .nupkg's own filename and metadata at pack time, so — same reasoning as
+          hyper-publish-maven.yml's own source_run_id — this only ever makes sense called
+          from a release workflow once the real version is known, never from the same run
+          that built these artifacts in the first place. Required, no same-run fallback.
+        required: true
+        type: string
 
 jobs:
   pack:
@@ -61,6 +75,8 @@ jobs:
         with:
           pattern: native-*
           path: artifacts
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
 
       - name: Arrange runtimes/{rid}/native/ layout
         shell: bash
@@ -98,6 +114,8 @@ jobs:
         with:
           name: ${{ inputs.wasm_artifact_name }}
           path: wasm-artifact
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
 
       - name: Stage browser-wasm nativeassets
         shell: bash
