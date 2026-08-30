@@ -1,0 +1,109 @@
+name: HyperForge — publish to Maven Central
+
+# Companion to hyper-publish-crate.yml, for the Java binding — same shape, one job, no
+# pack/publish split. That split exists for NuGet (see hyper-pack-nuget.yml's own header
+# comment) specifically because nuget.org Trusted Publishing is OIDC-federated and validates
+# the token's job_workflow_ref against wherever the *executing* workflow file physically
+# lives, which can't be satisfied across repos. Central Portal auth is a plain static token
+# (MAVEN_CENTRAL_USERNAME/PASSWORD, from the Portal's own token generator) with no such
+# binding — same as crates.io's CARGO_REGISTRY_TOKEN — so there's nothing forcing a caller-side
+# login step to live in a different repo than the pack step.
+#
+# A .jar has no package-manager-level platform selection the way NuGet's RID folders or
+# Python wheel tags do (see NativePlatform.java's own doc comment) — one jar bundles every
+# platform's native library under src/main/resources/native/{rid}/{filename} and picks the
+# right one at runtime, so this job stages all six before publishing, the same
+# artifact-naming convention hyper-pack-nuget.yml already uses.
+#
+# gradle-maven-publish-plugin's publishAndReleaseToMavenCentral does pack, sign, upload, and
+# auto-release in one task — Central Portal validates the deployment (POM, signatures,
+# required jars) before it ever goes public, so a bad attempt fails closed rather than
+# shipping something broken; nothing here needs its own separate staging/review step on top
+# of that.
+
+on:
+  workflow_call:
+    inputs:
+      crate:
+        description: "Lowercase core name (lib{crate}.so / {crate}.dll — matches hyper-build-native.yml's own artifact naming)"
+        required: true
+        type: string
+      java_project_dir:
+        description: "Path to the Java project's own directory (the one with build.gradle.kts)"
+        required: false
+        type: string
+        default: "java"
+      java_resources_dir:
+        description: "Directory to stage native/{rid}/{filename} resources under before publishing (e.g. java/src/main/resources/native)"
+        required: true
+        type: string
+      jdk_version:
+        description: "Temurin major version (23 is the newest with win-arm64 builds — matches hyper-build-native.yml's own pin, even though this job itself only runs on ubuntu-latest)"
+        required: false
+        type: string
+        default: "23"
+      source_run_id:
+        description: >
+          Workflow run ID to pull native-* artifacts from — unlike hyper-pack-nuget.yml,
+          this job has no ci.yml-side "pack" phase to run during (gradle-maven-publish's
+          publishAndReleaseToMavenCentral bundles pack+sign+upload+release into one task
+          that can't be split the way `dotnet pack` vs. `dotnet nuget push` can), so it only
+          ever runs from release.yml and always needs a cross-run download. Required, not
+          optional-with-a-same-run-fallback like hyper-pack-nuget.yml's source_run_id
+          attempt was — there's no same-run case here to fall back to.
+        required: true
+        type: string
+    secrets:
+      MAVEN_CENTRAL_USERNAME:
+        required: true
+      MAVEN_CENTRAL_PASSWORD:
+        required: true
+      MAVEN_SIGNING_KEY:
+        required: true
+      MAVEN_SIGNING_KEY_PASSWORD:
+        required: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: native-*
+          path: artifacts
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Stage native/{rid}/{filename} resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A LIB_NAMES=(
+            [linux-x64]=lib${{ inputs.crate }}.so
+            [linux-arm64]=lib${{ inputs.crate }}.so
+            [osx-x64]=lib${{ inputs.crate }}.dylib
+            [osx-arm64]=lib${{ inputs.crate }}.dylib
+            [win-x64]=${{ inputs.crate }}.dll
+            [win-arm64]=${{ inputs.crate }}.dll
+          )
+          for rid in "${!LIB_NAMES[@]}"; do
+            dest="${{ inputs.java_resources_dir }}/$rid"
+            mkdir -p "$dest"
+            cp "artifacts/native-$rid/${LIB_NAMES[$rid]}" "$dest/"
+          done
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.jdk_version }}
+
+      - name: Publish to Maven Central
+        working-directory: ${{ inputs.java_project_dir }}
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_SIGNING_KEY_PASSWORD }}
+        run: ./gradlew publishAndReleaseToMavenCentral
