@@ -84,45 +84,28 @@ jobs:
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
 
-      # Plain wasm-tools, not a TFM-suffixed variant (an earlier note here referenced
-      # wasm-tools-net8, from when 8.0.x was the pinned SDK) — confirmed against the 10.0.x
-      # SDK band `dotnet workload search wasm` only lists `wasm-tools`/`wasm-experimental`,
-      # no suffixed ID.
-      - name: Install .NET wasm-tools workload
-        run: dotnet workload install wasm-tools
-
-      # Stages runtimes/browser-wasm/{nativeassets,lib}/net10.0/ before packing, so NuGet's
-      # own RID-based asset selection picks the browser build up automatically for any
-      # consumer building with RuntimeIdentifier=browser-wasm — see HyperUuid.csproj's own
-      # WASM comments for the full story. Unconditional, not an opt-in: WASM isn't optional
-      # or spike-only for this binding anymore.
+      # Stages runtimes/browser-wasm/nativeassets/net10.0/ before packing, so NuGet's own
+      # RID-based asset selection picks the wasm staticlib up automatically for any consumer
+      # building with RuntimeIdentifier=browser-wasm — see HyperUuid.csproj's own WASM
+      # comments for the full story. No wasm-tools workload and no second `dotnet build`
+      # needed here anymore: one compiled assembly now covers every platform including
+      # browser-wasm (UuidGenerator.cs picks the right P/Invoke target at runtime via
+      # OperatingSystem.IsBrowser(), not a separate compile), so this job's own plain `dotnet
+      # pack` below already produces the only managed assembly a consumer needs — only the
+      # native staticlib is genuinely RID-specific.
       - name: Download wasm32-unknown-emscripten staticlib
         uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.wasm_artifact_name }}
           path: wasm-artifact
 
-      - name: Stage browser-wasm nativeassets and build the browser assembly variant
+      - name: Stage browser-wasm nativeassets
         shell: bash
         run: |
           set -euo pipefail
           native_dest="${{ inputs.runtimes_dir }}/browser-wasm/nativeassets/net10.0"
           mkdir -p "$native_dest"
           cp wasm-artifact/lib${{ inputs.crate }}.a "$native_dest/"
-
-          dotnet build ${{ inputs.csproj_path }} -c Release \
-            -p:RuntimeIdentifier=browser-wasm -p:BaseOutputPath=bin-browser/
-
-          lib_dest="${{ inputs.runtimes_dir }}/browser-wasm/lib/net10.0"
-          mkdir -p "$lib_dest"
-          # BaseOutputPath is relative to the *project file's* own directory, not this
-          # job's working directory — confirmed the hard way, a real CI failure ("cannot
-          # stat ... No such file or directory") from assuming otherwise. Passing
-          # RuntimeIdentifier explicitly also adds an extra {rid}/ subdirectory on top
-          # (.../net10.0/browser-wasm/, not .../net10.0/ directly) — confirmed with a real
-          # local build.
-          csproj_dir=$(dirname "${{ inputs.csproj_path }}")
-          cp "$csproj_dir/bin-browser/Release/net10.0/browser-wasm/"*.dll "$lib_dest/"
 
       - name: Pack
         run: dotnet pack ${{ inputs.csproj_path }} -c Release -o nupkg-org
