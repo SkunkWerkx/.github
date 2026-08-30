@@ -1,15 +1,41 @@
 name: HyperForge — build native core, test every binding
 
-# The canonical Hyper* CI pipeline, extracted from HyperUuid's build-packages.yml and
-# HyperCast's build-native.yml after both went green on all 6 legs: build the Rust core
-# fresh on each real-hardware leg, then run every binding's actual test suite against that
-# leg's freshly-built native library — proving the real FFI load/marshalling path per OS,
-# which cargo test alone cannot exercise. Ruby runs twice: once forced onto the zero-compile
-# Fiddle fallback (via the repo's ${pure_env}=1), once with the Magnus extension backend
-# (unix legs) built and staged. Python has no fallback — PyO3 (every leg, via maturin
-# develop) is the only backend; a distributable package that lands at native speed without
-# needing a compiler is the whole point of shipping real wheels, so there's nothing left for
-# a fallback to buy.
+# The canonical Hyper* CI pipeline. Two phases:
+#
+#   1. build-native: one crate (the core, plus its optional python/ruby/php extension
+#      features — see the crate's own Cargo.toml) built and tested fresh on each of the 6
+#      real-hardware legs. Feedback at the right level: a PyO3/Magnus/ext-php-rs compile
+#      break shows up in the same job as the plain core build, as a simple in-job
+#      `if: runner.os == ...` step, not a separate job with its own cross-job matrix
+#      exclude/if plumbing. The plain cdylib artifact (what every FFI-consuming binding
+#      dlopens) is uploaded here too.
+#   2. One job per FFI-consuming binding (test-csharp, test-java, test-go, test-swift,
+#      test-ruby-fiddle, test-php), each matrixed across the same 6 legs, each downloading
+#      only its own leg's artifact and running in parallel with every other binding's job —
+#      proving the real FFI load/marshalling path per OS, which cargo test alone cannot
+#      exercise. Nothing about testing C# needs to wait on Java's toolchain setup or vice
+#      versa.
+#
+# python/ruby/php aren't FFI-consuming bindings in the same sense — each is an optional
+# feature of the SAME core crate (`--features python`/`ruby`/`php`), not a satellite crate
+# path-depending back on it, so there's no separate artifact hand-off to design around;
+# building the feature *is* proving it compiles, and staging+testing it happens right there
+# in phase 1:
+#   - python (pyo3): every leg. This is the *only* Python backend (no ctypes fallback), and
+#     what every PyPI release ships, so it's proven on every PR, not deferred to release
+#     time. Gated by the `pyo3` input.
+#   - ruby (magnus): unix legs only (RubyInstaller's Windows rubies are MinGW-built —
+#     Magnus doesn't target that; Fiddle covers Windows). Gated by the `magnus` input.
+#   - php (ext-php-rs): a benchmark spike, not wired into the shipped Composer package
+#     (that's ext-ffi, tested in test-php below) — compiled here purely so it can't
+#     silently bit-rot, no phpunit run against it. win-arm64 skipped, matching PHP's own
+#     never-shipped-native-win-arm64 constraint.
+#
+# skip_unchanged (ci.yml passes true; release.yml leaves the default false, so a real
+# publish always tests everything) drives a `paths` job that decides, per PR, which of the
+# phase-2 jobs — and whether build-native itself — can be skipped outright. Only meaningful
+# for pull_request events; workflow_dispatch/push always run everything, since there's no
+# PR diff to filter against.
 #
 # The archaeology this file banks, so no Hyper* repo re-learns it (each lesson also
 # commented at the step that pays it):
@@ -18,12 +44,15 @@ name: HyperForge — build native core, test every binding
 #     for public repos.
 #   - JDK pin 23: Temurin ships Windows ARM64 builds for 21 and 23 only (confirmed
 #     against the Adoptium API — 24/25 have no win-arm64 asset).
-#   - Darwin extension linking: a Ruby/Python extension must not link the host runtime —
-#     rb_*/Py_* symbols resolve at load, which needs -undefined dynamic_lookup, declared
-#     in each native crate's .cargo/config.toml (plain cargo builds don't get it from
-#     PyO3/rb-sys the way maturin/rake-compiler builds do).
+#   - Darwin extension linking: a Python/Ruby/PHP extension must not link the host
+#     runtime — Py*/rb_*/php* symbols resolve at load, which needs -undefined
+#     dynamic_lookup, declared once in the core crate's own .cargo/config.toml (a plain
+#     `cargo build` doesn't get this from PyO3/rb-sys/ext-php-rs the way maturin/
+#     rake-compiler builds do — harmless for the default, no-feature build too).
 #   - PHP never ships native Windows ARM64 (runs under x64 emulation there — can never
-#     load an ARM64 native lib), so the win-arm64 leg skips PHP; win-x64 covers it.
+#     load an ARM64 native lib), so the win-arm64 leg is excluded from test-php's matrix
+#     (and skips the php-feature compile-check in build-native); win-x64 covers real
+#     PHP-on-Windows.
 #   - `php vendor/bin/phpunit` must be invoked through `php` — the Composer proxy is a
 #     shebang script the Windows legs' default pwsh can't execute.
 #   - macOS runners sometimes need xcode-select pointed at full Xcode before Ruby
@@ -43,7 +72,7 @@ on:
         required: true
         type: string
       crate:
-        description: "Lowercase core name (lib{crate}.so / {crate}.dll, python/ruby package dirs, {crate}_native extensions)"
+        description: "Lowercase core name (lib{crate}.so / {crate}.dll — the one crate every leg builds, plain and feature-enabled)"
         required: true
         type: string
       pure_env:
@@ -99,6 +128,11 @@ on:
         required: false
         type: boolean
         default: true
+      php_native_spike:
+        description: "Compile-check the ext-php-rs benchmark spike feature (not wired to the shipped Composer package)"
+        required: false
+        type: boolean
+        default: true
       ruby_version:
         required: false
         type: string
@@ -115,9 +149,54 @@ on:
         required: false
         type: string
         default: "6.3"
+      skip_unchanged:
+        description: "Skip a phase-2 job (and build-native itself) when nothing relevant changed in this PR (pull_request events only — always false-equivalent otherwise). Pass true from ci.yml; leave the default for release.yml, which must always test everything before a real publish."
+        required: false
+        type: boolean
+        default: false
 
 jobs:
+  # Decides which jobs actually need to run. Always executes (cheap — one checkout, one
+  # filter step); the filter step itself only runs when skip_unchanged is actually in play,
+  # so this costs nothing extra for release.yml's always-run-everything callers.
+  paths:
+    runs-on: ubuntu-latest
+    outputs:
+      run_native: ${{ !inputs.skip_unchanged || github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.csharp == 'true' || steps.filter.outputs.java == 'true' || steps.filter.outputs.go == 'true' || steps.filter.outputs.swift == 'true' || steps.filter.outputs.ruby == 'true' || steps.filter.outputs.php == 'true' || steps.filter.outputs.python == 'true' }}
+      run_csharp: ${{ !inputs.skip_unchanged || github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.csharp == 'true' }}
+      run_java: ${{ !inputs.skip_unchanged || github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.java == 'true' }}
+      run_go: ${{ !inputs.skip_unchanged || github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.go == 'true' }}
+      run_swift: ${{ !inputs.skip_unchanged || github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.swift == 'true' }}
+      run_ruby: ${{ !inputs.skip_unchanged || github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.ruby == 'true' }}
+      run_php: ${{ !inputs.skip_unchanged || github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.php == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: inputs.skip_unchanged && github.event_name == 'pull_request'
+        with:
+          filters: |
+            rust:
+              - 'rust/**'
+            csharp:
+              - 'csharp/**'
+            java:
+              - 'java/**'
+            go:
+              - 'go/**'
+            swift:
+              - 'swift/**'
+            ruby:
+              - 'ruby/**'
+            php:
+              - 'php/**'
+            python:
+              - 'python/**'
+
   build-native:
+    needs: paths
+    if: needs.paths.outputs.run_native == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -167,7 +246,116 @@ jobs:
           name: native-${{ matrix.rid }}
           path: out/${{ matrix.lib_name }}
 
-      # C#: the real [LibraryImport] resolution/marshalling path per OS.
+      # Python (PyO3 feature), every leg — the only Python backend, so it's proven here
+      # rather than deferred to a release-time-only build.
+      - uses: actions/setup-python@v7
+        if: inputs.pyo3
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Build Python (PyO3) extension
+        if: inputs.pyo3
+        working-directory: rust
+        run: cargo build --release --features python
+
+      - name: Stage Python (PyO3) extension
+        if: inputs.pyo3
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            macOS)   cp "rust/target/release/lib${{ inputs.crate }}.dylib" "python/src/${{ inputs.crate }}/_native.so" ;;
+            Linux)   cp "rust/target/release/lib${{ inputs.crate }}.so" "python/src/${{ inputs.crate }}/_native.so" ;;
+            Windows) cp "rust/target/release/${{ inputs.crate }}.dll" "python/src/${{ inputs.crate }}/_native.pyd" ;;
+          esac
+
+      - name: Test Python bindings
+        if: inputs.pyo3
+        working-directory: python
+        shell: bash
+        run: |
+          pip install pytest
+          pytest
+
+      # Ruby (Magnus feature), unix legs only.
+      - name: Point Xcode at a full toolchain (works around a Ruby native-extension mkmf issue)
+        if: inputs.magnus && runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - uses: ruby/setup-ruby@v1
+        if: inputs.magnus && runner.os != 'Windows'
+        with:
+          ruby-version: ${{ inputs.ruby_version }}
+          bundler-cache: true
+          working-directory: ruby
+
+      - name: Build Ruby (Magnus) extension
+        if: inputs.magnus && runner.os != 'Windows'
+        working-directory: rust
+        run: cargo build --release --features ruby
+
+      - name: Stage Ruby (Magnus) extension
+        if: inputs.magnus && runner.os != 'Windows'
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            macOS) cp "rust/target/release/lib${{ inputs.crate }}.dylib" "ruby/lib/${{ inputs.crate }}_native.bundle" ;;
+            Linux) cp "rust/target/release/lib${{ inputs.crate }}.so" "ruby/lib/${{ inputs.crate }}_native.so" ;;
+          esac
+
+      - name: Test Ruby bindings (Magnus backend)
+        if: inputs.magnus && runner.os != 'Windows'
+        working-directory: ruby
+        run: bundle exec rspec
+
+      # PHP (ext-php-rs feature): compile-check only, no phpunit — this is a benchmark
+      # spike, not the shipped backend (that's ext-ffi, in test-php below).
+      - uses: shivammathur/setup-php@v2
+        if: inputs.php_native_spike && matrix.rid != 'win-arm64'
+        with:
+          php-version: ${{ inputs.php_version }}
+          extensions: ffi
+          tools: composer
+
+      - name: Build PHP (ext-php-rs) extension (benchmark spike, compile-check only)
+        if: inputs.php_native_spike && matrix.rid != 'win-arm64'
+        working-directory: rust
+        run: cargo build --release --features php
+
+  # C#: the real [LibraryImport] resolution/marshalling path per OS.
+  test-csharp:
+    needs: [paths, build-native]
+    if: needs.paths.outputs.run_csharp == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: macos-26-intel
+            rid: osx-x64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: macos-latest
+            rid: osx-arm64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: windows-latest
+            rid: win-x64
+            lib_name: ${{ inputs.crate }}.dll
+          - os: windows-11-arm
+            rid: win-arm64
+            lib_name: ${{ inputs.crate }}.dll
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-${{ matrix.rid }}
+          path: out
+
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
@@ -183,7 +371,41 @@ jobs:
       - name: Test C# bindings against this platform's native lib
         run: dotnet test --project ${{ inputs.csharp_test_project }} -c Release
 
-      # Java: the real FFM downcall path per OS.
+  # Java: the real FFM downcall path per OS.
+  test-java:
+    needs: [paths, build-native]
+    if: needs.paths.outputs.run_java == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: macos-26-intel
+            rid: osx-x64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: macos-latest
+            rid: osx-arm64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: windows-latest
+            rid: win-x64
+            lib_name: ${{ inputs.crate }}.dll
+          - os: windows-11-arm
+            rid: win-arm64
+            lib_name: ${{ inputs.crate }}.dll
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-${{ matrix.rid }}
+          path: out
+
       - uses: actions/setup-java@v6
         with:
           distribution: "temurin"
@@ -203,28 +425,97 @@ jobs:
           chmod +x gradlew
           ./gradlew test --console=plain
 
-      # Go: cgo and/or purego, whichever backends the repo ships. go_windows=false for
-      # cgo-only bindings until their purego fallback lands.
+  # Go: cgo and/or purego, whichever backends the repo ships. go_windows=false for
+  # cgo-only bindings until their purego fallback lands — handled here as a job-level skip
+  # per Windows matrix instance rather than a per-step conditional.
+  test-go:
+    needs: [paths, build-native]
+    if: needs.paths.outputs.run_go == 'true' && inputs.go
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: macos-26-intel
+            rid: osx-x64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: macos-latest
+            rid: osx-arm64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: windows-latest
+            rid: win-x64
+            lib_name: ${{ inputs.crate }}.dll
+          - os: windows-11-arm
+            rid: win-arm64
+            lib_name: ${{ inputs.crate }}.dll
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-${{ matrix.rid }}
+          path: out
+
       - uses: actions/setup-go@v7
-        if: inputs.go && (inputs.go_windows || runner.os != 'Windows')
+        if: inputs.go_windows || !contains(matrix.os, 'windows')
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
       - name: Place native lib for Go in-repo testing
-        if: inputs.go && (inputs.go_windows || runner.os != 'Windows')
+        if: inputs.go_windows || !contains(matrix.os, 'windows')
         shell: bash
         run: |
           mkdir -p "go/native/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "go/native/${{ matrix.rid }}/"
 
       - name: Test Go bindings against this platform's native lib
-        if: inputs.go && (inputs.go_windows || runner.os != 'Windows')
+        if: inputs.go_windows || !contains(matrix.os, 'windows')
         working-directory: go
         run: go test ./...
 
-      # Swift: dlopen/dlsym (LoadLibraryW/GetProcAddress on Windows) + @convention(c).
-      # SwiftyLab/setup-swift for its verified windows-11-arm support.
+  # Swift: dlopen/dlsym (LoadLibraryW/GetProcAddress on Windows) + @convention(c).
+  # SwiftyLab/setup-swift for its verified windows-11-arm support.
+  test-swift:
+    needs: [paths, build-native]
+    if: needs.paths.outputs.run_swift == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: macos-26-intel
+            rid: osx-x64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: macos-latest
+            rid: osx-arm64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: windows-latest
+            rid: win-x64
+            lib_name: ${{ inputs.crate }}.dll
+          - os: windows-11-arm
+            rid: win-arm64
+            lib_name: ${{ inputs.crate }}.dll
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-${{ matrix.rid }}
+          path: out
+
       - uses: SwiftyLab/setup-swift@v1.14.0
         with:
           swift-version: ${{ inputs.swift_version }}
@@ -239,8 +530,43 @@ jobs:
         working-directory: swift
         run: swift test
 
-      # Defensive no-op: GHA macOS runners have hit xcode-select-not-pointed-at-full-Xcode
-      # failures in Ruby native-extension builds.
+  # The Fiddle backend, forced explicitly — the universal zero-compile path every platform
+  # must keep green regardless of whether the Magnus extension exists there (built and
+  # tested separately, in build-native).
+  test-ruby-fiddle:
+    needs: [paths, build-native]
+    if: needs.paths.outputs.run_ruby == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: macos-26-intel
+            rid: osx-x64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: macos-latest
+            rid: osx-arm64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: windows-latest
+            rid: win-x64
+            lib_name: ${{ inputs.crate }}.dll
+          - os: windows-11-arm
+            rid: win-arm64
+            lib_name: ${{ inputs.crate }}.dll
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-${{ matrix.rid }}
+          path: out
+
       - name: Point Xcode at a full toolchain (works around a Ruby native-extension mkmf issue)
         if: runner.os == 'macOS'
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
@@ -257,8 +583,6 @@ jobs:
           mkdir -p "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}/"
 
-      # The Fiddle backend, forced explicitly — the universal zero-compile path every
-      # platform must keep green regardless of whether the Magnus extension exists there.
       # (bash + export because an env: mapping key can't be an expression.)
       - name: Test Ruby bindings (Fiddle backend) against this platform's native lib
         working-directory: ruby
@@ -267,97 +591,65 @@ jobs:
           export ${{ inputs.pure_env }}=1
           bundle exec rspec
 
-      # The Magnus extension backend, unix legs: built against this leg's Ruby, staged
-      # under the require name (DLEXT: .so on Linux, .bundle on macOS), same suite again
-      # with auto-selection picking it up. Windows stays on Fiddle: RubyInstaller rubies
-      # are MinGW-built — a windows-gnu-target exercise queued for the packaging round.
-      - name: Build Magnus extension
-        if: inputs.magnus && runner.os != 'Windows'
-        working-directory: ruby/native
-        run: cargo build --release
+  # PHP: the built-in ext-ffi path (the real, shipped backend — the ext-php-rs feature
+  # built in build-native is a separate benchmark spike). win-arm64 excluded from the
+  # matrix — PHP has never shipped a native Windows ARM64 build; it runs under x64
+  # emulation there, which can never load an ARM64 native lib, and the real PHP-as-x64
+  # story is covered by win-x64.
+  test-php:
+    needs: [paths, build-native]
+    if: needs.paths.outputs.run_php == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: macos-26-intel
+            rid: osx-x64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: macos-latest
+            rid: osx-arm64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: windows-latest
+            rid: win-x64
+            lib_name: ${{ inputs.crate }}.dll
+          - os: windows-11-arm
+            rid: win-arm64
+            lib_name: ${{ inputs.crate }}.dll
+        exclude:
+          - rid: win-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
 
-      - name: Stage Magnus extension
-        if: inputs.magnus && runner.os != 'Windows'
-        shell: bash
-        run: |
-          case "${{ runner.os }}" in
-            macOS) cp "ruby/native/target/release/lib${{ inputs.crate }}_native.dylib" "ruby/lib/${{ inputs.crate }}_native.bundle" ;;
-            Linux) cp "ruby/native/target/release/lib${{ inputs.crate }}_native.so" "ruby/lib/${{ inputs.crate }}_native.so" ;;
-          esac
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-${{ matrix.rid }}
+          path: out
 
-      - name: Test Ruby bindings (Magnus backend)
-        if: inputs.magnus && runner.os != 'Windows'
-        working-directory: ruby
-        run: bundle exec rspec
-
-      # PHP: the built-in ext-ffi path. Skipped on win-arm64 — PHP has never shipped a
-      # native Windows ARM64 build; it runs under x64 emulation there, which can never
-      # load an ARM64 native lib, and the real PHP-as-x64 story is covered by win-x64.
       - uses: shivammathur/setup-php@v2
-        if: matrix.rid != 'win-arm64'
         with:
           php-version: ${{ inputs.php_version }}
           extensions: ffi
           tools: composer
 
       - name: Install PHP dependencies
-        if: matrix.rid != 'win-arm64'
         working-directory: php
         run: composer install --no-interaction --prefer-dist
 
       - name: Place native lib for PHP in-repo testing
-        if: matrix.rid != 'win-arm64'
         shell: bash
         run: |
           mkdir -p "php/src/native/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "php/src/native/${{ matrix.rid }}/"
 
       - name: Test PHP bindings against this platform's native lib
-        if: matrix.rid != 'win-arm64'
         working-directory: php
         # Through `php`, not bare — the Composer proxy is a shebang script the Windows
         # legs' default pwsh can't execute.
         run: php vendor/bin/phpunit
-
-      # Python: the PyO3 extension only — no ctypes fallback anymore, so no zero-compile
-      # path and no Pyodide/WASM story either (dropped together; real per-platform wheels
-      # make the "no compiler needed to install" goal already, and Pyodide can come back
-      # if that's ever actually needed). Windows needs no extra toolchain beyond what the
-      # core already builds with: the MSVC linker plus CPython's own import library (inside
-      # the setup-python installation, found by PyO3's build script via the interpreter on
-      # PATH).
-      - uses: actions/setup-python@v7
-        with:
-          python-version: ${{ inputs.python_version }}
-
-      # maturin develop is the canonical build+stage mechanism (matches maturin's own mixed-
-      # project convention — the compiled extension nests inside the package, e.g.
-      # hyperuuid._native, per [tool.maturin] in pyproject.toml). An explicit VIRTUAL_ENV
-      # avoids depending on a literal ".venv"-named directory or a platform-specific activate
-      # script — maturin just needs to know where to install. Testing goes straight through
-      # this, not `pip install -e`: pip's own editable-install path through maturin's PEP 517
-      # backend defaults to a debug build and would silently rebuild (and reinstall over) the
-      # release extension this step just staged — confirmed locally, not assumed.
-      - name: Install maturin
-        if: inputs.pyo3
-        run: pip install maturin
-
-      - name: Create throwaway venv for maturin develop
-        if: inputs.pyo3
-        working-directory: python
-        run: python -m venv .venv
-
-      - name: Build and stage PyO3 extension (maturin develop)
-        if: inputs.pyo3
-        working-directory: python
-        shell: bash
-        run: |
-          export VIRTUAL_ENV="$PWD/.venv"
-          maturin develop --release --manifest-path native/Cargo.toml
-
-      - name: Test Python bindings
-        if: inputs.pyo3
-        working-directory: python
-        run: |
-          pip install pytest
-          pytest
