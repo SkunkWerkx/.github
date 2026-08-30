@@ -632,11 +632,6 @@ jobs:
           - os: windows-latest
             rid: win-x64
             lib_name: ${{ inputs.crate }}.dll
-          - os: windows-11-arm
-            rid: win-arm64
-            lib_name: ${{ inputs.crate }}.dll
-        exclude:
-          - rid: win-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
