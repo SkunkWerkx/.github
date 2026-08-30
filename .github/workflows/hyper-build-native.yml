@@ -32,11 +32,11 @@ name: HyperForge — build native core, test every binding
 #     gates its Windows path on a nightly-only Rust feature, incompatible with the stable
 #     toolchain every leg here builds on (confirmed by a real E0554 failure, not assumed).
 #
-# skip_unchanged (ci.yml passes true; release.yml leaves the default false, so a real
-# publish always tests everything) drives a `paths` job that decides, per PR, which of the
-# phase-2 jobs — and whether build-native itself — can be skipped outright. Only meaningful
-# for pull_request events; workflow_dispatch/push always run everything, since there's no
-# PR diff to filter against.
+# An earlier version of this file had a `paths` job (dorny/paths-filter) skipping phase-2
+# jobs per PR when nothing relevant changed — abandoned once splitting build-native from the
+# per-binding test jobs (the two-phase structure above) delivered the real wall-clock win on
+# its own: nothing about testing C# waits on Java's toolchain setup, so there was nothing
+# left worth skipping.
 #
 # The archaeology this file banks, so no Hyper* repo re-learns it (each lesson also
 # commented at the step that pays it):
@@ -150,54 +150,9 @@ on:
         required: false
         type: string
         default: "6.3"
-      skip_unchanged:
-        description: "Skip a phase-2 job (and build-native itself) when nothing relevant changed in this PR (pull_request events only — always false-equivalent otherwise). Pass true from ci.yml; leave the default for release.yml, which must always test everything before a real publish."
-        required: false
-        type: boolean
-        default: false
 
 jobs:
-  # Decides which jobs actually need to run. Always executes (cheap — one checkout, one
-  # filter step); the filter step itself only runs when skip_unchanged is actually in play,
-  # so this costs nothing extra for release.yml's always-run-everything callers.
-  paths:
-    runs-on: ubuntu-latest
-    outputs:
-      run_native: ${{ !inputs.skip_unchanged || github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.csharp == 'true' || steps.filter.outputs.java == 'true' || steps.filter.outputs.go == 'true' || steps.filter.outputs.swift == 'true' || steps.filter.outputs.ruby == 'true' || steps.filter.outputs.php == 'true' || steps.filter.outputs.python == 'true' }}
-      run_csharp: ${{ !inputs.skip_unchanged || github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.csharp == 'true' }}
-      run_java: ${{ !inputs.skip_unchanged || github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.java == 'true' }}
-      run_go: ${{ !inputs.skip_unchanged || github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.go == 'true' }}
-      run_swift: ${{ !inputs.skip_unchanged || github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.swift == 'true' }}
-      run_ruby: ${{ !inputs.skip_unchanged || github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.ruby == 'true' }}
-      run_php: ${{ !inputs.skip_unchanged || github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.php == 'true' }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: dorny/paths-filter@v3
-        id: filter
-        if: inputs.skip_unchanged && github.event_name == 'pull_request'
-        with:
-          filters: |
-            rust:
-              - 'rust/**'
-            csharp:
-              - 'csharp/**'
-            java:
-              - 'java/**'
-            go:
-              - 'go/**'
-            swift:
-              - 'swift/**'
-            ruby:
-              - 'ruby/**'
-            php:
-              - 'php/**'
-            python:
-              - 'python/**'
-
   build-native:
-    needs: paths
-    if: needs.paths.outputs.run_native == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -337,8 +292,7 @@ jobs:
 
   # C#: the real [LibraryImport] resolution/marshalling path per OS.
   test-csharp:
-    needs: [paths, build-native]
-    if: needs.paths.outputs.run_csharp == 'true'
+    needs: build-native
     strategy:
       fail-fast: false
       matrix:
@@ -387,8 +341,7 @@ jobs:
 
   # Java: the real FFM downcall path per OS.
   test-java:
-    needs: [paths, build-native]
-    if: needs.paths.outputs.run_java == 'true'
+    needs: build-native
     strategy:
       fail-fast: false
       matrix:
@@ -443,8 +396,8 @@ jobs:
   # cgo-only bindings until their purego fallback lands — handled here as a job-level skip
   # per Windows matrix instance rather than a per-step conditional.
   test-go:
-    needs: [paths, build-native]
-    if: needs.paths.outputs.run_go == 'true' && inputs.go
+    needs: build-native
+    if: inputs.go
     strategy:
       fail-fast: false
       matrix:
@@ -497,8 +450,7 @@ jobs:
   # Swift: dlopen/dlsym (LoadLibraryW/GetProcAddress on Windows) + @convention(c).
   # SwiftyLab/setup-swift for its verified windows-11-arm support.
   test-swift:
-    needs: [paths, build-native]
-    if: needs.paths.outputs.run_swift == 'true'
+    needs: build-native
     strategy:
       fail-fast: false
       matrix:
@@ -548,8 +500,7 @@ jobs:
   # must keep green regardless of whether the Magnus extension exists there (built and
   # tested separately, in build-native).
   test-ruby-fiddle:
-    needs: [paths, build-native]
-    if: needs.paths.outputs.run_ruby == 'true'
+    needs: build-native
     strategy:
       fail-fast: false
       matrix:
@@ -611,8 +562,7 @@ jobs:
   # emulation there, which can never load an ARM64 native lib, and the real PHP-as-x64
   # story is covered by win-x64.
   test-php:
-    needs: [paths, build-native]
-    if: needs.paths.outputs.run_php == 'true'
+    needs: build-native
     strategy:
       fail-fast: false
       matrix:
