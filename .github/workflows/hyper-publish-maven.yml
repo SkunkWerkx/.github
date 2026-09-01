@@ -66,6 +66,13 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # attest-build-provenance mints an OIDC token to sign with and records the result. A
+    # reusable workflow can never escalate past what its caller was granted, so the caller's
+    # own `maven-publish` job has to hand these down too.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
 
@@ -107,3 +114,23 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_SIGNING_KEY_PASSWORD }}
         run: ./gradlew publishAndReleaseToMavenCentral
+
+      # Attested after the publish task, over build/libs/*.jar — the main jar plus sources
+      # and javadoc, the very outputs that task packed, signed and uploaded. Attesting
+      # afterwards is what avoids a repack: publishAndReleaseToMavenCentral fuses pack,
+      # sign, upload and release into one task, so there is no earlier moment holding the
+      # final bytes, and a separate `./gradlew jar` beforehand would attest a rebuild rather
+      # than the artifact that shipped (Gradle jars are only reproducible when explicitly
+      # configured for it, which is not something to lean on unexamined).
+      #
+      # Maven Central serves those bytes unmodified — confirmed against the live artifact,
+      # not assumed: repo1.maven.org's hyperuuid-0.1.1.jar hashes to
+      # 8e131b80b9f6a8431a7e3c46f28183c0f92e9b3d, exactly the value inside the
+      # hyperuuid-0.1.1.jar.sha1 Gradle uploaded beside it.
+      #
+      #     gh attestation verify <artifact>-<version>.jar \
+      #       --repo <owner>/<repo> --signer-repo SkunkWerkx/.github
+      - name: Attest the published jars
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ inputs.java_project_dir }}/build/libs/*.jar
