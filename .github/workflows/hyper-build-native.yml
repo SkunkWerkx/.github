@@ -115,9 +115,10 @@ on:
           workflow run and commit, verifiable by a consumer with `gh attestation verify`.
           On by default: every artifact this forge produces should be verifiable, and an
           unsigned binary is exactly the thing a downstream consumer can't take on trust.
-          Skipped automatically on pull_request (a fork PR's token cannot sign). The CALLING
-          job must grant `id-token: write` and `attestations: write` — a reusable workflow
-          cannot escalate its own permissions, so a caller that omits them must pass false.
+          Runs on pushes and on same-repo pull requests; skipped only for fork PRs, whose
+          tokens cannot sign. The CALLING job must grant `id-token: write` and
+          `attestations: write` — a reusable workflow cannot escalate its own permissions, so
+          a caller that omits them must pass false.
         required: false
         type: boolean
         default: true
@@ -244,8 +245,16 @@ jobs:
       # binds this exact binary to this workflow run, this commit, and this source repo,
       # and `gh attestation verify <file> --repo <owner>/<repo>` checks it offline against
       # GitHub's transparency log without trusting whoever handed over the file.
+      # Runs on same-repo pull requests too, not just pushes. Only a FORK's token genuinely
+      # can't sign, and the distinction matters concretely here: a repo that stages these
+      # artifacts back into its own tree after merge (see HyperUuid's stage-native-binaries.yml)
+      # pulls them from the PR's own run, so skipping all PRs would leave exactly the committed
+      # binaries — the ones a reader can't inspect — as the only unattested artifacts.
       - name: Attest native build provenance
-        if: inputs.attest_native && github.event_name != 'pull_request'
+        if: >-
+          inputs.attest_native &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/attest-build-provenance@v3
         with:
           subject-path: out/${{ matrix.lib_name }}
