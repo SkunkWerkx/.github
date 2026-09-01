@@ -420,13 +420,22 @@ jobs:
       # ILxxxx/AOTxxxx trim diagnostic, a real native binary comes out the other side, and
       # that binary runs its own correctness assertions against the native core and exits 0.
       # The log is uploaded either way, so a failure is diagnosable from the artifact alone.
+      #
+      # -p: not /p:. This step runs under `shell: bash`, which on a Windows runner is Git
+      # Bash (MSYS2), and MSYS2 rewrites arguments that look like POSIX paths on their way
+      # to a native Windows process. It ate the leading slash off /p:PublishAot=true, so
+      # MSBuild received a bare `p:PublishAot=true` and read it as a SECOND project file:
+      # "MSBUILD : error MSB1008: Only one project can be specified." Confirmed from the
+      # failing run's own echoed "Full command line:". Both Windows legs failed; every
+      # non-Windows leg passed, because only MSYS2 does this. The -p: spelling is
+      # identical to MSBuild and is left alone by the conversion, so it works everywhere.
       - name: Native AOT publish (zero trim warnings required)
         if: inputs.csharp_aot_project != ''
         shell: bash
         run: |
           set -uo pipefail
           dotnet publish "${{ inputs.csharp_aot_project }}" \
-            -c Release -r ${{ matrix.rid }} /p:PublishAot=true \
+            -c Release -r ${{ matrix.rid }} -p:PublishAot=true \
             -o aot-out 2>&1 | tee aot-publish.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
