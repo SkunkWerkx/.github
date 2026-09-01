@@ -99,6 +99,28 @@ on:
         required: false
         type: string
         default: ""
+      csharp_aot_project:
+        description: >
+          If set, Native-AOT-publish this project on every leg and fail the run on any
+          ILxxxx/AOTxxxx trim warning, then execute the published binary and require exit 0.
+          The publish log uploads as aot-report-{rid} so the result is a downloadable receipt
+          rather than a README claim. Assumes the project's assembly name matches its .csproj
+          filename (true for a plain smoke-test exe that doesn't override AssemblyName).
+        required: false
+        type: string
+        default: ""
+      attest_native:
+        description: >
+          Emit a signed SLSA build-provenance attestation binding each native library to this
+          workflow run and commit, verifiable by a consumer with `gh attestation verify`.
+          On by default: every artifact this forge produces should be verifiable, and an
+          unsigned binary is exactly the thing a downstream consumer can't take on trust.
+          Skipped automatically on pull_request (a fork PR's token cannot sign). The CALLING
+          job must grant `id-token: write` and `attestations: write` — a reusable workflow
+          cannot escalate its own permissions, so a caller that omits them must pass false.
+        required: false
+        type: boolean
+        default: true
       jdk_version:
         description: "Temurin major version (23 is the newest with win-arm64 builds)"
         required: false
@@ -213,6 +235,20 @@ jobs:
         with:
           name: native-${{ matrix.rid }}
           path: out/${{ matrix.lib_name }}
+
+      # Provenance for the one artifact a consumer can't reproduce. The Rust build is
+      # deterministic on a fixed toolchain, but it is NOT bit-reproducible across machines —
+      # a local rustc build and this runner's differ in hash and size from embedded build
+      # paths and toolchain version alone — so "rebuild it and compare checksums" is not a
+      # verification path anyone downstream can actually use. A signed attestation is: it
+      # binds this exact binary to this workflow run, this commit, and this source repo,
+      # and `gh attestation verify <file> --repo <owner>/<repo>` checks it offline against
+      # GitHub's transparency log without trusting whoever handed over the file.
+      - name: Attest native build provenance
+        if: inputs.attest_native && github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: out/${{ matrix.lib_name }}
 
       # Python (PyO3 feature), every leg — the only Python backend, so it's proven here
       # rather than deferred to a release-time-only build.
@@ -369,6 +405,48 @@ jobs:
 
       - name: Test C# bindings against this platform's native lib
         run: dotnet test --project ${{ inputs.csharp_test_project }} -c Release
+
+      # The bar here is "zero warnings, exit 0" on every platform, not "the csproj sets
+      # PublishAot". Three separate things get proven per leg: the publish emits no
+      # ILxxxx/AOTxxxx trim diagnostic, a real native binary comes out the other side, and
+      # that binary runs its own correctness assertions against the native core and exits 0.
+      # The log is uploaded either way, so a failure is diagnosable from the artifact alone.
+      - name: Native AOT publish (zero trim warnings required)
+        if: inputs.csharp_aot_project != ''
+        shell: bash
+        run: |
+          set -uo pipefail
+          dotnet publish "${{ inputs.csharp_aot_project }}" \
+            -c Release -r ${{ matrix.rid }} /p:PublishAot=true \
+            -o aot-out 2>&1 | tee aot-publish.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Native AOT publish failed for ${{ matrix.rid }} (exit $status)"
+            exit "$status"
+          fi
+          if grep -nE 'warning (IL|AOT)[0-9]{4}' aot-publish.log; then
+            echo "::error::Native AOT publish emitted trim/AOT warnings on ${{ matrix.rid }}"
+            exit 1
+          fi
+          echo "No ILxxxx/AOTxxxx diagnostics on ${{ matrix.rid }}." | tee -a aot-publish.log
+
+      - name: Run the AOT-published binary (must exit 0)
+        if: inputs.csharp_aot_project != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          name=$(basename "${{ inputs.csharp_aot_project }}" .csproj)
+          exe="aot-out/$name"
+          if [ "$RUNNER_OS" = "Windows" ]; then exe="$exe.exe"; fi
+          ls -l "$exe" | tee -a aot-publish.log
+          "./$exe" 2>&1 | tee -a aot-publish.log
+
+      - name: Upload the AOT report
+        if: always() && inputs.csharp_aot_project != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: aot-report-${{ matrix.rid }}
+          path: aot-publish.log
 
   # Java: the real FFM downcall path per OS.
   test-java:

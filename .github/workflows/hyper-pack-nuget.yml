@@ -128,6 +128,26 @@ jobs:
       - name: Pack
         run: dotnet pack ${{ inputs.csproj_path }} -c Release -o nupkg-org
 
+      # Attests the package as built, before it leaves this pipeline. nuget.org will later
+      # add its repository signature as a `.signature.p7s` entry INSIDE the .nupkg zip, which
+      # changes the file's SHA-256 — so this attestation does not match the copy served from
+      # the feed. It is still worth having, for two reasons: it is the semantically honest
+      # provenance claim (this workflow really did produce these bytes), and because the
+      # mutation is a single added zip entry, a consumer can recover the attested artifact
+      # exactly:
+      #
+      #     zip -d HyperUuid.1.2.3.nupkg .signature.p7s
+      #     gh attestation verify HyperUuid.1.2.3.nupkg --repo <owner>/<repo>
+      #
+      # Each repo's release.yml additionally attests the finalized, repository-signed package
+      # post-publish, which is the path that needs no such surgery — see the publish job
+      # there. Two attestations over two digests, both valid, covering both verification
+      # routes. (The push itself can't run from this forge at all — see the header.)
+      - name: Attest the packed .nupkg (pre-push bytes)
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: nupkg-org/*.nupkg
+
       # Both files, not just *.nupkg: dotnet nuget push auto-detects and pushes a sibling
       # .snupkg from the same folder, but only if it actually made it this far — the
       # artifact hand-off is a real boundary, not just the push command's own glob.
