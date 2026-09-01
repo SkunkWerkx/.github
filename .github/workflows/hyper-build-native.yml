@@ -227,6 +227,7 @@ jobs:
         run: cargo test --release
 
       - name: Collect native artifact
+        id: native_lib
         shell: bash
         run: |
           mkdir -p out
@@ -375,53 +376,53 @@ jobs:
         working-directory: rust
         run: cargo build --release --features php
 
-  # C#: the real [LibraryImport] resolution/marshalling path per OS.
-  test-csharp:
-    needs: build-native
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            rid: linux-x64
-            lib_name: lib${{ inputs.crate }}.so
-          - os: ubuntu-24.04-arm
-            rid: linux-arm64
-            lib_name: lib${{ inputs.crate }}.so
-          - os: macos-26-intel
-            rid: osx-x64
-            lib_name: lib${{ inputs.crate }}.dylib
-          - os: macos-latest
-            rid: osx-arm64
-            lib_name: lib${{ inputs.crate }}.dylib
-          - os: windows-latest
-            rid: win-x64
-            lib_name: ${{ inputs.crate }}.dll
-          - os: windows-11-arm
-            rid: win-arm64
-            lib_name: ${{ inputs.crate }}.dll
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
+      # ---------------------------------------------------------------------------
+      # Every binding's suite, in this same job, against the .dylib/.so/.dll this job
+      # just built.
+      #
+      # These were six separate matrixed jobs (test-csharp/java/go/swift/ruby-fiddle/php),
+      # each re-doing checkout + download-artifact + toolchain setup to run a suite that in
+      # the Ruby and PHP cases takes under a second. That cost ~50s of pure per-job overhead
+      # per RID, and — the reason this changed — put 14 macOS jobs on the board against
+      # GitHub's 5-concurrent-macOS cap. Observed on run 33518617482: every macOS job but one
+      # finished inside 11 minutes, and the last (test-go, osx-arm64) sat queued for 20+
+      # minutes after slots had freed. Waiting on a starved job is not a tradeoff worth any
+      # amount of per-binding job granularity.
+      #
+      # Collapsed, the whole matrix is 6 jobs instead of 48 — 2 per OS family, comfortably
+      # under the cap, so nothing queues. This is not a new pattern here: Python, Ruby's
+      # Magnus backend and PHP's ext-php-rs spike were always tested in this job. It extends
+      # that to the remaining six rather than inventing anything.
+      #
+      # Two consequences worth stating:
+      #
+      #  * Every step below carries `!cancelled()` so one binding's failure does not mask the
+      #    other six. That isolation was free when these were separate jobs under
+      #    `fail-fast: false`; in one job it has to be asked for. A red step still names the
+      #    binding, so the diagnosis is as fast as it was before — it is the *parallelism*
+      #    that is given up here, not the reporting.
+      #  * The Ruby/PHP toolchains are NOT re-installed when the Magnus and ext-php-rs
+      #    sections above already installed them. shivammathur/setup-php alone measured 56s
+      #    on macOS, so blindly re-running it would have handed back most of the savings.
+      #    The conditions below are exact rather than convenient, which is why they are ugly.
+      # ---------------------------------------------------------------------------
 
-      - uses: actions/download-artifact@v8
-        with:
-          name: native-${{ matrix.rid }}
-          path: out
-
+      # C#: the real [LibraryImport] resolution/marshalling path per OS.
       - uses: actions/setup-dotnet@v6
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
           dotnet-quality: ${{ inputs.dotnet_quality }}
 
       - name: Place native lib for C# in-repo testing
-        if: inputs.csharp_runtimes_dir != ''
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_runtimes_dir != '' }}
         shell: bash
         run: |
           mkdir -p "${{ inputs.csharp_runtimes_dir }}/${{ matrix.rid }}/native"
           cp "out/${{ matrix.lib_name }}" "${{ inputs.csharp_runtimes_dir }}/${{ matrix.rid }}/native/"
 
       - name: Test C# bindings against this platform's native lib
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         run: dotnet test --project ${{ inputs.csharp_test_project }} -c Release
 
       # The bar here is "zero warnings, exit 0" on every platform, not "the csproj sets
@@ -439,7 +440,7 @@ jobs:
       # non-Windows leg passed, because only MSYS2 does this. The -p: spelling is
       # identical to MSBuild and is left alone by the conversion, so it works everywhere.
       - name: Native AOT publish (zero trim warnings required)
-        if: inputs.csharp_aot_project != ''
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' }}
         shell: bash
         run: |
           set -uo pipefail
@@ -458,7 +459,7 @@ jobs:
           echo "No ILxxxx/AOTxxxx diagnostics on ${{ matrix.rid }}." | tee -a aot-publish.log
 
       - name: Run the AOT-published binary (must exit 0)
-        if: inputs.csharp_aot_project != ''
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -469,216 +470,128 @@ jobs:
           "./$exe" 2>&1 | tee -a aot-publish.log
 
       - name: Upload the AOT report
-        if: always() && inputs.csharp_aot_project != ''
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: aot-report-${{ matrix.rid }}
           path: aot-publish.log
 
-  # Java: the real FFM downcall path per OS.
-  test-java:
-    needs: build-native
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            rid: linux-x64
-            lib_name: lib${{ inputs.crate }}.so
-          - os: ubuntu-24.04-arm
-            rid: linux-arm64
-            lib_name: lib${{ inputs.crate }}.so
-          - os: macos-26-intel
-            rid: osx-x64
-            lib_name: lib${{ inputs.crate }}.dylib
-          - os: macos-latest
-            rid: osx-arm64
-            lib_name: lib${{ inputs.crate }}.dylib
-          - os: windows-latest
-            rid: win-x64
-            lib_name: ${{ inputs.crate }}.dll
-          - os: windows-11-arm
-            rid: win-arm64
-            lib_name: ${{ inputs.crate }}.dll
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: native-${{ matrix.rid }}
-          path: out
-
+      # Java: the real FFM downcall path per OS.
       - uses: actions/setup-java@v6
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         with:
           distribution: "temurin"
           java-version: ${{ inputs.jdk_version }}
 
       - name: Place native lib for Java in-repo testing
-        if: inputs.java_resources_dir != ''
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java_resources_dir != '' }}
         shell: bash
         run: |
           mkdir -p "${{ inputs.java_resources_dir }}/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "${{ inputs.java_resources_dir }}/${{ matrix.rid }}/"
 
       - name: Test Java bindings against this platform's native lib
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         working-directory: java
         shell: bash
         run: |
           chmod +x gradlew
           ./gradlew test --console=plain
 
-  # Go: cgo and/or purego, whichever backends the repo ships. go_windows=false for
-  # cgo-only bindings until their purego fallback lands — handled here as a job-level skip
-  # per Windows matrix instance rather than a per-step conditional.
-  test-go:
-    needs: build-native
-    if: inputs.go
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            rid: linux-x64
-            lib_name: lib${{ inputs.crate }}.so
-          - os: ubuntu-24.04-arm
-            rid: linux-arm64
-            lib_name: lib${{ inputs.crate }}.so
-          - os: macos-26-intel
-            rid: osx-x64
-            lib_name: lib${{ inputs.crate }}.dylib
-          - os: macos-latest
-            rid: osx-arm64
-            lib_name: lib${{ inputs.crate }}.dylib
-          - os: windows-latest
-            rid: win-x64
-            lib_name: ${{ inputs.crate }}.dll
-          - os: windows-11-arm
-            rid: win-arm64
-            lib_name: ${{ inputs.crate }}.dll
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: native-${{ matrix.rid }}
-          path: out
-
+      # Go: cgo and/or purego, whichever backends the repo ships. go_windows=false for
+      # cgo-only bindings until their purego fallback lands.
       - uses: actions/setup-go@v7
-        if: inputs.go_windows || !contains(matrix.os, 'windows')
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && (inputs.go_windows || runner.os != 'Windows') }}
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
       - name: Place native lib for Go in-repo testing
-        if: inputs.go_windows || !contains(matrix.os, 'windows')
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && (inputs.go_windows || runner.os != 'Windows') }}
         shell: bash
         run: |
           mkdir -p "go/native/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "go/native/${{ matrix.rid }}/"
 
       - name: Test Go bindings against this platform's native lib
-        if: inputs.go_windows || !contains(matrix.os, 'windows')
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && (inputs.go_windows || runner.os != 'Windows') }}
         working-directory: go
         run: go test ./...
 
-  # Swift: dlopen/dlsym (LoadLibraryW/GetProcAddress on Windows) + @convention(c).
-  # SwiftyLab/setup-swift for its verified windows-11-arm support.
-  test-swift:
-    needs: build-native
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            rid: linux-x64
-            lib_name: lib${{ inputs.crate }}.so
-          - os: ubuntu-24.04-arm
-            rid: linux-arm64
-            lib_name: lib${{ inputs.crate }}.so
-          - os: macos-26-intel
-            rid: osx-x64
-            lib_name: lib${{ inputs.crate }}.dylib
-          - os: macos-latest
-            rid: osx-arm64
-            lib_name: lib${{ inputs.crate }}.dylib
-          - os: windows-latest
-            rid: win-x64
-            lib_name: ${{ inputs.crate }}.dll
-          - os: windows-11-arm
-            rid: win-arm64
-            lib_name: ${{ inputs.crate }}.dll
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: native-${{ matrix.rid }}
-          path: out
-
+      # Swift: dlopen/dlsym (LoadLibraryW/GetProcAddress on Windows) + @convention(c).
+      # SwiftyLab/setup-swift for its verified windows-11-arm support.
       - uses: SwiftyLab/setup-swift@v1.14.0
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         with:
           swift-version: ${{ inputs.swift_version }}
 
       - name: Place native lib for Swift in-repo testing
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         shell: bash
         run: |
           mkdir -p "swift/Sources/${{ inputs.project }}/NativeLibs/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "swift/Sources/${{ inputs.project }}/NativeLibs/${{ matrix.rid }}/"
 
       - name: Test Swift bindings against this platform's native lib
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         working-directory: swift
         run: swift test
 
-  # The Fiddle backend, forced explicitly — the universal zero-compile path every platform
-  # must keep green regardless of whether the Magnus extension exists there (built and
-  # tested separately, in build-native).
-  test-ruby-fiddle:
-    needs: build-native
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            rid: linux-x64
-            lib_name: lib${{ inputs.crate }}.so
-          - os: ubuntu-24.04-arm
-            rid: linux-arm64
-            lib_name: lib${{ inputs.crate }}.so
-          - os: macos-26-intel
-            rid: osx-x64
-            lib_name: lib${{ inputs.crate }}.dylib
-          - os: macos-latest
-            rid: osx-arm64
-            lib_name: lib${{ inputs.crate }}.dylib
-          - os: windows-latest
-            rid: win-x64
-            lib_name: ${{ inputs.crate }}.dll
-          - os: windows-11-arm
-            rid: win-arm64
-            lib_name: ${{ inputs.crate }}.dll
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
+      # PHP: the built-in ext-ffi path (the real, shipped backend — the ext-php-rs feature
+      # built above is a separate benchmark spike). win-arm64 skipped: PHP has never shipped
+      # a native Windows ARM64 build; it runs under x64 emulation there, which can never
+      # load an ARM64 native lib, and the real PHP-as-x64 story is covered by win-x64. This
+      # was a matrix omission when test-php was its own job; in one job it is a per-step
+      # condition, which is the same claim written differently.
+      #
+      # setup-php only when the ext-php-rs section above did not already run it — on Windows
+      # it never does (that section is unix-only), and it is skipped entirely when the caller
+      # sets php_native_spike=false.
+      - uses: shivammathur/setup-php@v2
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && (runner.os == 'Windows' || !inputs.php_native_spike) }}
         with:
-          name: native-${{ matrix.rid }}
-          path: out
+          php-version: ${{ inputs.php_version }}
+          extensions: ffi
+          tools: composer
 
+      - name: Install PHP dependencies
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' }}
+        working-directory: php
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Place native lib for PHP in-repo testing
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' }}
+        shell: bash
+        run: |
+          mkdir -p "php/src/native/${{ matrix.rid }}"
+          cp "out/${{ matrix.lib_name }}" "php/src/native/${{ matrix.rid }}/"
+
+      - name: Test PHP bindings against this platform's native lib
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' }}
+        working-directory: php
+        # Through `php`, not bare — the Composer proxy is a shebang script the Windows
+        # legs' default pwsh can't execute.
+        run: php vendor/bin/phpunit
+
+      # The Fiddle backend, forced explicitly — the universal zero-compile path every
+      # platform must keep green regardless of whether the Magnus extension exists there.
+      # Deliberately LAST: the mkmf workaround below repoints xcode-select for the whole
+      # job now that this shares a runner with Swift, so it runs after `swift test` rather
+      # than before it. Both toolchain steps are no-ops when the Magnus section above
+      # already ran them (unix legs with magnus=true).
       - name: Point Xcode at a full toolchain (works around a Ruby native-extension mkmf issue)
-        if: runner.os == 'macOS'
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'macOS' && !inputs.magnus }}
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
       - uses: ruby/setup-ruby@v1
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && (runner.os == 'Windows' || !inputs.magnus) }}
         with:
           ruby-version: ${{ inputs.ruby_version }}
           bundler-cache: true
           working-directory: ruby
 
-      - name: Place native lib for Ruby in-repo testing
+      - name: Place native lib for Ruby in-repo testing (Fiddle)
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         shell: bash
         run: |
           mkdir -p "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}"
@@ -686,65 +599,9 @@ jobs:
 
       # (bash + export because an env: mapping key can't be an expression.)
       - name: Test Ruby bindings (Fiddle backend) against this platform's native lib
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         working-directory: ruby
         shell: bash
         run: |
           export ${{ inputs.pure_env }}=1
           bundle exec rspec
-
-  # PHP: the built-in ext-ffi path (the real, shipped backend — the ext-php-rs feature
-  # built in build-native is a separate benchmark spike). win-arm64 excluded from the
-  # matrix — PHP has never shipped a native Windows ARM64 build; it runs under x64
-  # emulation there, which can never load an ARM64 native lib, and the real PHP-as-x64
-  # story is covered by win-x64.
-  test-php:
-    needs: build-native
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            rid: linux-x64
-            lib_name: lib${{ inputs.crate }}.so
-          - os: ubuntu-24.04-arm
-            rid: linux-arm64
-            lib_name: lib${{ inputs.crate }}.so
-          - os: macos-26-intel
-            rid: osx-x64
-            lib_name: lib${{ inputs.crate }}.dylib
-          - os: macos-latest
-            rid: osx-arm64
-            lib_name: lib${{ inputs.crate }}.dylib
-          - os: windows-latest
-            rid: win-x64
-            lib_name: ${{ inputs.crate }}.dll
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: native-${{ matrix.rid }}
-          path: out
-
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: ${{ inputs.php_version }}
-          extensions: ffi
-          tools: composer
-
-      - name: Install PHP dependencies
-        working-directory: php
-        run: composer install --no-interaction --prefer-dist
-
-      - name: Place native lib for PHP in-repo testing
-        shell: bash
-        run: |
-          mkdir -p "php/src/native/${{ matrix.rid }}"
-          cp "out/${{ matrix.lib_name }}" "php/src/native/${{ matrix.rid }}/"
-
-      - name: Test PHP bindings against this platform's native lib
-        working-directory: php
-        # Through `php`, not bare — the Composer proxy is a shebang script the Windows
-        # legs' default pwsh can't execute.
-        run: php vendor/bin/phpunit
