@@ -116,8 +116,10 @@ on:
         default: ""
       attest_native:
         description: >
-          Emit a signed SLSA build-provenance attestation binding each native library to this
-          workflow run and commit, verifiable by a consumer with `gh attestation verify`.
+          Emit a signed SLSA build-provenance attestation binding each shippable compiled
+          artifact — the plain FFI native library on every leg, plus the Magnus extension on
+          the unix legs when `magnus` is on — to this workflow run and commit, verifiable by
+          a consumer with `gh attestation verify`.
           On by default: every artifact this forge produces should be verifiable, and an
           unsigned binary is exactly the thing a downstream consumer can't take on trust.
           Runs on pushes and on same-repo pull requests; skipped only for fork PRs, whose
@@ -243,7 +245,7 @@ jobs:
           name: native-${{ matrix.rid }}
           path: out/${{ matrix.lib_name }}
 
-      # Provenance for the one artifact a consumer can't reproduce. The Rust build is
+      # Provenance for an artifact a consumer can't reproduce. The Rust build is
       # deterministic on a fixed toolchain, but it is NOT bit-reproducible across machines —
       # a local rustc build and this runner's differ in hash and size from embedded build
       # paths and toolchain version alone — so "rebuild it and compare checksums" is not a
@@ -358,6 +360,25 @@ jobs:
         with:
           name: ruby-native-${{ matrix.rid }}
           path: ruby/lib/${{ inputs.crate }}_native.*
+
+      # Attested for exactly the same reason as the plain native library above, and it is
+      # not a lesser case: a caller's release.yml drops this compiled extension straight
+      # into a precompiled RubyGems platform gem without recompiling it (see the
+      # rubygems-publish job's `native:gem` loop), so these bytes are what `gem install`
+      # puts on a consumer's machine. Left unsigned, the four Magnus legs would have been
+      # the only shippable artifacts this forge produces that a consumer cannot verify —
+      # the opposite of what attest_native's own description promises. Same verifying
+      # command as the native library:
+      #
+      #     gh attestation verify <file> --repo <owner>/<repo> --signer-repo SkunkWerkx/.github
+      - name: Attest Ruby (Magnus) extension provenance
+        if: >-
+          inputs.magnus && runner.os != 'Windows' && inputs.attest_native &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ruby/lib/${{ inputs.crate }}_native.*
 
       - name: Test Ruby bindings (Magnus backend)
         if: inputs.magnus && runner.os != 'Windows'
