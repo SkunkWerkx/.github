@@ -46,10 +46,11 @@ name: HyperForge — build native core, test every binding
 #     Windows-on-ARM hardware, at the same Magnus-vs-Fiddle ratios the x64 leg shows (416ns
 #     vs 2299ns on new_v4, 621ns vs 2474ns on new_v7). Two things genuinely differ from x64
 #     and both are handled in the build step: gnullvm is LLVM-based, so the linker driver is
-#     aarch64-w64-mingw32-clang from MSYS2's CLANGARM64 (which also makes bindgen work with
-#     no BINDGEN_EXTRA_CLANG_ARGS, that clang already defaulting to a MinGW triple), and
-#     libunwind has to be forced static or the extension picks up a libunwind.dll dependency
-#     no gem consumer would have.
+#     aarch64-w64-mingw32-clang from MSYS2's CLANGARM64 — setup-ruby installs exactly that on
+#     windows-11-arm (msys2-clangarm64.7z, MSYSTEM=CLANGARM64) — and libunwind has to be
+#     forced static or the extension picks up a libunwind.dll dependency no gem consumer
+#     would have. bindgen needs a --target redirect just like x64 does, and for a sharper
+#     reason: clang rejects the gnullvm triple outright. See the build step.
 #   - php (ext-php-rs): a benchmark spike, not wired into the shipped Composer package
 #     (that's ext-ffi, tested in the PHP section further down) — built here so it can't
 #     silently bit-rot, then load-checked, uploaded and attested like any other shippable
@@ -438,12 +439,16 @@ jobs:
                 rustup target add "$rust_target"
 
                 # rustc already picks aarch64-w64-mingw32-clang as the linker driver for this
-                # target by name, so there is no linker override to set — but its lib dir has
-                # to be located for the unwind flag below, and a toolchain that isn't there
-                # should fail here with something readable rather than deep inside lld.
-                # RubyInstaller's ARM devkit installs it as MSYS2's CLANGARM64 environment.
-                clang_bin="$(dirname "$(command -v aarch64-w64-mingw32-clang || command -v clang)")"
-                [ -n "$clang_bin" ] || { echo "::error::no CLANGARM64 toolchain found — aarch64-pc-windows-gnullvm cannot link"; exit 1; }
+                # target by name, so there is no linker override to set — but its prefix has
+                # to be located for the flags below, and a toolchain that isn't there should
+                # fail here with something readable rather than deep inside lld. setup-ruby
+                # provides it on windows-11-arm (it fetches msys2-clangarm64.7z and exports
+                # MSYSTEM=CLANGARM64); RubyInstaller's ARM devkit installs the same thing
+                # locally. Resolve the executable before dirname, not after — `dirname ""`
+                # is ".", so testing the dirname result would never catch a missing tool.
+                clang_exe="$(command -v aarch64-w64-mingw32-clang || command -v clang || true)"
+                [ -n "$clang_exe" ] || { echo "::error::no CLANGARM64 toolchain found — aarch64-pc-windows-gnullvm cannot build or link"; exit 1; }
+                clang_bin="$(dirname "$clang_exe")"
 
                 # libunwind must be linked statically. rustc emits its own -lunwind inside
                 # the linker's *dynamic* section, and CLANGARM64 ships both libunwind.a and
@@ -455,12 +460,24 @@ jobs:
                 # `-l static=` does not search the linker's default directories, so the -L
                 # is required alongside it, not decoration.
                 export RUSTFLAGS="-L native=$(win "$clang_bin/../lib") -l static=unwind"
-
-                # No BINDGEN_EXTRA_CLANG_ARGS counterpart to the x64 branch: the clang in
-                # CLANGARM64 already defaults to a MinGW target triple, so Ruby's MinGW
-                # headers parse as-is. It is x64's MSVC-defaulting clang that needs
-                # redirecting, not this one.
                 export LIBCLANG_PATH="${LIBCLANG_PATH:-$(win "$clang_bin")}"
+
+                # Same shape as the x64 branch, and for a sharper reason. bindgen hands clang
+                # the *Rust* target triple whenever cargo is cross-compiling, and clang does
+                # not understand `aarch64-pc-windows-gnullvm` — it fails with
+                # "version 'llvm' in target triple ... is invalid", then can't find stdalign.h
+                # because it never got as far as its own resource dir. `aarch64-w64-mingw32`
+                # is the same ABI spelled the way clang accepts, exactly as x64 spells its
+                # gnu target `x86_64-w64-mingw32` below.
+                #
+                # This was briefly believed unnecessary, from a local run where it genuinely
+                # was: with a gnullvm *host* toolchain, host == target, cargo isn't
+                # cross-compiling, and bindgen injects no --target at all. The runner's host
+                # is MSVC, so it does. A local build that skips this flag proves nothing
+                # about CI unless its host triple matches the runner's.
+                clang_inc="$(win "$("$clang_exe" -print-resource-dir)")/include"
+                mingw_inc="$(win "$(dirname "$clang_bin")")/include"
+                export BINDGEN_EXTRA_CLANG_ARGS="--target=aarch64-w64-mingw32 -isystem \"$clang_inc\" -isystem \"$mingw_inc\""
               else
                 rust_target=x86_64-pc-windows-gnu
                 rustup target add "$rust_target"
