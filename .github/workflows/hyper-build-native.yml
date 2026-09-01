@@ -1,42 +1,47 @@
 name: HyperForge — build native core, test every binding
 
-# The canonical Hyper* CI pipeline. Two phases:
+# The canonical Hyper* CI pipeline. ONE job per leg: `build-native`, matrixed across the 6
+# real-hardware legs, builds the core crate and then runs every binding's suite against the
+# .so/.dylib/.dll it just produced.
 #
-#   1. build-native: one crate (the core, plus its optional python/ruby/php extension
-#      features — see the crate's own Cargo.toml) built and tested fresh on each of the 6
-#      real-hardware legs. Feedback at the right level: a PyO3/Magnus/ext-php-rs compile
-#      break shows up in the same job as the plain core build, as a simple in-job
-#      `if: runner.os == ...` step, not a separate job with its own cross-job matrix
-#      exclude/if plumbing. The plain cdylib artifact (what every FFI-consuming binding
-#      dlopens) is uploaded here too.
-#   2. One job per FFI-consuming binding (test-csharp, test-java, test-go, test-swift,
-#      test-ruby-fiddle, test-php), each matrixed across the same 6 legs, each downloading
-#      only its own leg's artifact and running in parallel with every other binding's job —
-#      proving the real FFI load/marshalling path per OS, which cargo test alone cannot
-#      exercise. Nothing about testing C# needs to wait on Java's toolchain setup or vice
-#      versa.
+# It was two phases until 2026-09 — build-native, then six matrixed per-binding jobs
+# (test-csharp/java/go/swift/ruby-fiddle/php) each re-downloading the artifact. That shape
+# put 48 jobs on the board, 14 of them macOS, against GitHub's 5-concurrent-macOS cap. The
+# parallelism it bought was theoretical: on SkunkWerkx/HyperUuid run 33518617482 the macOS
+# legs ran in waves and one job sat queued 20+ minutes after the others had finished and
+# slots had freed. Collapsed, it is 6 jobs — 2 per OS family, under every cap, nothing
+# queues. Measured overhead it also removes: ~50s per leg of repeated checkout +
+# download-artifact + job setup, plus a duplicate Ruby and PHP toolchain install (setup-php
+# alone was 56s on macOS) that the Magnus/ext-php-rs sections had already paid for.
+#
+# What that costs, and how it is paid back: six jobs under `fail-fast: false` gave binding
+# isolation for free, so every binding step here carries `!cancelled()` to keep one
+# binding's failure from masking the other six, plus a
+# `steps.native_lib.conclusion == 'success'` guard so a broken core build aborts instead of
+# producing thirty derived failures. A red step still names its binding.
 #
 # python/ruby/php aren't FFI-consuming bindings in the same sense — each is an optional
 # feature of the SAME core crate (`--features python`/`ruby`/`php`), not a satellite crate
 # path-depending back on it, so there's no separate artifact hand-off to design around;
-# building the feature *is* proving it compiles, and staging+testing it happens right there
-# in phase 1:
+# building the feature *is* proving it compiles. These were always tested in this job, which
+# is why collapsing the rest in was an extension of the existing shape rather than a new
+# idea:
 #   - python (pyo3): every leg. This is the *only* Python backend (no ctypes fallback), and
 #     what every PyPI release ships, so it's proven on every PR, not deferred to release
 #     time. Gated by the `pyo3` input.
 #   - ruby (magnus): unix legs only (RubyInstaller's Windows rubies are MinGW-built —
 #     Magnus doesn't target that; Fiddle covers Windows). Gated by the `magnus` input.
 #   - php (ext-php-rs): a benchmark spike, not wired into the shipped Composer package
-#     (that's ext-ffi, tested in test-php below) — compiled here purely so it can't
+#     (that's ext-ffi, tested in the PHP section further down) — compiled here purely so it can't
 #     silently bit-rot, no phpunit run against it. All Windows legs skipped: ext-php-rs
 #     gates its Windows path on a nightly-only Rust feature, incompatible with the stable
 #     toolchain every leg here builds on (confirmed by a real E0554 failure, not assumed).
 #
-# An earlier version of this file had a `paths` job (dorny/paths-filter) skipping phase-2
-# jobs per PR when nothing relevant changed — abandoned once splitting build-native from the
-# per-binding test jobs (the two-phase structure above) delivered the real wall-clock win on
-# its own: nothing about testing C# waits on Java's toolchain setup, so there was nothing
-# left worth skipping.
+# An earlier version of this file had a `paths` job (dorny/paths-filter) skipping the
+# per-binding jobs per PR when nothing relevant changed. Abandoned then because splitting
+# build-native out seemed to deliver the wall-clock win on its own; still not wanted now,
+# for a better reason — with one job per leg there is nothing granular left to skip, and
+# every binding's suite runs against a freshly built core anyway.
 #
 # The archaeology this file banks, so no Hyper* repo re-learns it (each lesson also
 # commented at the step that pays it):
@@ -51,8 +56,8 @@ name: HyperForge — build native core, test every binding
 #     `cargo build` doesn't get this from PyO3/rb-sys/ext-php-rs the way maturin/
 #     rake-compiler builds do — harmless for the default, no-feature build too).
 #   - PHP never ships native Windows ARM64 (runs under x64 emulation there — can never
-#     load an ARM64 native lib), so the win-arm64 leg is excluded from test-php's matrix
-#     (and skips the php-feature compile-check in build-native); win-x64 covers real
+#     load an ARM64 native lib), so the win-arm64 leg skips the PHP steps entirely (both
+#     the ext-ffi suite and the php-feature compile-check); win-x64 covers real
 #     PHP-on-Windows.
 #   - `php vendor/bin/phpunit` must be invoked through `php` — the Composer proxy is a
 #     shebang script the Windows legs' default pwsh can't execute.
@@ -322,7 +327,7 @@ jobs:
 
       # The Magnus suite's own cross-backend agreement checks ("agrees with the Fiddle
       # backend on...") load Fiddle's path alongside Magnus's to compare them — needs this
-      # staged here too, not just in test-ruby-fiddle's own job.
+      # staged before the Magnus suite runs, not only by the Fiddle section further down.
       - name: Place native lib for Ruby in-repo testing
         if: inputs.magnus && runner.os != 'Windows'
         shell: bash
@@ -360,7 +365,7 @@ jobs:
         run: bundle exec rspec
 
       # PHP (ext-php-rs feature): compile-check only, no phpunit — this is a benchmark
-      # spike, not the shipped backend (that's ext-ffi, in test-php below). Windows
+      # spike, not the shipped backend (that's ext-ffi, further down). Windows
       # excluded entirely, not just win-arm64: ext-php-rs's Windows path gates on
       # `#![feature(abi_vectorcall)]`, a nightly-only Rust feature, and every leg here
       # builds on stable — confirmed by a real E0554 failure on win-x64, not assumed.
