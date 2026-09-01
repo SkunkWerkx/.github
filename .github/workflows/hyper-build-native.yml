@@ -243,8 +243,17 @@ jobs:
       # paths and toolchain version alone — so "rebuild it and compare checksums" is not a
       # verification path anyone downstream can actually use. A signed attestation is: it
       # binds this exact binary to this workflow run, this commit, and this source repo,
-      # and `gh attestation verify <file> --repo <owner>/<repo>` checks it offline against
-      # GitHub's transparency log without trusting whoever handed over the file.
+      # and `gh attestation verify` checks it offline against GitHub's transparency log
+      # without trusting whoever handed over the file. The verifying command needs BOTH
+      # halves of the identity:
+      #
+      #     gh attestation verify <file> --repo <owner>/<repo> --signer-repo SkunkWerkx/.github
+      #
+      # --repo alone asserts that the signing workflow lives in the caller repo too, and it
+      # does not — it lives HERE, in the forge, which is what Fulcio records as the build
+      # signer. Omitting --signer-repo fails with a bare `verifying with issuer
+      # "sigstore.dev"` that looks like a bad signature but is only an identity mismatch.
+      # (`--owner <owner>` is the looser alternative that sidesteps the distinction.)
       # Runs on same-repo pull requests too, not just pushes. Only a FORK's token genuinely
       # can't sign, and the distinction matters concretely here: a repo that stages these
       # artifacts back into its own tree after merge (see HyperUuid's stage-native-binaries.yml)

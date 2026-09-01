@@ -137,7 +137,14 @@ jobs:
       # exactly:
       #
       #     zip -d HyperUuid.1.2.3.nupkg .signature.p7s
-      #     gh attestation verify HyperUuid.1.2.3.nupkg --repo <owner>/<repo>
+      #     gh attestation verify HyperUuid.1.2.3.nupkg \
+      #       --repo <owner>/<repo> --signer-repo SkunkWerkx/.github
+      #
+      # --signer-repo is required for THIS attestation specifically, because the signing
+      # step is right here in the forge repo. The post-publish attestation below is signed
+      # by the caller's own release.yml, so that one verifies with --repo alone — the two
+      # halves genuinely take different commands, which is worth stating in each repo's
+      # README rather than leaving a consumer to guess from a failed verification.
       #
       # Each repo's release.yml additionally attests the finalized, repository-signed package
       # post-publish, which is the path that needs no such surgery — see the publish job
