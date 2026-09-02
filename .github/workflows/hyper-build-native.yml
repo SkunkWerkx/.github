@@ -34,14 +34,16 @@ name: HyperForge — build native core, test every binding
 #     backwards: MinGW is the *only* Windows flavour rb-sys targets. Its own
 #     data/toolchains.json maps ruby-platform x64-mingw-ucrt to rust-target
 #     x86_64-pc-windows-gnu, supported: true; what it does *not* support is
-#     x86_64-pc-windows-msvc. (Both Windows legs now actually build the *gnullvm* target
-#     rather than gnu — same mingw ABI, LLVM instead of GCC, 67% smaller on x64. rb-sys's
-#     table describes the toolchain it cross-compiles with, not an ABI requirement; the
-#     divergence is deliberate and tested. See the build step.) Real gems ship on the strength of that (wasmtime, blake3-rb
+#     x86_64-pc-windows-msvc. Real gems ship on the strength of that (wasmtime, blake3-rb
 #     both publish x64-mingw-ucrt on RubyGems today). Windows Fiddle is also where the
 #     fallback hurts most — measured on win-x64, Magnus is 5.9x faster on new_v4 (406ns vs
-#     2407ns) and 4.6x on new_v7, a far wider gap than any unix leg shows. See the Windows
-#     build step below for what differs there. Gated by the `magnus` input.
+#     2407ns) and 4.6x on new_v7, a far wider gap than any unix leg shows. Gated by the
+#     `magnus` input.
+#     Both Windows legs now build the *gnullvm* target rather than gnu — same mingw ABI,
+#     LLVM instead of GCC. That is a deliberate divergence from rb-sys's own table, which
+#     describes the toolchain it cross-compiles with rather than an ABI requirement, and it
+#     is what makes win-x64 67% smaller (1,040,384 -> 342,016 bytes). See the build step for
+#     what differs on each arch.
 #     win-arm64 was held out as "unproven, not impossible" until it was actually tried, and
 #     it works: rb-sys maps aarch64-mingw-ucrt to aarch64-pc-windows-gnullvm (supported:
 #     true), RubyInstaller ships aarch64-mingw-ucrt for both ABIs, and the whole grid —
@@ -403,11 +405,20 @@ jobs:
       # install CLANG64, so this is the x64 equivalent of the CLANGARM64 toolchain that
       # setup-ruby already hands the arm64 leg for free.
       #
-      # pacman-key runs unconditionally and its failure is swallowed: on an image whose keyring
-      # is already populated it is a no-op, and on a bare MSYS2 it is the difference between
-      # working and "key ... is unknown / keyring is not writable" (reproduced locally). The
-      # install itself is NOT tolerant — if that fails the leg should go red here with a
-      # readable pacman error, rather than deep inside lld two steps later.
+      # `pacman-key --init` is NOT run up front, and that ordering is the whole point of this
+      # step's shape. It generates a GPG master key and blocks on entropy, which on a headless
+      # runner hangs rather than fails — it wedged win-x64 for 17+ minutes on HyperUuid run
+      # 33647278560 with an empty log, because the original version also sent its output to
+      # /dev/null. The runner images ship MSYS2 with a populated keyring, so the install just
+      # works there and the keyring dance is only ever needed on a bare MSYS2 (which is what
+      # made it look necessary when this was developed locally). So: try the install first,
+      # and only fall back to initialising the keyring if that actually fails.
+      #
+      # Everything is bounded by `timeout` and reads from /dev/null. A CI step that can hang
+      # is worse than one that can fail: a failure names itself in 30 seconds, a hang burns an
+      # hour and tells you nothing. /usr/bin/timeout is spelled out because Git Bash's PATH
+      # also carries Windows' own System32\timeout.exe, which is a completely different
+      # program that would silently do the wrong thing here.
       - name: Install the CLANG64 toolchain (win-x64 Magnus)
         if: inputs.magnus && runner.os == 'Windows' && runner.arch == 'X64'
         shell: bash
@@ -415,8 +426,19 @@ jobs:
           set -euo pipefail
           msys_bash=/c/msys64/usr/bin/bash.exe
           [ -x "$msys_bash" ] || { echo "::error::MSYS2 not found at C:/msys64 — win-x64 Magnus needs its CLANG64 packages"; exit 1; }
-          "$msys_bash" -lc 'pacman-key --init && pacman-key --populate msys2' >/dev/null 2>&1 || true
-          "$msys_bash" -lc 'pacman -Sy --noconfirm --needed mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-libunwind'
+
+          tmo=/usr/bin/timeout; [ -x "$tmo" ] || tmo=""
+          msys() { ${tmo:+$tmo "$1"} "$msys_bash" -lc "$2" </dev/null; }
+
+          pkgs='mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-libunwind'
+          install="pacman -Sy --noconfirm --needed --disable-download-timeout $pkgs"
+
+          if ! msys 900 "$install"; then
+            echo "::notice::pacman install failed — initialising the MSYS2 keyring and retrying once"
+            msys 300 'pacman-key --init && pacman-key --populate msys2' || true
+            msys 900 "$install"
+          fi
+
           # Fail loudly here if the packages landed somewhere unexpected — the build script
           # falls back to exactly this prefix when the driver is not already on PATH.
           [ -x /c/msys64/clang64/bin/x86_64-w64-mingw32-clang.exe ] \
