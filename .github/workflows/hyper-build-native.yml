@@ -492,7 +492,21 @@ jobs:
                 ucrt_inc="$(win "$(dirname "$(dirname "$(command -v gcc)")")")/include"
 
                 export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$gcc_path"
-                export RUSTFLAGS="-C link-self-contained=no"
+                # -C strip=symbols because GNU ld keeps the COFF symbol table even though
+                # rustc already passes -Wl,--strip-debug: that flag drops debug *sections*,
+                # not the symbol table, so the extension shipped 504 KB of dead symbols —
+                # measured, not estimated (1,612,742 bytes on disk against 1,096,485 bytes of
+                # actual sections; 7,603 symbols where the arm64 build, linked by lld, has
+                # 1,814). Roughly 1 MB per win-x64 platform gem across both ABIs. Safe for
+                # `require`: the extension's entry point is exported through .edata, which is
+                # a section and is untouched by this.
+                #
+                # Only x64 needs it. lld doesn't retain that table, so the arm64 branch above
+                # is already lean and the flag would be a no-op there. What this does NOT fix
+                # is the other half of the size gap — .text is 821 KB against arm64's 232 KB
+                # because the GCC-based gnu target statically links libgcc (693 gcc-prefixed
+                # symbols, versus 8 on arm64). That is inherent to the target, not a setting.
+                export RUSTFLAGS="-C link-self-contained=no -C strip=symbols"
                 export LIBCLANG_PATH="${LIBCLANG_PATH:-C:/Program Files/LLVM/bin}"
                 # bindgen settings. rb-sys ships no pre-generated Windows bindings, so it
                 # runs bindgen, and clang here defaults to an MSVC target triple that dies on
