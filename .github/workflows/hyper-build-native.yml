@@ -34,7 +34,10 @@ name: HyperForge — build native core, test every binding
 #     backwards: MinGW is the *only* Windows flavour rb-sys targets. Its own
 #     data/toolchains.json maps ruby-platform x64-mingw-ucrt to rust-target
 #     x86_64-pc-windows-gnu, supported: true; what it does *not* support is
-#     x86_64-pc-windows-msvc. Real gems ship on the strength of that (wasmtime, blake3-rb
+#     x86_64-pc-windows-msvc. (Both Windows legs now actually build the *gnullvm* target
+#     rather than gnu — same mingw ABI, LLVM instead of GCC, 67% smaller on x64. rb-sys's
+#     table describes the toolchain it cross-compiles with, not an ABI requirement; the
+#     divergence is deliberate and tested. See the build step.) Real gems ship on the strength of that (wasmtime, blake3-rb
 #     both publish x64-mingw-ucrt on RubyGems today). Windows Fiddle is also where the
 #     fallback hurts most — measured on win-x64, Magnus is 5.9x faster on new_v4 (406ns vs
 #     2407ns) and 4.6x on new_v7, a far wider gap than any unix leg shows. See the Windows
@@ -396,6 +399,32 @@ jobs:
       #
       # The heredoc is quoted (<<'SCRIPT'), so nothing below expands now — every $ resolves
       # when the script runs, against that trio's own ABI/CRATE env.
+      # win-x64 only. The Magnus extension targets x86_64-pc-windows-gnullvm (see the build
+      # script for why), whose linker driver and libunwind come from MSYS2's CLANG64
+      # environment. The runner images ship MSYS2 at C:\msys64 but neither put it on PATH nor
+      # install CLANG64, so this is the x64 equivalent of the CLANGARM64 toolchain that
+      # setup-ruby already hands the arm64 leg for free.
+      #
+      # pacman-key runs unconditionally and its failure is swallowed: on an image whose keyring
+      # is already populated it is a no-op, and on a bare MSYS2 it is the difference between
+      # working and "key ... is unknown / keyring is not writable" (reproduced locally). The
+      # install itself is NOT tolerant — if that fails the leg should go red here with a
+      # readable pacman error, rather than deep inside lld two steps later.
+      - name: Install the CLANG64 toolchain (win-x64 Magnus)
+        if: inputs.magnus && runner.os == 'Windows' && runner.arch == 'X64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          msys_bash=/c/msys64/usr/bin/bash.exe
+          [ -x "$msys_bash" ] || { echo "::error::MSYS2 not found at C:/msys64 — win-x64 Magnus needs its CLANG64 packages"; exit 1; }
+          "$msys_bash" -lc 'pacman-key --init && pacman-key --populate msys2' >/dev/null 2>&1 || true
+          "$msys_bash" -lc 'pacman -Sy --noconfirm --needed mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-libunwind'
+          # Fail loudly here if the packages landed somewhere unexpected — the build script
+          # falls back to exactly this prefix when the driver is not already on PATH.
+          [ -x /c/msys64/clang64/bin/x86_64-w64-mingw32-clang.exe ] \
+            || { echo "::error::CLANG64 installed but x86_64-w64-mingw32-clang is missing from C:/msys64/clang64/bin"; exit 1; }
+          /c/msys64/clang64/bin/x86_64-w64-mingw32-clang.exe --version | head -1
+
       - name: Materialize the Magnus build script (shared by both ABI trios)
         if: inputs.magnus
         shell: bash
@@ -479,45 +508,73 @@ jobs:
                 mingw_inc="$(win "$(dirname "$clang_bin")")/include"
                 export BINDGEN_EXTRA_CLANG_ARGS="--target=aarch64-w64-mingw32 -isystem \"$clang_inc\" -isystem \"$mingw_inc\""
               else
-                rust_target=x86_64-pc-windows-gnu
+                # gnullvm, not gnu — a deliberate divergence from rb-sys's own table, which
+                # maps x64-mingw-ucrt to x86_64-pc-windows-gnu. That mapping describes the
+                # toolchain rb-sys cross-compiles with, not an ABI requirement: both targets
+                # emit the same mingw-w64/UCRT ABI, so RubyInstaller's GCC-built Ruby loads
+                # either. Taking the LLVM one instead is what closes the size gap the gnu
+                # target could not:
+                #
+                #   gnu + LTO + strip   1,040,384 bytes   .text 792,704
+                #   gnullvm + LTO       342,016 bytes     .text 264,742   (-67%)
+                #
+                # .text lands next to the arm64 leg's ~232 KB, which is the whole story: the
+                # GCC target statically links libgcc, the LLVM one uses compiler-rt. An
+                # earlier note here called that "inherent to the target, not a setting" — true
+                # of the gnu target, but the target is itself the setting.
+                #
+                # Two things had to be true for this to be safe, and both were tested on real
+                # win-x64 hardware rather than reasoned about, because both are the kind of
+                # thing that builds clean and fails at runtime:
+                #   * a compiler-rt extension loading into RubyInstaller's *GCC*-built UCRT64
+                #     Ruby — 55/55 green on both ABIs, imports only x64-ucrt-ruby<ver>.dll and
+                #     api-ms-win-crt-*;
+                #   * unwinding across the boundary, since magnus turns Rust panics into Ruby
+                #     exceptions and this swaps the unwinder — TimestampOutOfRangeError raises
+                #     and the process survives.
+                # Performance is unchanged (interleaved A/B, within noise on v4 and v7).
+                rust_target=x86_64-pc-windows-gnullvm
                 rustup target add "$rust_target"
 
-                # MSYS2's own gcc as linker with -C link-self-contained=no. Rust's bundled
-                # mingw is msvcrt-based and Ruby 3.1+ on Windows is UCRT; two CRTs in one
-                # process is the classic Windows corruption. Verified rather than assumed —
-                # the built DLL imports x64-ucrt-ruby<ver>.dll and api-ms-win-crt-*, never
-                # msvcrt.dll.
-                gcc_path="$(win "$(command -v gcc)")"
-                clang_inc="$(win "$(clang -print-resource-dir)")/include"
-                ucrt_inc="$(win "$(dirname "$(dirname "$(command -v gcc)")")")/include"
+                # rustc picks x86_64-w64-mingw32-clang as this target's linker driver by name,
+                # so it has to be findable. Unlike arm64 — where setup-ruby installs CLANGARM64
+                # for its own reasons — nothing puts CLANG64 on a windows-2025 runner's PATH,
+                # so the step above pacman-installs it and this prepends it to *this script's*
+                # PATH rather than to GITHUB_PATH. That scoping is deliberate: every other
+                # binding (C#, Java, Go, Swift, PHP) shares this job, and dropping a second
+                # clang/lld ahead of them on PATH is an excellent way to break one of them for
+                # reasons that take a day to find.
+                command -v x86_64-w64-mingw32-clang >/dev/null 2>&1 || export PATH="/c/msys64/clang64/bin:$PATH"
+                clang_exe="$(command -v x86_64-w64-mingw32-clang || true)"
+                [ -n "$clang_exe" ] || { echo "::error::no CLANG64 toolchain found — x86_64-pc-windows-gnullvm cannot build or link"; exit 1; }
+                clang_bin="$(dirname "$clang_exe")"
 
-                export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$gcc_path"
-                # -C strip=symbols because GNU ld keeps the COFF symbol table even though
-                # rustc already passes -Wl,--strip-debug: that flag drops debug *sections*,
-                # not the symbol table, so the extension shipped 504 KB of dead symbols —
-                # measured, not estimated (1,612,742 bytes on disk against 1,096,485 bytes of
-                # actual sections; 7,603 symbols where the arm64 build, linked by lld, has
-                # 1,814). Roughly 1 MB per win-x64 platform gem across both ABIs. Safe for
-                # `require`: the extension's entry point is exported through .edata, which is
-                # a section and is untouched by this.
+                # Static libunwind, for exactly the reason the arm64 branch documents: rustc
+                # emits its own -lunwind, CLANG64 ships libunwind.a and libunwind.dll.a side by
+                # side, and lld prefers the import lib — leaving the extension with a runtime
+                # dependency on a DLL no gem consumer has. Verified by objdump: with this flag
+                # the built DLL imports zero libunwind.
                 #
-                # Only x64 needs it. lld doesn't retain that table, so the arm64 branch above
-                # is already lean and the flag would be a no-op there. What this does NOT fix
-                # is the other half of the size gap — .text is 821 KB against arm64's 232 KB
-                # because the GCC-based gnu target statically links libgcc (693 gcc-prefixed
-                # symbols, versus 8 on arm64). That is inherent to the target, not a setting.
-                export RUSTFLAGS="-C link-self-contained=no -C strip=symbols"
-                export LIBCLANG_PATH="${LIBCLANG_PATH:-C:/Program Files/LLVM/bin}"
-                # bindgen settings. rb-sys ships no pre-generated Windows bindings, so it
-                # runs bindgen, and clang here defaults to an MSVC target triple that dies on
-                # Ruby's MinGW headers with "'stdarg.h' file not found".
+                # -C strip=symbols is kept, though it is close to a no-op now. It existed
+                # because GNU ld retained an 8,295-entry COFF symbol table that -Wl,--strip-debug
+                # does not touch; lld does not retain it, which is why the arm64 branch never
+                # needed the flag. Kept because 342,016 bytes is the number actually measured
+                # *with* it, and a flag that costs nothing is not worth re-measuring to remove.
+                export RUSTFLAGS="-L native=$(win "$clang_bin/../lib") -l static=unwind -C strip=symbols"
+                export LIBCLANG_PATH="${LIBCLANG_PATH:-$(win "$clang_bin")}"
+
+                # Same bindgen redirect the arm64 branch needs, for the same reason: cargo is
+                # cross-compiling (the runner's host is MSVC), so bindgen hands clang the Rust
+                # triple, and clang rejects `x86_64-pc-windows-gnullvm` outright.
+                # `x86_64-w64-mingw32` is the same ABI spelled the way clang accepts.
                 #
                 # The inner quotes are load-bearing: bindgen splits this variable on
-                # whitespace and the default LLVM prefix is C:/Program Files/LLVM. Unquoted,
-                # the resource include is lost and the build dies further in on a missing
-                # mm_malloc.h — which is exactly how this was found, so it is a regression
-                # test, not a precaution.
-                export BINDGEN_EXTRA_CLANG_ARGS="--target=x86_64-w64-mingw32 -isystem \"$clang_inc\" -isystem \"$ucrt_inc\""
+                # whitespace, and a prefix containing a space loses the resource include, with
+                # the build then dying much further in on a missing mm_malloc.h. That is how
+                # it was found, so it is a regression test, not a precaution.
+                clang_inc="$(win "$("$clang_exe" -print-resource-dir)")/include"
+                mingw_inc="$(win "$(dirname "$clang_bin")")/include"
+                export BINDGEN_EXTRA_CLANG_ARGS="--target=x86_64-w64-mingw32 -isystem \"$clang_inc\" -isystem \"$mingw_inc\""
               fi
 
               cargo build --release --features ruby --target "$rust_target"
