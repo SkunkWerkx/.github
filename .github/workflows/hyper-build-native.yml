@@ -470,13 +470,28 @@ jobs:
           mkdir -p "${{ inputs.java_resources_dir }}/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "${{ inputs.java_resources_dir }}/${{ matrix.rid }}/"
 
+      # `javadoc` alongside `test`, and it is not documentation housekeeping — it is this
+      # binding's doc gate finally running where the others already do. A caller's
+      # build.gradle.kts sets `javadoc -Xwerror`, which promotes a missing @param/@return to a
+      # build failure, and that is the same class of enforcement C# gets from
+      # CS1591 + TreatWarningsAsErrors and Rust from #![deny(missing_docs)]. The difference was
+      # only *when* it ran: `dotnet test` and `cargo build` compile on every leg here, so those
+      # two fire on every PR, while the `javadoc` task was invoked by nothing except the Maven
+      # publish at release time.
+      #
+      # HyperUuid v0.2.0 is what that costs. Sixteen missing @param tags rode through every PR
+      # green, then failed maven-publish AFTER crates.io, RubyGems, PyPI and NuGet had already
+      # published — a half-released version, and a crates.io version number that can never be
+      # reused. One extra task on a step that was already running is a cheap way not to repeat
+      # it. It needs compileJava's classpath but not the native library, so it adds no
+      # dependency this step didn't already have.
       - name: Test Java bindings against this platform's native lib
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         working-directory: java
         shell: bash
         run: |
           chmod +x gradlew
-          ./gradlew test --console=plain
+          ./gradlew test javadoc --console=plain
 
       # Go: cgo and/or purego, whichever backends the repo ships. go_windows=false for
       # cgo-only bindings until their purego fallback lands.

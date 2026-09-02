@@ -33,35 +33,53 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # --locked: publish exactly what Cargo.lock pins, not a fresh re-resolution against
+      # --locked: package exactly what Cargo.lock pins, not a fresh re-resolution against
       # whatever's newest on crates.io the moment this runs.
-      - name: cargo publish
+      #
+      # Packaged as its own step, BEFORE the upload, so the attestation below can run while
+      # the release is still reversible. This used to be a single `cargo publish --locked`
+      # with the attestation after it, and the ordering was the bug: a crates.io publish is
+      # irreversible — yank hides a version, it never deletes one, and the number can never
+      # be reused. So an attestation failure after the upload left the crate published and
+      # unsigned with no way to retry that version. Exactly that happened on HyperUuid
+      # v0.2.0, where the attest step could not find the .crate at all and 0.2.0 went out
+      # unattested.
+      - name: cargo package
         working-directory: ${{ inputs.working_directory }}
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked
+        run: cargo package --locked
 
-      # Attested AFTER the push, over target/package/*.crate — the exact file cargo just
-      # uploaded, so no repack sits between the attestation and the registry. Ordering it
-      # after costs nothing, because a .crate is byte-identical wherever it is produced.
-      # That was measured, not assumed: `cargo package --locked` run on a local cargo 1.98.0
-      # against the v0.1.1 tag reproduces
+      # Attested BEFORE the push, over the .crate `cargo package` just wrote. A failure here
+      # costs nothing but a re-run; the same failure after `cargo publish` would be permanent.
       #
-      #     244296a60c6e1fff1c53fccc045a0d112af5b9a6d94eb27b59b08ed27ce360ac
+      # Attesting the packaged file rather than the uploaded one is sound because a .crate is
+      # byte-identical wherever it is produced, and `cargo publish` below re-packages from the
+      # same locked inputs. Measured twice, not assumed: `cargo package --locked` on a local
+      # cargo 1.98.0 reproduces
       #
-      # which is byte-for-byte the `cksum` crates.io's own index records for hyperuuid
-      # 0.1.1 and the digest static.crates.io serves today. So unlike NuGet — where
-      # nuget.org's repository signature rewrites the package and forces the two-layer
-      # dance in hyper-pack-nuget.yml — one attestation here covers the bytes a consumer
-      # downloads. crates.io structurally cannot rewrite them: cargo verifies every
-      # download against that index cksum.
+      #     244296a60c6e1fff1c53fccc045a0d112af5b9a6d94eb27b59b08ed27ce360ac   (v0.1.1)
+      #     10cd57c50b84cc1b06be953c3b7fcea4efa993d2b60ab18c338153e496f4c573   (v0.2.0)
+      #
+      # each byte-for-byte the `cksum` crates.io's own index records and the digest
+      # static.crates.io serves. So unlike NuGet — where nuget.org's repository signature
+      # rewrites the package and forces the two-layer dance in hyper-pack-nuget.yml, and where
+      # the published-artifact attestation genuinely has to come after the push — one
+      # attestation here covers the bytes a consumer downloads. crates.io structurally cannot
+      # rewrite them: cargo verifies every download against that index cksum.
       #
       #     gh attestation verify <crate>-<version>.crate \
       #       --repo <owner>/<repo> --signer-repo SkunkWerkx/.github
       #
       # --signer-repo because this signing step lives here in the forge, same as everything
       # hyper-build-native.yml signs.
-      - name: Attest the published .crate
+      - name: Attest the .crate before publishing it
         uses: actions/attest-build-provenance@v3
         with:
           subject-path: ${{ inputs.working_directory }}/target/package/*.crate
+
+      # --no-verify: `cargo package` above already ran the verify build, and repeating it here
+      # would compile the crate a second time for no added signal.
+      - name: cargo publish
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked --no-verify
