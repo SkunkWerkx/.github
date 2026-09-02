@@ -54,12 +54,16 @@ name: HyperForge — build native core, test every binding
 #     forced static or the extension picks up a libunwind.dll dependency no gem consumer
 #     would have. bindgen needs a --target redirect just like x64 does, and for a sharper
 #     reason: clang rejects the gnullvm triple outright. See the build step.
-#   - php (ext-php-rs): a benchmark spike, not wired into the shipped Composer package
-#     (that's ext-ffi, tested in the PHP section further down) — built here so it can't
-#     silently bit-rot, then load-checked, uploaded and attested like any other shippable
-#     binary; still no phpunit run against it. All Windows legs skipped: ext-php-rs
-#     gates its Windows path on a nightly-only Rust feature, incompatible with the stable
-#     toolchain every leg here builds on (confirmed by a real E0554 failure, not assumed).
+#     Both PHP backends now live in ONE section down with the suites — see it for the two
+#     platform rules and for why its position is load-bearing.
+#   - php (ext-php-rs): darwin + linux, unconditionally. Not wired into the shipped Composer
+#     package (that's ext-ffi, tested in the same section) — built so it can't silently
+#     bit-rot, then load-checked, uploaded and attested like any other shippable binary;
+#     still no phpunit run against it. It began as a benchmark spike behind a
+#     `php_native_spike` input; the spike answered its question, so the flag is gone and the
+#     build is simply part of the pipeline. All Windows legs skipped: ext-php-rs gates its
+#     Windows path on a nightly-only Rust feature, incompatible with the stable toolchain
+#     every leg here builds on (confirmed by a real E0554 failure, not assumed).
 #
 # An earlier version of this file had a `paths` job (dorny/paths-filter) skipping the
 # per-binding jobs per PR when nothing relevant changed. Abandoned then because splitting
@@ -144,9 +148,8 @@ on:
       attest_native:
         description: >
           Emit a signed SLSA build-provenance attestation binding each shippable compiled
-          artifact — the plain FFI native library on every leg, plus the Magnus extension
-          on every leg and the ext-php-rs extension on the unix legs, when
-          `magnus` / `php_native_spike` are on —
+          artifact — the plain FFI native library on every leg, plus the ext-php-rs extension
+          on the unix legs, and the Magnus extension on every leg when `magnus` is on —
           to this workflow run and commit, verifiable by a consumer with
           `gh attestation verify`.
           On by default: every artifact this forge produces should be verifiable, and an
@@ -185,11 +188,6 @@ on:
         default: true
       pyo3:
         description: "Build and test the Python PyO3 extension backend (every leg — Windows needs only the MSVC linker plus CPython's bundled import library)"
-        required: false
-        type: boolean
-        default: true
-      php_native_spike:
-        description: "Build, load-check, upload and attest the ext-php-rs extension (a benchmark spike — the shipped Composer package uses ext-ffi instead)"
         required: false
         type: boolean
         default: true
@@ -723,84 +721,6 @@ jobs:
         with:
           subject-path: ruby/lib/${{ inputs.crate }}_native.*
 
-      # PHP (ext-php-rs feature): built, load-checked, uploaded and attested, but still no
-      # phpunit — this is a benchmark spike, not the shipped backend (that's ext-ffi, further
-      # down). Windows excluded entirely, not just win-arm64: ext-php-rs's Windows path gates
-      # on `#![feature(abi_vectorcall)]`, a nightly-only Rust feature, and every leg here
-      # builds on stable — confirmed by a real E0554 failure on win-x64, not assumed.
-      - uses: shivammathur/setup-php@v2
-        if: inputs.php_native_spike && runner.os != 'Windows'
-        with:
-          php-version: ${{ inputs.php_version }}
-          extensions: ffi
-          tools: composer
-
-      - name: Build PHP (ext-php-rs) extension
-        if: inputs.php_native_spike && runner.os != 'Windows'
-        working-directory: rust
-        run: cargo build --release --features php
-
-      # This is a Zend extension, not another FFI cdylib: the `--features php` build exports
-      # `get_module`, so PHP loads it via `extension=` in php.ini rather than `FFI::cdef`.
-      # PHP names extension modules `.so` on macOS too, so the Darwin .dylib is copied to a
-      # .so name rather than kept as one.
-      #
-      # It is a strict superset of the plain cdylib rather than an alternative to it — the
-      # same build still exports all twelve `uuid_*` C symbols the ext-ffi backend calls
-      # (measured: 12 of 12 present, at 689,448 bytes against the plain build's 431,840 on
-      # linux-x64). It still gets its own artifact instead of replacing `native-{rid}`,
-      # because byte-identical native libraries across a caller's php/, go/ and swift/ trees
-      # are what let one committed git blob serve three bindings under one attestation.
-      - name: Stage PHP (ext-php-rs) extension
-        if: inputs.php_native_spike && runner.os != 'Windows'
-        shell: bash
-        run: |
-          mkdir -p php-ext
-          case "${{ runner.os }}" in
-            macOS) cp "rust/target/release/lib${{ inputs.crate }}.dylib" "php-ext/${{ inputs.crate }}.so" ;;
-            Linux) cp "rust/target/release/lib${{ inputs.crate }}.so"    "php-ext/${{ inputs.crate }}.so" ;;
-          esac
-
-      # The check that makes attesting this binary worth anything: a Zend extension that
-      # compiled can still be refused at load time. PHP matches a module's build ID exactly
-      # — `API<number>,<NTS|ZTS>` — and rejects every mismatch, so unlike the FFI library
-      # these bytes are pinned to one PHP ABI, not just one platform. This proves they load
-      # and records which ABI they are pinned to, since the artifact carries no metadata of
-      # its own saying so. The module name ext-php-rs registers is CARGO_PKG_NAME, which is
-      # what `crate` already is.
-      - name: Load-check the PHP extension, and record the ABI it is pinned to
-        if: inputs.php_native_spike && runner.os != 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          build_id=$(php -i | sed -n 's/^PHP Extension Build => //p')
-          echo "\`php-native-${{ matrix.rid }}\` — PHP $(php -r 'echo PHP_VERSION;'), build ID \`${build_id}\`" \
-            >> "$GITHUB_STEP_SUMMARY"
-          php -d extension="$PWD/php-ext/${{ inputs.crate }}.so" \
-              -r 'exit(extension_loaded("${{ inputs.crate }}") ? 0 : 1);'
-
-      - uses: actions/upload-artifact@v7
-        if: inputs.php_native_spike && runner.os != 'Windows'
-        with:
-          name: php-native-${{ matrix.rid }}
-          path: php-ext/${{ inputs.crate }}.so
-
-      # Attested on exactly the same footing as the native library and the Magnus extension:
-      # a compiled binary a consumer can neither read nor reproduce. Same verifying command,
-      # same reason it needs both halves of the identity:
-      #
-      #     gh attestation verify <file> --repo <owner>/<repo> --signer-repo SkunkWerkx/.github
-      #
-      # and the same fork-PR gate, since a fork's token cannot sign.
-      - name: Attest PHP (ext-php-rs) extension provenance
-        if: >-
-          inputs.php_native_spike && runner.os != 'Windows' && inputs.attest_native &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-path: php-ext/${{ inputs.crate }}.so
-
       # ---------------------------------------------------------------------------
       # Every binding's suite, in this same job, against the .dylib/.so/.dll this job
       # just built.
@@ -962,22 +882,40 @@ jobs:
         working-directory: swift
         run: swift test
 
-      # PHP: the built-in ext-ffi path (the real, shipped backend — the ext-php-rs feature
-      # built above is a separate benchmark spike). win-arm64 skipped: PHP has never shipped
-      # a native Windows ARM64 build; it runs under x64 emulation there, which can never
-      # load an ARM64 native lib, and the real PHP-as-x64 story is covered by win-x64. This
-      # was a matrix omission when test-php was its own job; in one job it is a per-step
-      # condition, which is the same claim written differently.
+      # =========================================================================
+      # PHP — both backends, one section, one toolchain install.
       #
-      # setup-php only when the ext-php-rs section above did not already run it — on Windows
-      # it never does (that section is unix-only), and it is skipped entirely when the caller
-      # sets php_native_spike=false.
+      # This was two sections far apart, each with its own setup-php whose conditions were
+      # written to be mutually exclusive so the 56s install never ran twice. That worked, but
+      # you had to hold both halves in your head to see it. One section, one install, two
+      # platform rules:
+      #
+      #   * win-arm64 is skipped ENTIRELY, both backends. PHP has never shipped a native
+      #     Windows ARM64 build; it runs under x64 emulation there and can never load an
+      #     ARM64 native lib. win-x64 covers the real PHP-on-Windows story.
+      #   * ext-php-rs additionally skips ALL Windows, which leaves darwin + linux. Its
+      #     Windows path gates on `#![feature(abi_vectorcall)]`, nightly-only, and every leg
+      #     here builds on stable — confirmed by a real E0554 failure on win-x64, not assumed.
+      #
+      # ext-php-rs used to be gated behind a `php_native_spike` input, defaulting true. The
+      # spike answered its question, so the flag is gone and the build is unconditional on the
+      # platforms that can do it — one less knob, and no caller was setting it.
+      #
+      # Ordering note, since it is load-bearing and invisible: `--features php` overwrites
+      # rust/target/release/, so this section must stay AFTER everything that reads from
+      # there. Only the Python staging does (every other binding stages from out/, the
+      # pristine copy taken by `Collect native artifact`), and Python runs much earlier. That
+      # is what makes it safe for this to sit down here with the suites rather than up beside
+      # the other feature builds.
+      # =========================================================================
       - uses: shivammathur/setup-php@v2
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && (runner.os == 'Windows' || !inputs.php_native_spike) }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' }}
         with:
           php-version: ${{ inputs.php_version }}
           extensions: ffi
           tools: composer
+
+      # --- the shipped backend: built-in ext-ffi, the one the Composer package uses ---
 
       - name: Install PHP dependencies
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' }}
@@ -997,6 +935,75 @@ jobs:
         # Through `php`, not bare — the Composer proxy is a shebang script the Windows
         # legs' default pwsh can't execute.
         run: php vendor/bin/phpunit
+
+      # --- ext-php-rs: built, load-checked, uploaded and attested; still no phpunit ---
+
+      - name: Build PHP (ext-php-rs) extension
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' }}
+        working-directory: rust
+        run: cargo build --release --features php
+
+      # This is a Zend extension, not another FFI cdylib: the `--features php` build exports
+      # `get_module`, so PHP loads it via `extension=` in php.ini rather than `FFI::cdef`.
+      # PHP names extension modules `.so` on macOS too, so the Darwin .dylib is copied to a
+      # .so name rather than kept as one.
+      #
+      # It is a strict superset of the plain cdylib rather than an alternative to it — the
+      # same build still exports all twelve `uuid_*` C symbols the ext-ffi backend calls
+      # (measured: 12 of 12 present, at 689,448 bytes against the plain build's 431,840 on
+      # linux-x64). It still gets its own artifact instead of replacing `native-{rid}`,
+      # because byte-identical native libraries across a caller's php/, go/ and swift/ trees
+      # are what let one committed git blob serve three bindings under one attestation.
+      - name: Stage PHP (ext-php-rs) extension
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          mkdir -p php-ext
+          case "${{ runner.os }}" in
+            macOS) cp "rust/target/release/lib${{ inputs.crate }}.dylib" "php-ext/${{ inputs.crate }}.so" ;;
+            Linux) cp "rust/target/release/lib${{ inputs.crate }}.so"    "php-ext/${{ inputs.crate }}.so" ;;
+          esac
+
+      # The check that makes attesting this binary worth anything: a Zend extension that
+      # compiled can still be refused at load time. PHP matches a module's build ID exactly
+      # — `API<number>,<NTS|ZTS>` — and rejects every mismatch, so unlike the FFI library
+      # these bytes are pinned to one PHP ABI, not just one platform. This proves they load
+      # and records which ABI they are pinned to, since the artifact carries no metadata of
+      # its own saying so. The module name ext-php-rs registers is CARGO_PKG_NAME, which is
+      # what `crate` already is.
+      - name: Load-check the PHP extension, and record the ABI it is pinned to
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_id=$(php -i | sed -n 's/^PHP Extension Build => //p')
+          echo "\`php-native-${{ matrix.rid }}\` — PHP $(php -r 'echo PHP_VERSION;'), build ID \`${build_id}\`" \
+            >> "$GITHUB_STEP_SUMMARY"
+          php -d extension="$PWD/php-ext/${{ inputs.crate }}.so" \
+              -r 'exit(extension_loaded("${{ inputs.crate }}") ? 0 : 1);'
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' }}
+        with:
+          name: php-native-${{ matrix.rid }}
+          path: php-ext/${{ inputs.crate }}.so
+
+      # Attested on exactly the same footing as the native library and the Magnus extension:
+      # a compiled binary a consumer can neither read nor reproduce. Same verifying command,
+      # same reason it needs both halves of the identity:
+      #
+      #     gh attestation verify <file> --repo <owner>/<repo> --signer-repo SkunkWerkx/.github
+      #
+      # and the same fork-PR gate, since a fork's token cannot sign.
+      - name: Attest PHP (ext-php-rs) extension provenance
+        if: >-
+          !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' &&
+          inputs.attest_native &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: php-ext/${{ inputs.crate }}.so
 
       # The Fiddle backend, forced explicitly — the universal zero-compile path every
       # platform must keep green regardless of whether the Magnus extension exists there.
