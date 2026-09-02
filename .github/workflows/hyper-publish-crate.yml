@@ -5,6 +5,11 @@ name: HyperForge — publish Rust core to crates.io
 # platform's native artifact and so need build-native's output first), a crates.io publish
 # ships source only — no native artifact, no matrix, just one `cargo publish` from a single
 # runner. Reusable as-is by any Hyper* project with a rust/-shaped core crate.
+#
+# Publishing is tokenless — crates.io Trusted Publishing, OIDC. A crate has to be registered
+# as a trusted publisher on crates.io before this works, and that registration can only be
+# made after the crate already exists, so a brand-new crate needs one manual token publish
+# first. See the bootstrap row in this repo's README ledger.
 
 on:
   workflow_call:
@@ -15,8 +20,14 @@ on:
         type: string
         default: "rust"
     secrets:
+      # Legacy, and no longer read — publishing goes through crates.io Trusted Publishing
+      # (OIDC) below, so there is no stored token to leak or rotate. Kept declared, and
+      # optional, purely so a caller that still passes it stays valid: a `secrets:` block
+      # naming an undeclared secret is a workflow-level validation error, which would break
+      # every caller the instant this file landed. Drop the block from your caller at leisure,
+      # then this declaration can go.
       CARGO_REGISTRY_TOKEN:
-        required: true
+        required: false
 
 jobs:
   publish:
@@ -76,10 +87,23 @@ jobs:
         with:
           subject-path: ${{ inputs.working_directory }}/target/package/*.crate
 
+      # Trusted Publishing: exchange this job's OIDC identity for a short-lived crates.io
+      # token, scoped to this crate and revoked by the action's own post step when the job
+      # ends. No stored CARGO_REGISTRY_TOKEN, so nothing to rotate and nothing to leak.
+      #
+      # Needs no new permission — `id-token: write` is already granted above for
+      # attest-build-provenance, and the same token serves both.
+      #
+      # Deliberately AFTER the attestation: this is the first step that can touch crates.io,
+      # and everything that can fail should fail before it.
+      - name: Authenticate to crates.io (Trusted Publishing)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
       # --no-verify: `cargo package` above already ran the verify build, and repeating it here
       # would compile the crate a second time for no added signal.
       - name: cargo publish
         working-directory: ${{ inputs.working_directory }}
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish --locked --no-verify
