@@ -978,6 +978,12 @@ jobs:
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' }}
         with:
           ruby-version: ${{ inputs.ruby_compat_version }}
+          # The bundler this Ruby ships with, never one read out of a Gemfile.lock. No caller
+          # commits that file, but the trio that runs first writes one whose BUNDLED WITH names
+          # its own bundler, and setup-ruby's default would then install that 2.x bundler on the
+          # 4.0 trio beside RubyGems 4 — thirty `already initialized constant Gem::Platform::*`
+          # warnings per leg, one per redeclared constant, on every job that runs both trios.
+          bundler: default
           bundler-cache: true
           working-directory: ruby
 
@@ -1039,6 +1045,7 @@ jobs:
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus }}
         with:
           ruby-version: ${{ inputs.ruby_version }}
+          bundler: default
           bundler-cache: true
           working-directory: ruby
 
@@ -1088,6 +1095,7 @@ jobs:
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && !inputs.magnus }}
         with:
           ruby-version: ${{ inputs.ruby_version }}
+          bundler: default
           bundler-cache: true
           working-directory: ruby
 
