@@ -795,14 +795,12 @@ jobs:
       # end inherit the primary one. Leaving ruby_compat_version empty (the default) runs
       # only the primary — which is also exactly how a caller retires an ABI at its EOL.
       #
-      # Two Windows costs are paid once, not per ABI, and both were measured before they
-      # were touched (HyperUuid run 33709678437): the second setup-ruby passes
-      # windows-toolchain=none, reusing the MSYS2 toolchain the first extracted (18 s on
-      # win-x64, 65 s on win-arm64 otherwise), and the compat ABI skips the caller's `wasm`
-      # bundler group, since the wasm suite runs once, on the primary Ruby (25 s of wasmtime
-      # gem install on win-x64 otherwise). Two calls rather than a matrix, on purpose: a
-      # matrix would multiply every leg and undo the 48 -> 6 job collapse this file exists
-      # to hold.
+      # One Windows cost is paid once rather than per ABI: the compat ABI skips the caller's
+      # `wasm` bundler group, since the wasm suite runs once, on the primary Ruby (25 s of
+      # wasmtime gem install on win-x64 otherwise, HyperUuid run 33709678437). The MSYS2
+      # toolchain is NOT shared between the two Rubies — see the action for the run that
+      # proved it cannot be. Two calls rather than a matrix, on purpose: a matrix would
+      # multiply every leg and undo the 48 -> 6 job collapse this file exists to hold.
       #
       # Not gated on `magnus`: this serves the Fiddle suite below too, which needs it on
       # every leg regardless of whether a Magnus extension was built.
@@ -839,7 +837,6 @@ jobs:
           ruby-version: ${{ inputs.ruby_version }}
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          windows-toolchain: ${{ inputs.ruby_compat_version != '' && 'none' || 'default' }}
           attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       # --- the Fiddle backend, forced explicitly ---

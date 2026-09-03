@@ -20,16 +20,6 @@ inputs:
     description: "Sign SLSA build provenance for the extension ('true'/'false'); the calling job must hold id-token and attestations write"
     required: false
     default: "false"
-  windows-toolchain:
-    description: >
-      Passed through to setup-ruby. 'default' installs the MSYS2 build toolchain for the
-      selected Ruby; 'none' only puts Ruby on PATH. The second ABI on a Windows leg passes
-      'none': the first already extracted the very same toolchain (msys2-ucrt64 or
-      msys2-clangarm64, one archive for every Ruby >= 3.1 on that arch) and left it on PATH
-      and in the environment, and re-extracting it cost 18 s on win-x64 and 65 s on
-      win-arm64 per run, measured on HyperUuid run 33709678437.
-    required: false
-    default: "default"
   bundle-without:
     description: >
       Bundler groups to skip for this ABI (BUNDLE_WITHOUT). The compat ABI passes the
@@ -41,31 +31,19 @@ inputs:
 runs:
   using: composite
   steps:
-    # `bundler: default` on purpose: the bundler this Ruby ships with, never one read out of
-    # a Gemfile.lock. No caller commits that file, but the ABI that runs first writes one
-    # whose BUNDLED WITH names its own bundler, and setup-ruby's default would then install
-    # that 2.x bundler on the 4.0 Ruby beside RubyGems 4 — thirty `already initialized
-    # constant Gem::Platform::*` warnings per leg, one per redeclared constant.
-    #
-    # bundler-cache keys on the generated lockfile's hash plus BUNDLE_WITH/WITHOUT, so the
-    # two ABIs and the two group selections never collide, and a second run with the same
-    # resolution restores instead of installing.
-    - uses: ruby/setup-ruby@v1
-      env:
-        BUNDLE_WITHOUT: ${{ inputs.bundle-without }}
-      with:
-        ruby-version: ${{ inputs.ruby-version }}
-        bundler: default
-        bundler-cache: true
-        working-directory: ruby
-        windows-toolchain: ${{ inputs.windows-toolchain }}
-
     # win-x64 only. The extension targets x86_64-pc-windows-gnullvm (see build-magnus.sh
     # for why), whose linker driver and libunwind come from MSYS2's CLANG64 environment.
     # The runner images ship MSYS2 at C:\msys64 but neither put it on PATH nor install
     # CLANG64, so this is the x64 equivalent of the CLANGARM64 toolchain setup-ruby hands
     # the arm64 leg for free. Idempotent: the second ABI on the same runner finds the driver
     # already there and exits before touching pacman.
+    #
+    # BEFORE setup-ruby, and that order is load-bearing. setup-ruby exports its own MSYS2
+    # environment for the job (MSYS2_PATH_TYPE=inherit, RI_DEVKIT, MSYSTEM), and a pacman
+    # run inside C:\msys64's login shell under that environment installed all seventeen
+    # packages somewhere other than C:\msys64\clang64 — the check below failed on HyperUuid
+    # run 33711262622 with every package reported installed. Run first, on the pristine
+    # runner image, it lands where the build script looks.
     #
     # `pacman-key --init` is NOT run up front, and that ordering is the whole point of this
     # step's shape. It generates a GPG master key and blocks on entropy, which on a headless
@@ -111,6 +89,31 @@ runs:
         [ -x "$driver" ] \
           || { echo "::error::CLANG64 installed but x86_64-w64-mingw32-clang is missing from C:/msys64/clang64/bin"; exit 1; }
         "$driver" --version | head -1
+
+    # `bundler: default` on purpose: the bundler this Ruby ships with, never one read out of
+    # a Gemfile.lock. No caller commits that file, but the ABI that runs first writes one
+    # whose BUNDLED WITH names its own bundler, and setup-ruby's default would then install
+    # that 2.x bundler on the 4.0 Ruby beside RubyGems 4 — thirty `already initialized
+    # constant Gem::Platform::*` warnings per leg, one per redeclared constant.
+    #
+    # bundler-cache keys on the generated lockfile's hash plus BUNDLE_WITH/WITHOUT, so the
+    # two ABIs and the two group selections never collide, and a second run with the same
+    # resolution restores instead of installing.
+    #
+    # The Windows toolchain is installed for every ABI, and that is not waste to trim:
+    # `windows-toolchain: none` on the second Ruby was tried (HyperUuid run 33711262622) to
+    # skip re-extracting the same MSYS2 archive (18 s on win-x64, 65 s on win-arm64). It
+    # fails: RI_DEVKIT is per-Ruby (C:\hostedtoolcache\windows\Ruby\<ver>\<arch>\msys64),
+    # the second Ruby inherited the first one's, and fiddle's mkmf under it found no
+    # pkg-config and no libffi. RubyInstaller's devkit belongs to its Ruby.
+    - uses: ruby/setup-ruby@v1
+      env:
+        BUNDLE_WITHOUT: ${{ inputs.bundle-without }}
+      with:
+        ruby-version: ${{ inputs.ruby-version }}
+        bundler: default
+        bundler-cache: true
+        working-directory: ruby
 
     # The script is a file beside this action rather than YAML: it is 170 lines of
     # toolchain archaeology, and a heredoc inside a workflow was the wrong home for it.
