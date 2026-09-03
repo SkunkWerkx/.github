@@ -42,8 +42,8 @@ name: HyperForge — build native core, test every binding
 #     Both Windows legs now build the *gnullvm* target rather than gnu — same mingw ABI,
 #     LLVM instead of GCC. That is a deliberate divergence from rb-sys's own table, which
 #     describes the toolchain it cross-compiles with rather than an ABI requirement, and it
-#     is what makes win-x64 67% smaller (1,040,384 -> 342,016 bytes). See the build step for
-#     what differs on each arch.
+#     is what makes win-x64 67% smaller (1,040,384 -> 342,016 bytes). See the ruby-magnus
+#     action's build-magnus.sh for what differs on each arch.
 #     win-arm64 was held out as "unproven, not impossible" until it was actually tried, and
 #     it works: rb-sys maps aarch64-mingw-ucrt to aarch64-pc-windows-gnullvm (supported:
 #     true), RubyInstaller ships aarch64-mingw-ucrt for both ABIs, and the whole grid —
@@ -55,7 +55,7 @@ name: HyperForge — build native core, test every binding
 #     windows-11-arm (msys2-clangarm64.7z, MSYSTEM=CLANGARM64) — and libunwind has to be
 #     forced static or the extension picks up a libunwind.dll dependency no gem consumer
 #     would have. bindgen needs a --target redirect just like x64 does, and for a sharper
-#     reason: clang rejects the gnullvm triple outright. See the build step.
+#     reason: clang rejects the gnullvm triple outright. See build-magnus.sh.
 #     Both PHP backends now live in ONE section down with the suites — see it for the two
 #     platform rules and for why its position is load-bearing.
 #   - php (ext-php-rs): darwin + linux, unconditionally. Not wired into the shipped Composer
@@ -782,23 +782,28 @@ jobs:
       # See the top-of-file note for why "unix legs only" was wrong, and for what the
       # win-arm64 leg needs that the x64 one doesn't.
       #
-      # This section runs TWICE, once per Ruby ABI, and the repetition is the point: a Magnus
-      # extension is bound to a single Ruby minor version. There is no `abi3` equivalent to
-      # collapse the version axis the way PyO3 does for the Python binding one section up, so
-      # a platform gem covering two Rubies has to physically carry two compiled files — a
-      # caller's Rakefile packs them under lib/{crate}/<minor>/ and its lib/{crate}.rb picks
-      # one at require time. Each trio uploads its own ruby-native-{rid}-{abi} artifact, and
-      # the caller's release.yml packs one fat gem per platform out of all of them.
+      # Magnus runs once per Ruby ABI, through the forge's own ruby-magnus composite action
+      # (.github/actions/ruby-magnus in SkunkWerkx/.github: setup-ruby, the win-x64 CLANG64
+      # install, the build script as a real file, rspec, upload, attest). The repetition is
+      # the point: a Magnus extension is bound to a single Ruby minor — no `abi3` equivalent
+      # collapses the version axis the way PyO3 does for Python — so a platform gem covering
+      # two Rubies physically carries two compiled files, and each call uploads its own
+      # ruby-native-{rid}-{abi} artifact for the caller's release.yml to pack.
       #
       # `ruby_compat_version` runs FIRST and `ruby_version` LAST, deliberately: setup-ruby
-      # swaps the active Ruby for the rest of the job, and the Fiddle suite at the very end
-      # should inherit the primary one. Leaving ruby_compat_version empty (the default) runs
-      # only the primary trio — which is also exactly how a caller retires an ABI once it
-      # goes EOL, with no change needed here.
+      # swaps the active Ruby for the rest of the job, and the Fiddle and wasm suites at the
+      # end inherit the primary one. Leaving ruby_compat_version empty (the default) runs
+      # only the primary — which is also exactly how a caller retires an ABI at its EOL.
       #
-      # Repeated steps rather than a matrix, on purpose: a matrix would multiply every leg and
-      # undo the 48 -> 6 job collapse this file exists to hold. setup-ruby is the expensive
-      # half of a trio; the suite itself runs in well under a second.
+      # Two Windows costs are paid once, not per ABI, and both were measured before they
+      # were touched (HyperUuid run 33709678437): the second setup-ruby passes
+      # windows-toolchain=none, reusing the MSYS2 toolchain the first extracted (18 s on
+      # win-x64, 65 s on win-arm64 otherwise), and the compat ABI skips the caller's `wasm`
+      # bundler group, since the wasm suite runs once, on the primary Ruby (25 s of wasmtime
+      # gem install on win-x64 otherwise). Two calls rather than a matrix, on purpose: a
+      # matrix would multiply every leg and undo the 48 -> 6 job collapse this file exists
+      # to hold.
+      #
       # Not gated on `magnus`: this serves the Fiddle suite below too, which needs it on
       # every leg regardless of whether a Magnus extension was built.
       - name: Point Xcode at a full toolchain (works around a Ruby native-extension mkmf issue)
@@ -817,377 +822,32 @@ jobs:
           mkdir -p "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}/"
 
-      # Both trios run identical build-and-stage logic against whichever Ruby setup-ruby last
-      # made active, so it lives here once as a script instead of twice as inlined YAML. It
-      # cannot simply be a file in this forge repo: a reusable workflow's steps run against
-      # the *caller's* checkout, so nothing from SkunkWerkx/.github is on disk during this
-      # job. Writing it to RUNNER_TEMP is what makes it callable from both trios.
-      #
-      # The heredoc is quoted (<<'SCRIPT'), so nothing below expands now — every $ resolves
-      # when the script runs, against that trio's own ABI/CRATE env.
-      # win-x64 only. The Magnus extension targets x86_64-pc-windows-gnullvm (see the build
-      # script for why), whose linker driver and libunwind come from MSYS2's CLANG64
-      # environment. The runner images ship MSYS2 at C:\msys64 but neither put it on PATH nor
-      # install CLANG64, so this is the x64 equivalent of the CLANGARM64 toolchain that
-      # setup-ruby already hands the arm64 leg for free.
-      #
-      # `pacman-key --init` is NOT run up front, and that ordering is the whole point of this
-      # step's shape. It generates a GPG master key and blocks on entropy, which on a headless
-      # runner hangs rather than fails — it wedged win-x64 for 17+ minutes on HyperUuid run
-      # 33647278560 with an empty log, because the original version also sent its output to
-      # /dev/null. The runner images ship MSYS2 with a populated keyring, so the install just
-      # works there and the keyring dance is only ever needed on a bare MSYS2 (which is what
-      # made it look necessary when this was developed locally). So: try the install first,
-      # and only fall back to initialising the keyring if that actually fails.
-      #
-      # Everything is bounded by `timeout` and reads from /dev/null. A CI step that can hang
-      # is worse than one that can fail: a failure names itself in 30 seconds, a hang burns an
-      # hour and tells you nothing. /usr/bin/timeout is spelled out because Git Bash's PATH
-      # also carries Windows' own System32\timeout.exe, which is a completely different
-      # program that would silently do the wrong thing here.
-      - name: Install the CLANG64 toolchain (win-x64 Magnus)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && runner.os == 'Windows' && runner.arch == 'X64' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          msys_bash=/c/msys64/usr/bin/bash.exe
-          [ -x "$msys_bash" ] || { echo "::error::MSYS2 not found at C:/msys64 — win-x64 Magnus needs its CLANG64 packages"; exit 1; }
-
-          tmo=/usr/bin/timeout; [ -x "$tmo" ] || tmo=""
-          msys() { ${tmo:+$tmo "$1"} "$msys_bash" -lc "$2" </dev/null; }
-
-          pkgs='mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-libunwind'
-          install="pacman -Sy --noconfirm --needed --disable-download-timeout $pkgs"
-
-          if ! msys 900 "$install"; then
-            echo "::notice::pacman install failed — initialising the MSYS2 keyring and retrying once"
-            msys 300 'pacman-key --init && pacman-key --populate msys2' || true
-            msys 900 "$install"
-          fi
-
-          # Fail loudly here if the packages landed somewhere unexpected — the build script
-          # falls back to exactly this prefix when the driver is not already on PATH.
-          [ -x /c/msys64/clang64/bin/x86_64-w64-mingw32-clang.exe ] \
-            || { echo "::error::CLANG64 installed but x86_64-w64-mingw32-clang is missing from C:/msys64/clang64/bin"; exit 1; }
-          /c/msys64/clang64/bin/x86_64-w64-mingw32-clang.exe --version | head -1
-
-      - name: Materialize the Magnus build script (shared by both ABI trios)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/forge"
-          cat > "$RUNNER_TEMP/forge/build-magnus.sh" <<'SCRIPT'
-          set -euo pipefail
-          crate="$CRATE"
-          abi="$ABI"
-
-          # A separate target dir per ABI is load-bearing, not hygiene. rb-sys generates its
-          # bindings from the *active* Ruby's headers, but nothing in the crate's own sources
-          # changes between trios — so a shared target/ can hand the second trio the first
-          # trio's cached artifact, shipping two byte-identical extensions labelled as
-          # different ABIs. Nothing downstream would catch it: the wrong one installs, loads,
-          # and passes its suite on the Ruby it was really built for.
-          export CARGO_TARGET_DIR="target/ruby-$abi"
-
-          case "$RUNNER_OS" in
-            Windows)
-              # Everything in this branch follows from RubyInstaller's Ruby being a
-              # MinGW/UCRT build rather than MSVC: rb-sys links lib<arch>-ucrt-ruby<ver>.dll.a,
-              # a MinGW import lib, so the *target* can never be MSVC. Only the target — the
-              # runner's default host toolchain stays MSVC and build scripts/proc-macros
-              # still link with link.exe, which never reaches the shipped extension.
-              #
-              # The two Windows architectures need different answers, because rb-sys maps
-              # them to different Rust targets in its own data/toolchains.json: x64-mingw-ucrt
-              # to x86_64-pc-windows-gnu (GCC-based) and aarch64-mingw-ucrt to
-              # aarch64-pc-windows-gnullvm (LLVM-based), both supported: true. What it does
-              # *not* support, on either arch, is the MSVC target.
-              #
-              # `shell: bash` on a Windows runner is Git Bash, so command -v hands back MSYS
-              # paths (/c/...). cargo, clang.exe and gcc.exe are all native Windows binaries
-              # that cannot read those — cygpath -m gives the mixed form they can.
-              win() { cygpath -m "$1"; }
-
-              if [ "$RUNNER_ARCH" = ARM64 ]; then
-                rust_target=aarch64-pc-windows-gnullvm
-                rustup target add "$rust_target"
-
-                # rustc already picks aarch64-w64-mingw32-clang as the linker driver for this
-                # target by name, so there is no linker override to set — but its prefix has
-                # to be located for the flags below, and a toolchain that isn't there should
-                # fail here with something readable rather than deep inside lld. setup-ruby
-                # provides it on windows-11-arm (it fetches msys2-clangarm64.7z and exports
-                # MSYSTEM=CLANGARM64); RubyInstaller's ARM devkit installs the same thing
-                # locally. Resolve the executable before dirname, not after — `dirname ""`
-                # is ".", so testing the dirname result would never catch a missing tool.
-                clang_exe="$(command -v aarch64-w64-mingw32-clang || command -v clang || true)"
-                [ -n "$clang_exe" ] || { echo "::error::no CLANGARM64 toolchain found — aarch64-pc-windows-gnullvm cannot build or link"; exit 1; }
-                clang_bin="$(dirname "$clang_exe")"
-
-                # libunwind must be linked statically. rustc emits its own -lunwind inside
-                # the linker's *dynamic* section, and CLANGARM64 ships both libunwind.a and
-                # libunwind.dll.a in the same directory, where lld prefers the import lib.
-                # Left alone the extension acquires a runtime dependency on libunwind.dll —
-                # a file no consumer installing this gem would have. Verified by objdump
-                # rather than assumed: with this flag the built DLL imports only
-                # aarch64-ucrt-ruby<ver>.dll, api-ms-win-crt-* and Windows system DLLs.
-                # `-l static=` does not search the linker's default directories, so the -L
-                # is required alongside it, not decoration.
-                export RUSTFLAGS="-L native=$(win "$clang_bin/../lib") -l static=unwind"
-                export LIBCLANG_PATH="${LIBCLANG_PATH:-$(win "$clang_bin")}"
-
-                # Same shape as the x64 branch, and for a sharper reason. bindgen hands clang
-                # the *Rust* target triple whenever cargo is cross-compiling, and clang does
-                # not understand `aarch64-pc-windows-gnullvm` — it fails with
-                # "version 'llvm' in target triple ... is invalid", then can't find stdalign.h
-                # because it never got as far as its own resource dir. `aarch64-w64-mingw32`
-                # is the same ABI spelled the way clang accepts, exactly as x64 spells its
-                # gnu target `x86_64-w64-mingw32` below.
-                #
-                # This was briefly believed unnecessary, from a local run where it genuinely
-                # was: with a gnullvm *host* toolchain, host == target, cargo isn't
-                # cross-compiling, and bindgen injects no --target at all. The runner's host
-                # is MSVC, so it does. A local build that skips this flag proves nothing
-                # about CI unless its host triple matches the runner's.
-                clang_inc="$(win "$("$clang_exe" -print-resource-dir)")/include"
-                mingw_inc="$(win "$(dirname "$clang_bin")")/include"
-                export BINDGEN_EXTRA_CLANG_ARGS="--target=aarch64-w64-mingw32 -isystem \"$clang_inc\" -isystem \"$mingw_inc\""
-              else
-                # gnullvm, not gnu — a deliberate divergence from rb-sys's own table, which
-                # maps x64-mingw-ucrt to x86_64-pc-windows-gnu. That mapping describes the
-                # toolchain rb-sys cross-compiles with, not an ABI requirement: both targets
-                # emit the same mingw-w64/UCRT ABI, so RubyInstaller's GCC-built Ruby loads
-                # either. Taking the LLVM one instead is what closes the size gap the gnu
-                # target could not:
-                #
-                #   gnu + LTO + strip   1,040,384 bytes   .text 792,704
-                #   gnullvm + LTO       342,016 bytes     .text 264,742   (-67%)
-                #
-                # .text lands next to the arm64 leg's ~232 KB, which is the whole story: the
-                # GCC target statically links libgcc, the LLVM one uses compiler-rt. An
-                # earlier note here called that "inherent to the target, not a setting" — true
-                # of the gnu target, but the target is itself the setting.
-                #
-                # Two things had to be true for this to be safe, and both were tested on real
-                # win-x64 hardware rather than reasoned about, because both are the kind of
-                # thing that builds clean and fails at runtime:
-                #   * a compiler-rt extension loading into RubyInstaller's *GCC*-built UCRT64
-                #     Ruby — 55/55 green on both ABIs, imports only x64-ucrt-ruby<ver>.dll and
-                #     api-ms-win-crt-*;
-                #   * unwinding across the boundary, since magnus turns Rust panics into Ruby
-                #     exceptions and this swaps the unwinder — TimestampOutOfRangeError raises
-                #     and the process survives.
-                # Performance is unchanged (interleaved A/B, within noise on v4 and v7).
-                rust_target=x86_64-pc-windows-gnullvm
-                rustup target add "$rust_target"
-
-                # rustc picks x86_64-w64-mingw32-clang as this target's linker driver by name,
-                # so it has to be findable. Unlike arm64 — where setup-ruby installs CLANGARM64
-                # for its own reasons — nothing puts CLANG64 on a windows-2025 runner's PATH,
-                # so the step above pacman-installs it and this prepends it to *this script's*
-                # PATH rather than to GITHUB_PATH. That scoping is deliberate: every other
-                # binding (C#, Java, Go, Swift, PHP) shares this job, and dropping a second
-                # clang/lld ahead of them on PATH is an excellent way to break one of them for
-                # reasons that take a day to find.
-                command -v x86_64-w64-mingw32-clang >/dev/null 2>&1 || export PATH="/c/msys64/clang64/bin:$PATH"
-                clang_exe="$(command -v x86_64-w64-mingw32-clang || true)"
-                [ -n "$clang_exe" ] || { echo "::error::no CLANG64 toolchain found — x86_64-pc-windows-gnullvm cannot build or link"; exit 1; }
-                clang_bin="$(dirname "$clang_exe")"
-
-                # Static libunwind, for exactly the reason the arm64 branch documents: rustc
-                # emits its own -lunwind, CLANG64 ships libunwind.a and libunwind.dll.a side by
-                # side, and lld prefers the import lib — leaving the extension with a runtime
-                # dependency on a DLL no gem consumer has. Verified by objdump: with this flag
-                # the built DLL imports zero libunwind.
-                #
-                # -C strip=symbols is kept, though it is close to a no-op now. It existed
-                # because GNU ld retained an 8,295-entry COFF symbol table that -Wl,--strip-debug
-                # does not touch; lld does not retain it, which is why the arm64 branch never
-                # needed the flag. Kept because 342,016 bytes is the number actually measured
-                # *with* it, and a flag that costs nothing is not worth re-measuring to remove.
-                export RUSTFLAGS="-L native=$(win "$clang_bin/../lib") -l static=unwind -C strip=symbols"
-                export LIBCLANG_PATH="${LIBCLANG_PATH:-$(win "$clang_bin")}"
-
-                # Same bindgen redirect the arm64 branch needs, for the same reason: cargo is
-                # cross-compiling (the runner's host is MSVC), so bindgen hands clang the Rust
-                # triple, and clang rejects `x86_64-pc-windows-gnullvm` outright.
-                # `x86_64-w64-mingw32` is the same ABI spelled the way clang accepts.
-                #
-                # The inner quotes are load-bearing: bindgen splits this variable on
-                # whitespace, and a prefix containing a space loses the resource include, with
-                # the build then dying much further in on a missing mm_malloc.h. That is how
-                # it was found, so it is a regression test, not a precaution.
-                clang_inc="$(win "$("$clang_exe" -print-resource-dir)")/include"
-                mingw_inc="$(win "$(dirname "$clang_bin")")/include"
-                export BINDGEN_EXTRA_CLANG_ARGS="--target=x86_64-w64-mingw32 -isystem \"$clang_inc\" -isystem \"$mingw_inc\""
-              fi
-
-              cargo build --release --features ruby --target "$rust_target"
-              built="$CARGO_TARGET_DIR/$rust_target/release/$crate.dll"
-              # No `lib` prefix on a gnu/gnullvm-target cdylib, and mingw Ruby's DLEXT is
-              # `so`, not `dll` — `require` looks for exactly {crate}_native.so there.
-              ext=so
-              ;;
-            macOS)
-              cargo build --release --features ruby
-              built="$CARGO_TARGET_DIR/release/lib$crate.dylib"
-              ext=bundle
-              ;;
-            *)
-              cargo build --release --features ruby
-              built="$CARGO_TARGET_DIR/release/lib$crate.so"
-              ext=so
-              ;;
-          esac
-
-          # Two staged copies, both wanted. The versioned path is the fat-gem layout the
-          # consumer-side loader tries first, so this job exercises the real release load
-          # path rather than only the dev one. The flat path is what the upload step globs,
-          # and what a plain local `cargo build --release --features ruby` produces.
-          mkdir -p "../ruby/lib/$crate/$abi"
-          cp "$built" "../ruby/lib/$crate/$abi/${crate}_native.$ext"
-          cp "$built" "../ruby/lib/${crate}_native.$ext"
-          SCRIPT
-          chmod +x "$RUNNER_TEMP/forge/build-magnus.sh"
-
-      # ---------------------------------------------------------------------------------
-      # Trio 1 of 2 — the compatibility-floor ABI. Entirely skipped when the caller leaves
-      # `ruby_compat_version` empty, which is the default for every repo that wants only the
-      # current Ruby.
-      # ---------------------------------------------------------------------------------
-
-      # Known risk on the Windows legs, flagged rather than pre-solved because only a real
-      # run settles it: `bundler-cache: true` runs `bundle install`, and a `fiddle` dependency
-      # can resolve to a version that compiles a native extension, which needs a working MSYS2
-      # devkit. On a bare RubyInstaller that fails with "keyring is not writable"
-      # (reproduced locally on Windows). setup-ruby configures MSYS2 itself on Windows, so it
-      # may well not bite here; if it does, the fix is a `ridk install 3` step ahead of this
-      # one, not dropping the leg.
-      #
-      # win-arm64 confirms the compile half is real rather than hypothetical: on Ruby 3.4
-      # aarch64-mingw-ucrt, `bundle install` genuinely builds `fiddle 1.1.8 with native
-      # extensions`, and against a RubyInstaller installed *without* its devkit it fails with
-      # "MSYS2 could not be found. Please run 'ridk install'". Same class of problem, same
-      # fix — the toolchain this leg's Magnus build already depends on is the toolchain that
-      # settles it, so nothing extra is needed when the devkit is present.
-      - uses: ruby/setup-ruby@v1
+      - name: Ruby (Magnus) — compat ABI
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' }}
+        uses: SkunkWerkx/.github/.github/actions/ruby-magnus@master
         with:
           ruby-version: ${{ inputs.ruby_compat_version }}
-          # The bundler this Ruby ships with, never one read out of a Gemfile.lock. No caller
-          # commits that file, but the trio that runs first writes one whose BUNDLED WITH names
-          # its own bundler, and setup-ruby's default would then install that 2.x bundler on the
-          # 4.0 trio beside RubyGems 4 — thirty `already initialized constant Gem::Platform::*`
-          # warnings per leg, one per redeclared constant, on every job that runs both trios.
-          bundler: default
-          bundler-cache: true
-          working-directory: ruby
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          bundle-without: wasm
+          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
-      - name: Build and stage Ruby (Magnus) extension — compat ABI
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' }}
-        working-directory: rust
-        shell: bash
-        env:
-          ABI: ${{ inputs.ruby_compat_version }}
-          CRATE: ${{ inputs.crate }}
-        run: |
-          set -euo pipefail
-          "$RUNNER_TEMP/forge/build-magnus.sh"
-
-      - name: Test Ruby bindings (Magnus backend) — compat ABI
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' }}
-        working-directory: ruby
-        run: bundle exec rspec
-
-      # The compiled Magnus extension itself, for a caller to package into a real precompiled
-      # RubyGems platform gem later. Unlike a wheel or a .gem, a bare compiled extension
-      # carries no version metadata of its own — it's a reusable artifact regardless of PR vs.
-      # release, so unlike the wheel above this is always uploaded, no gating needed. The ABI
-      # is in the artifact NAME rather than the filename: the caller's release.yml copies each
-      # one into lib/{crate}/<minor>/ itself, and a stable inner filename keeps that loop
-      # simple.
-      - uses: actions/upload-artifact@v7
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' }}
-        with:
-          name: ruby-native-${{ matrix.rid }}-${{ inputs.ruby_compat_version }}
-          path: ruby/lib/${{ inputs.crate }}_native.*
-
-      # Attested for exactly the same reason as the plain native library above, and it is
-      # not a lesser case: a caller's release.yml drops this compiled extension straight
-      # into a precompiled RubyGems platform gem without recompiling it (see the
-      # rubygems-publish job's `native:gem` loop), so these bytes are what `gem install`
-      # puts on a consumer's machine. Left unsigned, the Magnus legs would have been
-      # the only shippable artifacts this forge produces that a consumer cannot verify —
-      # the opposite of what attest_native's own description promises. Same verifying
-      # command as the native library:
-      #
-      #     gh attestation verify <file> --repo <owner>/<repo> --signer-repo SkunkWerkx/.github
-      - name: Attest Ruby (Magnus) extension provenance — compat ABI
-        if: >-
-          !cancelled() && steps.native_lib.conclusion == 'success' &&
-          inputs.magnus && inputs.ruby_compat_version != '' &&
-          inputs.attest_native &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-path: ruby/lib/${{ inputs.crate }}_native.*
-
-      # ---------------------------------------------------------------------------------
-      # Trio 2 of 2 — the primary ABI (`ruby_version`, the current Ruby release). Runs last
-      # so the Ruby it installs is the one the rest of this job inherits.
-      # ---------------------------------------------------------------------------------
-      - uses: ruby/setup-ruby@v1
+      - name: Ruby (Magnus) — primary ABI
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus }}
+        uses: SkunkWerkx/.github/.github/actions/ruby-magnus@master
         with:
           ruby-version: ${{ inputs.ruby_version }}
-          bundler: default
-          bundler-cache: true
-          working-directory: ruby
-
-      - name: Build and stage Ruby (Magnus) extension — primary ABI
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus }}
-        working-directory: rust
-        shell: bash
-        env:
-          ABI: ${{ inputs.ruby_version }}
-          CRATE: ${{ inputs.crate }}
-        run: |
-          set -euo pipefail
-          "$RUNNER_TEMP/forge/build-magnus.sh"
-
-      - name: Test Ruby bindings (Magnus backend) — primary ABI
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus }}
-        working-directory: ruby
-        run: bundle exec rspec
-
-      - uses: actions/upload-artifact@v7
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus }}
-        with:
-          name: ruby-native-${{ matrix.rid }}-${{ inputs.ruby_version }}
-          path: ruby/lib/${{ inputs.crate }}_native.*
-
-      - name: Attest Ruby (Magnus) extension provenance — primary ABI
-        if: >-
-          !cancelled() && steps.native_lib.conclusion == 'success' &&
-          inputs.magnus && inputs.attest_native &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-path: ruby/lib/${{ inputs.crate }}_native.*
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          windows-toolchain: ${{ inputs.ruby_compat_version != '' && 'none' || 'default' }}
+          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       # --- the Fiddle backend, forced explicitly ---
       #
       # The universal zero-compile path every platform must keep green regardless of whether
-      # a Magnus extension exists there. It runs LAST within this section, not last in the
-      # job, and the ordering that matters is local: trio 2 above leaves the primary Ruby
-      # active, so this inherits it and needs no setup-ruby of its own.
-      #
-      # Which is why the step below exists only for `magnus: false`. A caller with Magnus off
-      # runs no trio, so nothing has installed Ruby — this is the one case that still needs
-      # its own call, and the one place a third `setup-ruby` is not duplication.
+      # a Magnus extension exists there. The primary-ABI call above leaves its Ruby active,
+      # so this inherits it and needs no setup-ruby of its own — the step below exists only
+      # for `magnus: false`, where nothing has installed a Ruby yet.
       - uses: ruby/setup-ruby@v1
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && !inputs.magnus }}
         with:
@@ -1212,8 +872,9 @@ jobs:
           export ${{ inputs.pure_env }}=1
           bundle exec rspec
 
-      # The same suite a third time, through the wasmtime gem (a development dependency in
-      # the caller's gemspec, so bundler-cache above already installed it).
+      # The same suite a third time, through the wasmtime gem: the caller's Gemfile keeps it
+      # in a `wasm` group, which the primary-ABI call above installed (only the compat ABI
+      # skips it).
       - name: Test Ruby bindings (wasm backend)
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module }}
         working-directory: ruby

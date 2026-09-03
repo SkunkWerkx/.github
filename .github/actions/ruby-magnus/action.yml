@@ -1,0 +1,152 @@
+name: Ruby — build, test, upload and attest a Magnus extension for one Ruby ABI
+description: >
+  One Ruby ABI, start to finish: install that Ruby, build the core crate's `ruby` feature
+  against it, run the binding's suite through the result, upload the extension and attest it.
+  hyper-build-native.yml calls this once per ABI a fat platform gem ships — a Magnus
+  extension is bound to one Ruby minor (no `abi3` equivalent), so two Rubies mean two
+  compiled files, and this action is the unit that repeats.
+
+inputs:
+  ruby-version:
+    description: "The Ruby minor to build against, e.g. 4.0"
+    required: true
+  crate:
+    description: "Lowercase core name — the extension is {crate}_native.{so,bundle}"
+    required: true
+  rid:
+    description: "This leg's RID, for the artifact name: ruby-native-{rid}-{ruby-version}"
+    required: true
+  attest:
+    description: "Sign SLSA build provenance for the extension ('true'/'false'); the calling job must hold id-token and attestations write"
+    required: false
+    default: "false"
+  windows-toolchain:
+    description: >
+      Passed through to setup-ruby. 'default' installs the MSYS2 build toolchain for the
+      selected Ruby; 'none' only puts Ruby on PATH. The second ABI on a Windows leg passes
+      'none': the first already extracted the very same toolchain (msys2-ucrt64 or
+      msys2-clangarm64, one archive for every Ruby >= 3.1 on that arch) and left it on PATH
+      and in the environment, and re-extracting it cost 18 s on win-x64 and 65 s on
+      win-arm64 per run, measured on HyperUuid run 33709678437.
+    required: false
+    default: "default"
+  bundle-without:
+    description: >
+      Bundler groups to skip for this ABI (BUNDLE_WITHOUT). The compat ABI passes the
+      caller's wasm group: the in-process wasm suite runs once, on the primary Ruby, and the
+      wasmtime gem it needs was 25 s of every compat-ABI `bundle install` on win-x64.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # `bundler: default` on purpose: the bundler this Ruby ships with, never one read out of
+    # a Gemfile.lock. No caller commits that file, but the ABI that runs first writes one
+    # whose BUNDLED WITH names its own bundler, and setup-ruby's default would then install
+    # that 2.x bundler on the 4.0 Ruby beside RubyGems 4 — thirty `already initialized
+    # constant Gem::Platform::*` warnings per leg, one per redeclared constant.
+    #
+    # bundler-cache keys on the generated lockfile's hash plus BUNDLE_WITH/WITHOUT, so the
+    # two ABIs and the two group selections never collide, and a second run with the same
+    # resolution restores instead of installing.
+    - uses: ruby/setup-ruby@v1
+      env:
+        BUNDLE_WITHOUT: ${{ inputs.bundle-without }}
+      with:
+        ruby-version: ${{ inputs.ruby-version }}
+        bundler: default
+        bundler-cache: true
+        working-directory: ruby
+        windows-toolchain: ${{ inputs.windows-toolchain }}
+
+    # win-x64 only. The extension targets x86_64-pc-windows-gnullvm (see build-magnus.sh
+    # for why), whose linker driver and libunwind come from MSYS2's CLANG64 environment.
+    # The runner images ship MSYS2 at C:\msys64 but neither put it on PATH nor install
+    # CLANG64, so this is the x64 equivalent of the CLANGARM64 toolchain setup-ruby hands
+    # the arm64 leg for free. Idempotent: the second ABI on the same runner finds the driver
+    # already there and exits before touching pacman.
+    #
+    # `pacman-key --init` is NOT run up front, and that ordering is the whole point of this
+    # step's shape. It generates a GPG master key and blocks on entropy, which on a headless
+    # runner hangs rather than fails — it wedged win-x64 for 17+ minutes on HyperUuid run
+    # 33647278560 with an empty log, because the original version also sent its output to
+    # /dev/null. The runner images ship MSYS2 with a populated keyring, so the install just
+    # works there and the keyring dance is only ever needed on a bare MSYS2 (which is what
+    # made it look necessary when this was developed locally). So: try the install first,
+    # and only fall back to initialising the keyring if that actually fails.
+    #
+    # Everything is bounded by `timeout` and reads from /dev/null. A CI step that can hang
+    # is worse than one that can fail: a failure names itself in 30 seconds, a hang burns an
+    # hour and tells you nothing. /usr/bin/timeout is spelled out because Git Bash's PATH
+    # also carries Windows' own System32\timeout.exe, which is a completely different
+    # program that would silently do the wrong thing here.
+    - name: Install the CLANG64 toolchain (win-x64)
+      if: runner.os == 'Windows' && runner.arch == 'X64'
+      shell: bash
+      run: |
+        set -euo pipefail
+        driver=/c/msys64/clang64/bin/x86_64-w64-mingw32-clang.exe
+        if [ -x "$driver" ]; then
+          echo "CLANG64 already present: $("$driver" --version | head -1)"
+          exit 0
+        fi
+        msys_bash=/c/msys64/usr/bin/bash.exe
+        [ -x "$msys_bash" ] || { echo "::error::MSYS2 not found at C:/msys64 — win-x64 Magnus needs its CLANG64 packages"; exit 1; }
+
+        tmo=/usr/bin/timeout; [ -x "$tmo" ] || tmo=""
+        msys() { ${tmo:+$tmo "$1"} "$msys_bash" -lc "$2" </dev/null; }
+
+        pkgs='mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-libunwind'
+        install="pacman -Sy --noconfirm --needed --disable-download-timeout $pkgs"
+
+        if ! msys 900 "$install"; then
+          echo "::notice::pacman install failed — initialising the MSYS2 keyring and retrying once"
+          msys 300 'pacman-key --init && pacman-key --populate msys2' || true
+          msys 900 "$install"
+        fi
+
+        # Fail loudly here if the packages landed somewhere unexpected — the build script
+        # falls back to exactly this prefix when the driver is not already on PATH.
+        [ -x "$driver" ] \
+          || { echo "::error::CLANG64 installed but x86_64-w64-mingw32-clang is missing from C:/msys64/clang64/bin"; exit 1; }
+        "$driver" --version | head -1
+
+    # The script is a file beside this action rather than YAML: it is 170 lines of
+    # toolchain archaeology, and a heredoc inside a workflow was the wrong home for it.
+    - name: Build and stage the Magnus extension — Ruby ${{ inputs.ruby-version }}
+      shell: bash
+      working-directory: rust
+      env:
+        ABI: ${{ inputs.ruby-version }}
+        CRATE: ${{ inputs.crate }}
+      run: "$GITHUB_ACTION_PATH/build-magnus.sh"
+
+    - name: Test Ruby bindings (Magnus backend) — Ruby ${{ inputs.ruby-version }}
+      shell: bash
+      working-directory: ruby
+      env:
+        BUNDLE_WITHOUT: ${{ inputs.bundle-without }}
+      run: bundle exec rspec
+
+    # The compiled extension itself, for a caller to package into a real precompiled
+    # RubyGems platform gem later. A bare compiled extension carries no version metadata of
+    # its own, so it is a reusable artifact regardless of PR vs. release and is always
+    # uploaded. The ABI is in the artifact NAME rather than the filename: the caller's
+    # release.yml copies each one into lib/{crate}/<minor>/ itself, and a stable inner
+    # filename keeps that loop simple.
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ruby-native-${{ inputs.rid }}-${{ inputs.ruby-version }}
+        path: ruby/lib/${{ inputs.crate }}_native.*
+
+    # Attested for exactly the same reason as the plain native library, and it is not a
+    # lesser case: a caller's release.yml drops this compiled extension straight into a
+    # precompiled RubyGems platform gem without recompiling it, so these bytes are what
+    # `gem install` puts on a consumer's machine. The signer identity is the calling
+    # reusable workflow's, so verifying still needs --signer-repo SkunkWerkx/.github.
+    - name: Attest Ruby (Magnus) extension provenance — Ruby ${{ inputs.ruby-version }}
+      if: inputs.attest == 'true'
+      uses: actions/attest-build-provenance@v3
+      with:
+        subject-path: ruby/lib/${{ inputs.crate }}_native.*
