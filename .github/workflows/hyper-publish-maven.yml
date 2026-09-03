@@ -37,6 +37,11 @@ on:
         description: "Directory to stage native/{rid}/{filename} resources under before publishing (e.g. java/src/main/resources/native)"
         required: true
         type: string
+      wasip1_module:
+        description: "Also stage the wasm-wasip1-module artifact at {java_resources_dir}/wasm32-wasip1/ (the in-process GraalWasm backend's module)"
+        required: false
+        type: boolean
+        default: false
       jdk_version:
         description: "Temurin major version (23 is the newest with win-arm64 builds — matches hyper-build-native.yml's own pin, even though this job itself only runs on ubuntu-latest)"
         required: false
@@ -83,6 +88,14 @@ jobs:
           run-id: ${{ inputs.source_run_id }}
           github-token: ${{ github.token }}
 
+      - uses: actions/download-artifact@v8
+        if: inputs.wasip1_module
+        with:
+          name: wasm-wasip1-module
+          path: artifacts/wasm-wasip1-module
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+
       - name: Stage native/{rid}/{filename} resources
         shell: bash
         run: |
@@ -100,6 +113,10 @@ jobs:
             mkdir -p "$dest"
             cp "artifacts/native-$rid/${LIB_NAMES[$rid]}" "$dest/"
           done
+          if [ "${{ inputs.wasip1_module }}" = "true" ]; then
+            mkdir -p "${{ inputs.java_resources_dir }}/wasm32-wasip1"
+            cp "artifacts/wasm-wasip1-module/${{ inputs.crate }}.wasm" "${{ inputs.java_resources_dir }}/wasm32-wasip1/"
+          fi
 
       - uses: actions/setup-java@v6
         with:

@@ -118,6 +118,23 @@ on:
         description: "Env var that forces the zero-compile fallback backend (e.g. HYPERCAST_PURE)"
         required: true
         type: string
+      wasip1_module:
+        description: >
+          Also build the core as a wasm32-wasip1 module ({crate}.wasm, the cdylib target with
+          the crate's own .cargo/config.toml export flags) on every leg, stage it beside each
+          binding's native library, and run each binding's suite a second time against its
+          in-process wasm backend: Java `./gradlew testWasm`, Python and Ruby with `wasm_env`
+          set, Go with the `{crate}_wasm` build tag (non-Windows legs only, since wasmtime-go
+          is cgo throughout and ships no win-arm64 build). The module is uploaded once, from
+          the linux-x64 leg, as `wasm-wasip1-module`, and attested like the native library.
+        required: false
+        type: boolean
+        default: false
+      wasm_env:
+        description: "Env var that forces the in-process wasm backend (e.g. HYPERUUID_WASM); required when wasip1_module is on"
+        required: false
+        type: string
+        default: ""
       csharp_test_project:
         description: "Path to the C# test csproj"
         required: true
@@ -263,10 +280,24 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.wasip1_module && 'wasm32-wasip1' || '' }}
 
       - name: Build native core (release)
         working-directory: rust
         run: cargo build --release
+
+      # The same crate, the same twelve exports, for the hosts that cannot dlopen anything:
+      # a wasm32-wasip1 module GraalWasm/wasmtime run inside the JVM/Ruby/Python/Go process.
+      # Built on every leg so each leg's second suite run tests a module built by the same
+      # toolchain that built its native library; only one copy needs to leave the job, since
+      # a wasm module is the same bytes wherever it was linked. Inside rust/ deliberately:
+      # cargo only reads the crate's .cargo/config.toml (the --export=malloc/free link flags
+      # the hosts depend on) from the crate directory.
+      - name: Build wasm32-wasip1 module
+        if: inputs.wasip1_module
+        working-directory: rust
+        run: cargo build --release --target wasm32-wasip1
 
       # Unit tests, each repo's shared conformance corpus, and its counting-allocator
       # allocation proof, per leg.
@@ -285,6 +316,23 @@ jobs:
         with:
           name: native-${{ matrix.rid }}
           path: out/${{ matrix.lib_name }}
+
+      - uses: actions/upload-artifact@v7
+        if: inputs.wasip1_module && matrix.rid == 'linux-x64'
+        with:
+          name: wasm-wasip1-module
+          path: rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm
+
+      # One artifact, one attestation: the module a caller's release packs into the jar and
+      # the gem is this linux-x64 copy, so this is the copy whose provenance gets recorded.
+      - name: Attest wasm32-wasip1 module provenance
+        if: >-
+          inputs.wasip1_module && matrix.rid == 'linux-x64' && inputs.attest_native &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm
 
       # Provenance for an artifact a consumer can't reproduce. The Rust build is
       # deterministic on a fixed toolchain, but it is NOT bit-reproducible across machines —
@@ -339,12 +387,30 @@ jobs:
             Windows) cp "rust/target/release/${{ inputs.crate }}.dll" "python/src/${{ inputs.crate }}/_native.pyd" ;;
           esac
 
+      - name: Stage wasm32-wasip1 module for Python
+        if: inputs.pyo3 && inputs.wasip1_module
+        shell: bash
+        run: |
+          mkdir -p "python/src/${{ inputs.crate }}/native/wasm32-wasip1"
+          cp "rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm" "python/src/${{ inputs.crate }}/native/wasm32-wasip1/"
+
       - name: Test Python bindings
         if: inputs.pyo3
         working-directory: python
         shell: bash
         run: |
           pip install pytest
+          pytest
+
+      # The whole suite again, through wasmtime-py instead of the PyO3 extension. Both are
+      # importable at this point; the env var is what picks the wasm one.
+      - name: Test Python bindings (wasm backend)
+        if: inputs.pyo3 && inputs.wasip1_module
+        working-directory: python
+        shell: bash
+        run: |
+          pip install wasmtime
+          export ${{ inputs.wasm_env }}=1
           pytest
 
       # No maturin/real-wheel build here, deliberately: a wheel bakes its version into its
@@ -470,6 +536,13 @@ jobs:
           mkdir -p "${{ inputs.java_resources_dir }}/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "${{ inputs.java_resources_dir }}/${{ matrix.rid }}/"
 
+      - name: Place wasm32-wasip1 module for Java in-repo testing
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java_resources_dir != '' && inputs.wasip1_module }}
+        shell: bash
+        run: |
+          mkdir -p "${{ inputs.java_resources_dir }}/wasm32-wasip1"
+          cp "rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm" "${{ inputs.java_resources_dir }}/wasm32-wasip1/"
+
       # `javadoc` alongside `test`, and it is not documentation housekeeping — it is this
       # binding's doc gate finally running where the others already do. A caller's
       # build.gradle.kts sets `javadoc -Xwerror`, which promotes a missing @param/@return to a
@@ -493,6 +566,15 @@ jobs:
           chmod +x gradlew
           ./gradlew test javadoc --console=plain
 
+      # The same suite through GraalWasm: the caller's build.gradle.kts defines `testWasm` as
+      # the `test` task with the backend-selecting system property set and GraalWasm on the
+      # test runtime classpath only, so the published POM never carries it.
+      - name: Test Java bindings (wasm backend)
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module }}
+        working-directory: java
+        shell: bash
+        run: ./gradlew testWasm --console=plain
+
       # Go: cgo and/or purego, whichever backends the repo ships. go_windows=false for
       # cgo-only bindings until their purego fallback lands.
       - uses: actions/setup-go@v7
@@ -508,10 +590,25 @@ jobs:
           mkdir -p "go/native/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "go/native/${{ matrix.rid }}/"
 
+      - name: Place wasm32-wasip1 module for Go in-repo testing
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && inputs.wasip1_module && runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          mkdir -p go/native/wasm32-wasip1
+          cp "rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm" go/native/wasm32-wasip1/
+
       - name: Test Go bindings against this platform's native lib
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && (inputs.go_windows || runner.os != 'Windows') }}
         working-directory: go
         run: go test ./...
+
+      # The same suite through wasmtime-go, selected by build tag. Non-Windows only: the Go
+      # binding keeps Windows on purego precisely to need no C toolchain there, and
+      # wasmtime-go is cgo throughout with no win-arm64 build at all.
+      - name: Test Go bindings (wasm backend)
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && inputs.wasip1_module && runner.os != 'Windows' }}
+        working-directory: go
+        run: go test -tags ${{ inputs.crate }}_wasm ./...
 
       # Swift: dlopen/dlsym (LoadLibraryW/GetProcAddress on Windows) + @convention(c).
       # SwiftyLab/setup-swift for its verified windows-11-arm support.
@@ -1100,10 +1197,27 @@ jobs:
           working-directory: ruby
 
       # (bash + export because an env: mapping key can't be an expression.)
+      - name: Place wasm32-wasip1 module for Ruby in-repo testing
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module }}
+        shell: bash
+        run: |
+          mkdir -p "ruby/lib/${{ inputs.crate }}/native/wasm32-wasip1"
+          cp "rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm" "ruby/lib/${{ inputs.crate }}/native/wasm32-wasip1/"
+
       - name: Test Ruby bindings (Fiddle backend) against this platform's native lib
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         working-directory: ruby
         shell: bash
         run: |
           export ${{ inputs.pure_env }}=1
+          bundle exec rspec
+
+      # The same suite a third time, through the wasmtime gem (a development dependency in
+      # the caller's gemspec, so bundler-cache above already installed it).
+      - name: Test Ruby bindings (wasm backend)
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module }}
+        working-directory: ruby
+        shell: bash
+        run: |
+          export ${{ inputs.wasm_env }}=1
           bundle exec rspec
