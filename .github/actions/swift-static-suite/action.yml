@@ -1,0 +1,30 @@
+name: Swift — run the binding against its static libraries in a Swift container
+description: >
+  One Swift version, one container: copies the binding out of the checkout and runs the
+  checks named against the static libraries in swift/{Project}Core.artifactbundle — the
+  binding's own suite on glibc or WebAssembly, and swift/StaticSmokeTest on glibc, musl
+  (Swift's static Linux SDK) or WebAssembly. hyper-build-native.yml calls this once for the
+  current Swift and once for the declared floor.
+
+inputs:
+  project:
+    description: "The binding's name — the bundle is swift/{Project}Core.artifactbundle"
+    required: true
+  swift-version:
+    description: "Swift version to run on, e.g. 6.4 — resolved to its newest patch release"
+    required: true
+  checks:
+    description: "Space-separated checks: test, test-wasm, smoke-glibc, smoke-musl, smoke-wasm (see suite-swift-static.sh)"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Swift ${{ inputs.swift-version }} — ${{ inputs.checks }}
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+        SWIFT_VERSION: ${{ inputs.swift-version }}
+        CHECKS: ${{ inputs.checks }}
+      # $CHECKS unquoted on purpose: it is a list.
+      run: '"$GITHUB_ACTION_PATH/suite-swift-static.sh" "$PROJECT" . "$SWIFT_VERSION" $CHECKS'

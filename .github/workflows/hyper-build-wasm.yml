@@ -18,7 +18,7 @@ name: HyperForge — build the Rust core as a wasm32-unknown-emscripten static l
 #    invocation without touching Cargo.toml's shared [lib] section (cdylib, the default
 #    there, produces an already-linked complete .wasm module — a consumer like .NET's
 #    instead). Verified end-to-end in wasm-spike.yml before this got promoted out of "spike."
-#  * --no-default-features --features wasm-staticlib: the library is built without Rust's
+#  * --no-default-features --features staticlib: the library is built without Rust's
 #    standard library, with the crate's own panic handler in its place. A static library
 #    that bundles std defines rust_eh_personality, and two of them cannot be linked into one
 #    wasm module — which is what a Blazor app referencing two Hyper* packages asks for. It

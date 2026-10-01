@@ -1,0 +1,63 @@
+name: Swift — build the core as the static libraries the Swift binding links in
+description: >
+  Builds the core crate as a no_std static library for each Linux and WebAssembly triple the
+  Swift binding links statically, and writes them into swift/{Project}Core.artifactbundle —
+  the SwiftPM binary target the binding's manifest declares. With `upload`, the archives and
+  the bundle's info.json leave the job as the `swift-static` artifact, which is what a
+  caller's stage-native-binaries.yml commits. The Rust toolchain must already be installed.
+
+inputs:
+  crate:
+    description: "Lowercase core name — the archives are lib{crate}.a"
+    required: true
+  project:
+    description: "The binding's name — the bundle is swift/{Project}Core.artifactbundle"
+    required: true
+  targets:
+    description: "Space-separated Rust targets to build; empty builds all five (see build-swift-static.sh)"
+    required: false
+    default: ""
+  upload:
+    description: "Upload the archives and info.json as the swift-static artifact ('true'/'false')"
+    required: false
+    default: "false"
+  attest:
+    description: "Sign SLSA build provenance for the archives ('true'/'false'); the calling job must hold id-token and attestations write"
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    # The script is a file beside this action rather than YAML, for the same reason
+    # musl-native's is: it runs unchanged on a developer's machine, which is how a bundle
+    # gets refreshed by hand and how this was proven before any runner saw it.
+    - name: Build the static libraries into the Swift artifact bundle
+      shell: bash
+      env:
+        CRATE: ${{ inputs.crate }}
+        PROJECT: ${{ inputs.project }}
+        TARGETS: ${{ inputs.targets }}
+      # $TARGETS unquoted on purpose: it is a list.
+      run: '"$GITHUB_ACTION_PATH/build-swift-static.sh" "$CRATE" "$PROJECT" . $TARGETS'
+
+    # The archives and info.json only — the header and module map are source, already in the
+    # tree. upload-artifact roots the artifact at the paths' common directory, the bundle
+    # itself, so it unpacks straight over swift/{Project}Core.artifactbundle.
+    - uses: actions/upload-artifact@v7
+      if: inputs.upload == 'true'
+      with:
+        name: swift-static
+        path: |
+          swift/${{ inputs.project }}Core.artifactbundle/*/lib${{ inputs.crate }}.a
+          swift/${{ inputs.project }}Core.artifactbundle/info.json
+
+    # Attested for the same reason the shared libraries are: stage-native-binaries.yml
+    # commits these bytes, and every SwiftPM consumer on Linux or WebAssembly links them
+    # into their own executable. The signer identity is the calling reusable workflow's, so
+    # verifying needs --signer-repo SkunkWerkx/.github.
+    - name: Attest the static libraries' provenance
+      if: inputs.attest == 'true'
+      uses: actions/attest-build-provenance@v3
+      with:
+        subject-path: swift/${{ inputs.project }}Core.artifactbundle/*/lib${{ inputs.crate }}.a

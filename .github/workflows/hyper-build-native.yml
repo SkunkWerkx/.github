@@ -246,6 +246,21 @@ on:
         required: false
         type: string
         default: "6.4"
+      swift_static:
+        description: >
+          The Swift binding links the core statically on Linux and WebAssembly, from a
+          SwiftPM artifact bundle at swift/{project}Core.artifactbundle. Builds those five
+          archives, uploads and attests them as `swift-static`, and runs the binding against
+          them in Swift's own containers: the static Linux SDK (musl) and the WebAssembly
+          SDK on swift_version, then everything again on swift_floor_version.
+        required: false
+        type: boolean
+        default: true
+      swift_floor_version:
+        description: "Oldest Swift the binding declares (swift-tools-version) — the swift-static job runs glibc, musl and WebAssembly on it as well as on swift_version. Empty skips the floor run."
+        required: false
+        type: string
+        default: "6.2"
       musl:
         description: >
           Also build the core for linux-musl-x64 and linux-musl-arm64 inside Alpine
@@ -691,12 +706,27 @@ jobs:
         with:
           swift-version: ${{ inputs.swift_version }}
 
+      # How the suite below reaches this leg's own build of the core depends on the
+      # platform. macOS and Windows load a shared library out of the package's resources, so
+      # the one just built is placed there. Linux links the core in from the binding's
+      # artifact bundle, so this leg's triple is rebuilt as a static library and written over
+      # the committed archive — otherwise `swift test` here would be testing whatever was
+      # staged last, not this commit. A caller without `swift_static` is still on the
+      # loading path everywhere.
       - name: Place native lib for Swift in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && !(inputs.swift_static && runner.os == 'Linux') }}
         shell: bash
         run: |
           mkdir -p "swift/Sources/${{ inputs.project }}/NativeLibs/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "swift/Sources/${{ inputs.project }}/NativeLibs/${{ matrix.rid }}/"
+
+      - name: Link this leg's core into the Swift artifact bundle
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.swift_static && runner.os == 'Linux' }}
+        uses: SkunkWerkx/.github/.github/actions/swift-static@master
+        with:
+          crate: ${{ inputs.crate }}
+          project: ${{ inputs.project }}
+          targets: ${{ matrix.target }}
 
       - name: Test Swift bindings against this platform's native lib
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
@@ -706,14 +736,16 @@ jobs:
       # Swift 6.4 made Swift Build SwiftPM's default build system, and it stages a package's
       # resources under a different name off macOS: {Project}_{Project}.bundle where the
       # build system before it wrote {Project}_{Project}.resources. The bindings open their
-      # native library out of that directory by name, so with only the old name known, the
+      # shared library out of that directory by name, so with only the old name known, the
       # first run on 6.4 found nothing there and loaded from the source-tree fallback — fine
       # on a build machine, a load failure once deployed. The suite pins the origin, which is
-      # how it was caught. Every consumer still on 6.3 or earlier gets the old layout, so it
-      # keeps a run of its own; Linux only, since the name is the same on Windows and a
-      # second Swift build there costs minutes.
+      # how it was caught. A consumer on 6.2 or 6.3 still gets the old layout, so it keeps a
+      # run of its own, on the one leg where the name matters: Windows. macOS writes
+      # `.bundle` under both build systems, and Linux no longer loads anything. x64 only,
+      # because a second Swift build on Windows costs minutes. When a future toolchain
+      # removes `--build-system native` (6.4 already warns), this step goes with it.
       - name: Test Swift bindings — the pre-6.4 build system's resource layout
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'Linux' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid == 'win-x64' }}
         working-directory: swift
         run: swift test --build-system native
 
@@ -1147,3 +1179,86 @@ jobs:
           rid: ${{ matrix.rid }}
           image: python:${{ inputs.python_floor_version }}-alpine
           wasm_module: ${{ inputs.wasip1_module && format('rust/target/wasm32-wasip1/release/{0}.wasm', inputs.crate) || '' }}
+
+  # ===========================================================================
+  # The Swift binding's static libraries.
+  #
+  # On Linux and WebAssembly the Swift binding does not load the core, it links it: a
+  # SwiftPM binary target (SE-0482) with one archive per triple, committed in the binding's
+  # artifact bundle. Two of those triples can be reached no other way — Swift's static Linux
+  # SDK (musl) and its WebAssembly SDK build executables with no dynamic loader — and on
+  # glibc it means a consumer has nothing to deploy beside their executable.
+  #
+  # Two jobs, so that what is tested is what ships. The first builds all five archives on
+  # one runner (a static library is never linked, so every triple cross-compiles with no C
+  # toolchain), uploads them as `swift-static` and attests them; a caller's
+  # stage-native-binaries.yml commits exactly those bytes. The second downloads that
+  # artifact on each architecture and runs the binding against it in Swift's own
+  # containers — containers, because the runner image has a Swift toolchain for neither the
+  # SDKs nor the floor version:
+  #
+  #  * on swift_version: the smoke executable through the static Linux SDK, then the whole
+  #    suite and the smoke executable for WebAssembly. (glibc on swift_version is the
+  #    six-leg job's `swift test`, which rebuilds its own triple.)
+  #  * on swift_floor_version: the whole suite and the smoke executable on glibc, and the
+  #    smoke executable on musl and WebAssembly. Not `swift test` for WebAssembly there:
+  #    6.2's XCTest traps inside Foundation's Bundle.main before any test runs
+  #    (`Trap: unreachable` in XCTMain, measured on 6.2.4), so the suite cannot start.
+  #
+  # musl is always the smoke executable, never `swift test`: the static Linux SDK ships no
+  # XCTest. See the swift-static-suite action's suite-swift-static.sh.
+  # ===========================================================================
+  build-swift-static:
+    if: inputs.swift_static
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build, upload and attest the static libraries
+        uses: SkunkWerkx/.github/.github/actions/swift-static@master
+        with:
+          crate: ${{ inputs.crate }}
+          project: ${{ inputs.project }}
+          upload: "true"
+          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+
+  test-swift-static:
+    needs: build-swift-static
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, ubuntu-26.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Over the committed bundle: the header and module map come from the checkout, the
+      # archives and info.json from the job above.
+      - uses: actions/download-artifact@v8
+        with:
+          name: swift-static
+          path: swift/${{ inputs.project }}Core.artifactbundle
+
+      # The two SDKs are 380 MB per Swift version. They are immutable once published, so the
+      # key is the versions and nothing else.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/hyper-swift-sdk
+          key: swift-sdk-${{ runner.arch }}-${{ inputs.swift_version }}-${{ inputs.swift_floor_version }}
+
+      - name: Swift ${{ inputs.swift_version }} — musl and WebAssembly
+        uses: SkunkWerkx/.github/.github/actions/swift-static-suite@master
+        with:
+          project: ${{ inputs.project }}
+          swift-version: ${{ inputs.swift_version }}
+          checks: smoke-musl test-wasm smoke-wasm
+
+      - name: Swift ${{ inputs.swift_floor_version }} — the declared floor, on glibc, musl and WebAssembly
+        if: ${{ !cancelled() && inputs.swift_floor_version != '' && inputs.swift_floor_version != inputs.swift_version }}
+        uses: SkunkWerkx/.github/.github/actions/swift-static-suite@master
+        with:
+          project: ${{ inputs.project }}
+          swift-version: ${{ inputs.swift_floor_version }}
+          checks: test smoke-glibc smoke-musl smoke-wasm
