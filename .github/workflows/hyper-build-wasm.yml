@@ -10,11 +10,25 @@ name: HyperForge — build the Rust core as a wasm32-unknown-emscripten static l
 # NuGet-focused release.yml only ever sees a plain `uses:` call, not foreign cargo/emsdk
 # commands sitting next to dotnet ones.
 #
-# cargo rustc --crate-type staticlib, not cargo build: overrides the crate-type for just
-# this invocation without touching Cargo.toml's shared [lib] section (cdylib, the default
-# there, produces an already-linked complete .wasm module — a consumer like .NET's
-# NativeFileReference needs an unlinked .a it can link INTO its own final combined build
-# instead). Verified end-to-end in wasm-spike.yml before this got promoted out of "spike."
+# `cargo wasm-staticlib` is an alias every Hyper* core declares in its own
+# rust/.cargo/config.toml, for `cargo rustc --crate-type staticlib` with std left out. Two
+# things in that one spelling:
+#
+#  * --crate-type staticlib, not cargo build: overrides the crate-type for just this
+#    invocation without touching Cargo.toml's shared [lib] section (cdylib, the default
+#    there, produces an already-linked complete .wasm module — a consumer like .NET's
+#    instead). Verified end-to-end in wasm-spike.yml before this got promoted out of "spike."
+#  * --no-default-features --features wasm-staticlib: the library is built without Rust's
+#    standard library, with the crate's own panic handler in its place. A static library
+#    that bundles std defines rust_eh_personality, and two of them cannot be linked into one
+#    wasm module — which is what a Blazor app referencing two Hyper* packages asks for. It
+#    failed exactly that way for HyperUuid + HyperCast before this; the step after the
+#    build keeps it from coming back.
+#
+# The crate's .cargo/config.toml also sets panic=abort for this target, which a no_std
+# artifact requires. What this does NOT remove is the consumer-side exception-handling
+# translation in each package's .targets: Rust's precompiled core still carries the legacy
+# encoding, and a browser refuses the mix without it (re-tested after std was dropped).
 
 on:
   workflow_call:
@@ -58,7 +72,24 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         run: |
           source "$HOME/emsdk/emsdk_env.sh"
-          cargo rustc --release --target wasm32-unknown-emscripten --crate-type staticlib
+          cargo wasm-staticlib
+
+      # The reason the library is built without std, held as a check rather than a comment:
+      # a static library that defines rust_eh_personality carries its own copy of Rust's
+      # standard library, and two of those cannot be linked into one Blazor app — wasm-ld
+      # stops on `duplicate symbol: rust_eh_personality`. Each package's own browser test
+      # links only one library, so nothing else in CI would notice std coming back.
+      - name: The static library carries no copy of Rust's standard library
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+          source "$HOME/emsdk/emsdk_env.sh"
+          lib="target/wasm32-unknown-emscripten/release/lib${{ inputs.crate }}.a"
+          if "$EMSDK/upstream/bin/llvm-nm" "$lib" | grep -E ' [TtDd] rust_eh_personality$'; then
+            echo "::error::$lib defines rust_eh_personality: it was built with std. Two such libraries cannot be linked into one wasm module."
+            exit 1
+          fi
+          echo "no rust_eh_personality in $lib"
 
       - uses: actions/upload-artifact@v7
         with:

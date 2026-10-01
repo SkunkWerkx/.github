@@ -267,7 +267,7 @@ on:
         description: "Oldest Python the package declares (requires-python, and the abi3 floor) — the musl job runs the suite on it as well as on python_version. Empty skips the floor run."
         required: false
         type: string
-        default: "3.10"
+        default: "3.11"
 
 jobs:
   build-native:
@@ -958,7 +958,8 @@ jobs:
   # Go needs no second run: its image is the version go.mod names, which is the floor.
   #
   # Not here, and why: Swift (its musl target links fully statically and has no dynamic
-  # loader, so the binding ships no musl library) and the Ruby Magnus extension (no musl
+  # loader, so the binding ships no musl library; a statically linked core via a SwiftPM
+  # binary static-library target, SE-0482, would cover it and is not built yet) and the Ruby Magnus extension (no musl
   # platform gem is built; RubyGems installs the `*-linux` gem on Alpine, its glibc extension
   # fails to load, and the gem runs on Fiddle over this library — which is the suite below).
   # ===========================================================================
