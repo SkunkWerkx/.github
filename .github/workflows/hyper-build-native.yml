@@ -241,10 +241,11 @@ on:
         required: false
         type: string
         default: "8.5"
+      # 6.4 is the first Swift with an Ubuntu 26.04 toolchain; 6.3 and earlier stop at 24.04.
       swift_version:
         required: false
         type: string
-        default: "6.3"
+        default: "6.4"
       musl:
         description: >
           Also build the core for linux-musl-x64 and linux-musl-arm64 inside Alpine
@@ -275,13 +276,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # The Ubuntu legs name their image outright rather than `ubuntu-latest`: x64 and
+          # arm64 then build on the same release, and moving to the next one is a commit here
+          # rather than GitHub's weeks-long label rollout landing in the middle of a release.
+          # The image's own glibc (2.43 on 26.04) is not the floor the library ships with —
+          # the step after the build holds that at 2.34.
+          - os: ubuntu-26.04
             rid: linux-x64
             lib_name: lib${{ inputs.crate }}.so
             target: x86_64-unknown-linux-gnu
             manylinux: "2_28"
             jdk_distribution: temurin
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-26.04-arm
             rid: linux-arm64
             lib_name: lib${{ inputs.crate }}.so
             target: aarch64-unknown-linux-gnu
@@ -322,6 +328,25 @@ jobs:
       - name: Build native core (release)
         working-directory: rust
         run: cargo build --release
+
+      # Every binding's README promises these two RIDs load on glibc 2.34 or newer, and that
+      # number is a property of the build image as much as of the source: a newer image can
+      # resolve the same calls to newer symbol versions and raise the floor without a line of
+      # Rust changing. Built on 24.04 (glibc 2.39) and on 26.04 (glibc 2.43) both cores
+      # reference nothing past GLIBC_2.34 — this keeps the next image bump, or the next std,
+      # from moving it silently.
+      - name: glibc floor — nothing newer than GLIBC_2.34 is referenced
+        if: runner.os == 'Linux'
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          newest=$(objdump -T "target/release/${{ matrix.lib_name }}" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "newest glibc symbol version referenced: $newest"
+          if [ "$(printf '%s\n' GLIBC_2.34 "$newest" | sort -V | tail -1)" != GLIBC_2.34 ]; then
+            echo "::error::${{ matrix.lib_name }} references $newest; the documented floor for ${{ matrix.rid }} is glibc 2.34"
+            objdump -T "target/release/${{ matrix.lib_name }}" | grep -F "$newest"
+            exit 1
+          fi
 
       # The same crate, the same exports, for the hosts that cannot dlopen anything:
       # a wasm32-wasip1 module GraalWasm/wasmtime run inside the JVM/Ruby/Python/Go process.
@@ -661,7 +686,7 @@ jobs:
 
       # Swift: dlopen/dlsym (LoadLibraryW/GetProcAddress on Windows) + @convention(c).
       # SwiftyLab/setup-swift for its verified windows-11-arm support.
-      - uses: SwiftyLab/setup-swift@v1.14.0
+      - uses: SwiftyLab/setup-swift@v1.14.1
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         with:
           swift-version: ${{ inputs.swift_version }}
@@ -677,6 +702,20 @@ jobs:
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         working-directory: swift
         run: swift test
+
+      # Swift 6.4 made Swift Build SwiftPM's default build system, and it stages a package's
+      # resources under a different name off macOS: {Project}_{Project}.bundle where the
+      # build system before it wrote {Project}_{Project}.resources. The bindings open their
+      # native library out of that directory by name, so with only the old name known, the
+      # first run on 6.4 found nothing there and loaded from the source-tree fallback — fine
+      # on a build machine, a load failure once deployed. The suite pins the origin, which is
+      # how it was caught. Every consumer still on 6.3 or earlier gets the old layout, so it
+      # keeps a run of its own; Linux only, since the name is the same on Windows and a
+      # second Swift build there costs minutes.
+      - name: Test Swift bindings — the pre-6.4 build system's resource layout
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'Linux' }}
+        working-directory: swift
+        run: swift test --build-system native
 
       # The manifest a consumer's `.package(url:)` actually resolves is the one at the repo
       # root — SwiftPM reads Package.swift from the top of the repository — and `swift test`
@@ -969,9 +1008,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-26.04
             rid: linux-musl-x64
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-26.04-arm
             rid: linux-musl-arm64
     runs-on: ${{ matrix.os }}
     steps:

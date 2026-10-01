@@ -76,7 +76,7 @@ on:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # attest-build-provenance mints an OIDC token to sign with and records the result. A
     # reusable workflow can never escalate past what its caller was granted, so the caller's
     # own `maven-publish` job has to hand these down too.
