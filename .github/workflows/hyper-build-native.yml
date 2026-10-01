@@ -713,6 +713,33 @@ jobs:
       # the committed archive — otherwise `swift test` here would be testing whatever was
       # staged last, not this commit. A caller without `swift_static` is still on the
       # loading path everywhere.
+      # setup-swift puts the Swift toolchain's bin directory first on PATH, and that
+      # directory has a `clang` of its own. bindgen — which the ext-php-rs and Magnus builds
+      # further down both run — loads the newest libclang it finds in the system's
+      # directories, but asks whichever `clang` is first on PATH where the compiler's own
+      # headers are. On Ubuntu 26.04 with Swift 6.4 those are two different compilers: the
+      # system's libclang 22 was handed Swift's clang 21 headers, whose SSE intrinsics call
+      # builtins libclang 22 no longer has, and the PHP extension failed on x64 with
+      # `xmmintrin.h:245: invalid conversion between vector type '__m128' and integer type
+      # 'int'` (HyperUuid run 36893952091; arm64 passed only because it has no such header).
+      # CLANG_PATH and LIBCLANG_PATH are clang-sys's own overrides; naming one system LLVM for
+      # both keeps the pair matched whatever a setup action does to PATH. Reproduced and
+      # fixed off-runner by pairing a system libclang 22 with a Swift toolchain's clang.
+      - name: Point bindgen at one system LLVM, not at Swift's clang
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for prefix in $(ls -d /usr/lib/llvm-* 2>/dev/null | sort -t- -k2 -n -r); do
+            if [ -x "$prefix/bin/clang" ] && ls "$prefix"/lib/libclang*.so* >/dev/null 2>&1; then
+              echo "bindgen: clang and libclang from $prefix ($("$prefix/bin/clang" --version | head -1))"
+              echo "CLANG_PATH=$prefix/bin/clang" >> "$GITHUB_ENV"
+              echo "LIBCLANG_PATH=$prefix/lib" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "::warning::No /usr/lib/llvm-*/ carries both clang and libclang; bindgen is left to find its own, which is how the mismatch above happens."
+
       - name: Place native lib for Swift in-repo testing
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && !(inputs.swift_static && runner.os == 'Linux') }}
         shell: bash
@@ -933,9 +960,33 @@ jobs:
       #
       # Not gated on `magnus`: this serves the Fiddle suite below too, which needs it on
       # every leg regardless of whether a Magnus extension was built.
+      #
+      # macOS, two things, both so that mkmf can link the test program it builds before it
+      # will compile a native gem (fiddle here). xcode-select: a Command Line Tools-only
+      # developer directory has failed that link before. TOOLCHAINS: when the Xcode on the
+      # image has no Swift of the requested version, setup-swift installs swift.org's
+      # toolchain and exports TOOLCHAINS=org.swift.* for the rest of the job, and from then
+      # on `cc` is that toolchain's clang. It compiles — the ext-php-rs build above is fine
+      # with it — but it does not link an executable against this Xcode's SDK, so `bundle
+      # install` died in fiddle's extconf with "The compiler failed to generate an executable
+      # file" on both Rubies (HyperUuid run 36893952091, the first on Swift 6.4). Everything
+      # that needs Swift has run by this point, so the job goes back to Xcode's own
+      # toolchain here, and proves it by linking the same kind of program mkmf does.
       - name: Point Xcode at a full toolchain (works around a Ruby native-extension mkmf issue)
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'macOS' }}
-        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          plist="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/ToolchainInfo.plist"
+          toolchain="$(/usr/libexec/PlistBuddy -c 'Print :Identifier' "$plist" 2>/dev/null || echo com.apple.dt.toolchain.XcodeDefault)"
+          echo "TOOLCHAINS was '${TOOLCHAINS:-}', now '$toolchain'"
+          echo "TOOLCHAINS=$toolchain" >> "$GITHUB_ENV"
+          export TOOLCHAINS="$toolchain"
+          printf 'int main(void) { return 0; }\n' > "$RUNNER_TEMP/mkmf-probe.c"
+          cc "$RUNNER_TEMP/mkmf-probe.c" -o "$RUNNER_TEMP/mkmf-probe" && "$RUNNER_TEMP/mkmf-probe" \
+            || { echo "::error::cc ($(xcrun -f cc)) cannot link an executable; Ruby's mkmf will fail the same way"; exit 1; }
+          echo "cc is $(xcrun -f cc)"
 
       # One placement, three consumers. The Fiddle suite loads this library directly; both
       # Magnus suites load it too, for their cross-backend agreement checks ("agrees with the
