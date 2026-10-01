@@ -45,6 +45,11 @@ on:
         required: false
         type: string
         default: "10.0.x"
+      musl:
+        description: "Also pack the linux-musl-x64 and linux-musl-arm64 libraries (hyper-build-native.yml's `musl` input, which must have been on for the source run)"
+        required: false
+        type: boolean
+        default: true
       artifact_name:
         description: "Name for the uploaded .nupkg artifact — the caller downloads it by this name"
         required: false
@@ -90,6 +95,10 @@ jobs:
             [win-x64]=${{ inputs.crate }}.dll
             [win-arm64]=${{ inputs.crate }}.dll
           )
+          if [ "${{ inputs.musl }}" = "true" ]; then
+            LIB_NAMES[linux-musl-x64]=lib${{ inputs.crate }}.so
+            LIB_NAMES[linux-musl-arm64]=lib${{ inputs.crate }}.so
+          fi
           for rid in "${!LIB_NAMES[@]}"; do
             dest="${{ inputs.runtimes_dir }}/$rid/native"
             mkdir -p "$dest"

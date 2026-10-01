@@ -2,7 +2,9 @@ name: HyperForge — build native core, test every binding
 
 # The canonical Hyper* CI pipeline. ONE job per leg: `build-native`, matrixed across the 6
 # real-hardware legs, builds the core crate and then runs every binding's suite against the
-# .so/.dylib/.dll it just produced.
+# .so/.dylib/.dll it just produced. A second, smaller job, `build-native-musl`, does the same
+# for the two musl RIDs inside real Alpine containers — see it for why that is a separate
+# job rather than two more rows of this matrix.
 #
 # It was two phases until 2026-09 — build-native, then six matrixed per-binding jobs
 # (test-csharp/java/go/swift/ruby-fiddle/php) each re-downloading the artifact. That shape
@@ -78,11 +80,16 @@ name: HyperForge — build native core, test every binding
 #   - Runner labels: macos-26-intel is the current osx-x64 label (macos-13 retired Dec
 #     2025; GitHub winds down x86_64 macOS by Fall 2027); windows-11-arm is GA and free
 #     for public repos.
-#   - JDK pin 23: Temurin ships Windows ARM64 builds for 21 and 23 only. This is the one
-#     pin in this file deliberately NOT tracking the current release, and it gets re-checked
-#     rather than assumed — most recent feature release is now 26, and a fresh Adoptium API
-#     query (assets/latest/{v}/hotspot?architecture=aarch64&os=windows) still returns zero
-#     win-arm64 assets for 24, 25 and 26. Bumping past 23 costs the win-arm64 Java leg.
+#   - JDK 25, with one leg on a different vendor. 25 is the Java bindings' floor: the first
+#     LTS still in upstream support that has the final FFM API (22, 23 and 24 are all
+#     end-of-life, and this file pinned 23 until 2026-09 for the reason that follows).
+#     Temurin ships Windows ARM64 builds for 21 and 23 only — a fresh Adoptium API query
+#     (assets/latest/{v}/hotspot?architecture=aarch64&os=windows) still returns zero
+#     win-arm64 assets for 25 and for 27 — so the win-arm64 leg alone installs Microsoft's
+#     build of OpenJDK 25, which does ship that platform. It is the matrix's
+#     `jdk_distribution` column rather than an input because it is a fact about the
+#     platform, not a choice a caller makes. Re-check Adoptium when bumping: the day it
+#     ships win-arm64 for the pinned version, the column collapses back to one vendor.
 #   - Darwin extension linking: a Python/Ruby/PHP extension must not link the host
 #     runtime — Py*/rb_*/php* symbols resolve at load, which needs -undefined
 #     dynamic_lookup, declared once in the core crate's own .cargo/config.toml (a plain
@@ -181,10 +188,10 @@ on:
         type: boolean
         default: true
       jdk_version:
-        description: "Temurin major version (23 is the newest with win-arm64 builds)"
+        description: "JDK major version — Temurin on every leg except win-arm64, which takes Microsoft's build (see the header's JDK note)"
         required: false
         type: string
-        default: "23"
+        default: "25"
       java_resources_dir:
         description: "If set, place the native lib at {dir}/{rid}/ before gradlew test (repos whose Gradle stages from rust/target/release leave this empty)"
         required: false
@@ -238,6 +245,29 @@ on:
         required: false
         type: string
         default: "6.3"
+      musl:
+        description: >
+          Also build the core for linux-musl-x64 and linux-musl-arm64 inside Alpine
+          containers, upload and attest each as `native-{rid}` like the six glibc/darwin/
+          windows libraries, and run the bindings that have a musl story against it there.
+        required: false
+        type: boolean
+        default: true
+      php_floor_version:
+        description: "Oldest PHP the binding declares (composer.json) — the musl job runs the PHP suite on it as well as on php_version. Empty skips the floor run."
+        required: false
+        type: string
+        default: "8.2"
+      ruby_floor_version:
+        description: "Oldest Ruby the gemspec declares — the musl job runs the Fiddle suite on it as well as on ruby_version. Empty skips the floor run."
+        required: false
+        type: string
+        default: "3.3"
+      python_floor_version:
+        description: "Oldest Python the package declares (requires-python, and the abi3 floor) — the musl job runs the suite on it as well as on python_version. Empty skips the floor run."
+        required: false
+        type: string
+        default: "3.10"
 
 jobs:
   build-native:
@@ -250,31 +280,37 @@ jobs:
             lib_name: lib${{ inputs.crate }}.so
             target: x86_64-unknown-linux-gnu
             manylinux: "2_28"
+            jdk_distribution: temurin
           - os: ubuntu-24.04-arm
             rid: linux-arm64
             lib_name: lib${{ inputs.crate }}.so
             target: aarch64-unknown-linux-gnu
             manylinux: "2_28"
+            jdk_distribution: temurin
           - os: macos-26-intel
             rid: osx-x64
             lib_name: lib${{ inputs.crate }}.dylib
             target: x86_64-apple-darwin
             manylinux: ""
+            jdk_distribution: temurin
           - os: macos-latest
             rid: osx-arm64
             lib_name: lib${{ inputs.crate }}.dylib
             target: aarch64-apple-darwin
             manylinux: ""
+            jdk_distribution: temurin
           - os: windows-latest
             rid: win-x64
             lib_name: ${{ inputs.crate }}.dll
             target: x86_64-pc-windows-msvc
             manylinux: ""
+            jdk_distribution: temurin
           - os: windows-11-arm
             rid: win-arm64
             lib_name: ${{ inputs.crate }}.dll
             target: aarch64-pc-windows-msvc
             manylinux: ""
+            jdk_distribution: microsoft
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -287,7 +323,7 @@ jobs:
         working-directory: rust
         run: cargo build --release
 
-      # The same crate, the same twelve exports, for the hosts that cannot dlopen anything:
+      # The same crate, the same exports, for the hosts that cannot dlopen anything:
       # a wasm32-wasip1 module GraalWasm/wasmtime run inside the JVM/Ruby/Python/Go process.
       # Built on every leg so each leg's second suite run tests a module built by the same
       # toolchain that built its native library; only one copy needs to leave the job, since
@@ -399,7 +435,9 @@ jobs:
         working-directory: python
         shell: bash
         run: |
-          pip install pytest
+          # mypy is what tests/test_typing.py checks a consumer file with; without it that
+          # test skips, and the package's `py.typed` claim goes unexercised.
+          pip install pytest mypy
           pytest
 
       # The whole suite again, through wasmtime-py instead of the PyO3 extension. Both are
@@ -526,7 +564,7 @@ jobs:
       - uses: actions/setup-java@v6
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         with:
-          distribution: "temurin"
+          distribution: ${{ matrix.jdk_distribution }}
           java-version: ${{ inputs.jdk_version }}
 
       - name: Place native lib for Java in-repo testing
@@ -602,6 +640,17 @@ jobs:
         working-directory: go
         run: go test ./...
 
+      # The purego backend again, where cgo is the default. Windows already runs purego (it is
+      # the only backend there), so without this step the path both READMEs promise for
+      # `CGO_ENABLED=0` builds and cross-compiles — dlopen_unix.go and every purego shim —
+      # was never executed on Linux or macOS by any CI leg.
+      - name: Test Go bindings (purego backend, CGO_ENABLED=0)
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && runner.os != 'Windows' }}
+        working-directory: go
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./...
+
       # The same suite through wasmtime-go, selected by build tag. Non-Windows only: the Go
       # binding keeps Windows on purego precisely to need no C toolchain there, and
       # wasmtime-go is cgo throughout with no win-arm64 build at all.
@@ -628,6 +677,15 @@ jobs:
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         working-directory: swift
         run: swift test
+
+      # The manifest a consumer's `.package(url:)` actually resolves is the one at the repo
+      # root — SwiftPM reads Package.swift from the top of the repository — and `swift test`
+      # above runs swift/Package.swift, a different file that merely has to stay in step
+      # with it. Until this step nothing built the root one, so a drift between the two
+      # would have shipped to every consumer with the whole matrix green.
+      - name: Build the root Swift manifest (the one consumers resolve)
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        run: swift build
 
       # =========================================================================
       # PHP — both backends, one section, one toolchain install.
@@ -696,9 +754,9 @@ jobs:
       # .so name rather than kept as one.
       #
       # It is a strict superset of the plain cdylib rather than an alternative to it — the
-      # same build still exports all twelve `uuid_*` C symbols the ext-ffi backend calls
-      # (measured: 12 of 12 present, at 689,448 bytes against the plain build's 431,840 on
-      # linux-x64). It still gets its own artifact instead of replacing `native-{rid}`,
+      # same build still exports every C symbol the ext-ffi backend calls (measured on
+      # HyperUuid when it had twelve: 12 of 12 present, at 689,448 bytes against the plain
+      # build's 431,840 on linux-x64). It still gets its own artifact instead of replacing `native-{rid}`,
       # because byte-identical native libraries across a caller's php/, go/ and swift/ trees
       # are what let one committed git blob serve three bindings under one attestation.
       - name: Stage PHP (ext-php-rs) extension
@@ -879,3 +937,173 @@ jobs:
         run: |
           export ${{ inputs.wasm_env }}=1
           bundle exec rspec
+
+  # ===========================================================================
+  # musl — linux-musl-x64 and linux-musl-arm64, built and tested inside Alpine.
+  #
+  # A separate job, not two more rows of the matrix above, for one reason: that job installs
+  # every toolchain with a setup-* action, and most of those have no Alpine story (setup-ruby
+  # and setup-dotnet do not target musl at all). Here every step is `docker run` on the
+  # language's own official `*-alpine` image instead — the image a consumer's Dockerfile
+  # starts FROM — on an ordinary Ubuntu runner of the matching architecture.
+  #
+  # What it produces is the same shape the six other legs produce: `native-{rid}`, uploaded
+  # and attested, so hyper-pack-nuget.yml, hyper-publish-maven.yml and each caller's gem and
+  # staging steps pick the two musl libraries up by the name they already glob for.
+  #
+  # The suites double as the floor tests. Every `*-alpine` image exists for old versions as
+  # well as new, so the PHP, Ruby and Python suites run twice — on the version the six-leg job uses
+  # and on the oldest one the package declares. Before this job nothing ran a declared floor
+  # at all: HyperCast claimed PHP 8.1 while using 8.2 syntax, and no run could have noticed.
+  # Go needs no second run: its image is the version go.mod names, which is the floor.
+  #
+  # Not here, and why: Swift (its musl target links fully statically and has no dynamic
+  # loader, so the binding ships no musl library) and the Ruby Magnus extension (no musl
+  # platform gem is built; RubyGems installs the `*-linux` gem on Alpine, its glibc extension
+  # fails to load, and the gem runs on Fiddle over this library — which is the suite below).
+  # ===========================================================================
+  build-native-musl:
+    if: inputs.musl
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-musl-x64
+          - os: ubuntu-24.04-arm
+            rid: linux-musl-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # The crate's own suite runs inside the container as part of this step; see
+      # build-musl.sh for the three linker facts it encodes.
+      - name: Build, test, upload and attest the core
+        id: native_lib
+        uses: SkunkWerkx/.github/.github/actions/musl-native@master
+        with:
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+
+      # The wasm module, for the two suites that also exercise an in-process wasm backend
+      # here (Java and Python). Built on the runner, not in a container: a wasm module is the
+      # same bytes wherever it is linked.
+      - uses: dtolnay/rust-toolchain@stable
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module }}
+        with:
+          targets: wasm32-wasip1
+
+      - name: Build wasm32-wasip1 module
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module }}
+        working-directory: rust
+        run: cargo build --release --target wasm32-wasip1
+
+      # Every suite below carries `!cancelled()` for the same reason the six-leg job's do:
+      # one binding's failure must not mask the others, and a red step names its binding.
+
+      # 10.0.x -> 10.0-alpine-aot. The `-aot` variant carries the clang and linker Native AOT
+      # needs; a preview channel's rc and GA builds are both served under the bare
+      # major.minor tag, which is what setup-dotnet's `dotnet-quality: preview` resolves to
+      # on the six-leg job.
+      - name: Resolve the Alpine images that follow the caller's versions
+        id: images
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        shell: bash
+        env:
+          DOTNET_VERSION: ${{ inputs.dotnet_version }}
+        run: |
+          set -euo pipefail
+          echo "dotnet=mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION%.x}-alpine-aot" >> "$GITHUB_OUTPUT"
+          if [ -f go/go.mod ]; then
+            echo "go=golang:$(sed -n 's/^go \([0-9]*\.[0-9]*\).*/\1/p' go/go.mod)-alpine" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: C# on Alpine (suite + Native AOT)
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_runtimes_dir != '' }}
+        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        with:
+          binding: csharp
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: ${{ steps.images.outputs.dotnet }}
+          csharp_test_project: ${{ inputs.csharp_test_project }}
+          csharp_aot_project: ${{ inputs.csharp_aot_project }}
+          csharp_runtimes_dir: ${{ inputs.csharp_runtimes_dir }}
+
+      - name: Java on Alpine (FFM suite + smoke program)
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        with:
+          binding: java
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: eclipse-temurin:${{ inputs.jdk_version }}-jdk-alpine
+          wasm_module: ${{ inputs.wasip1_module && format('rust/target/wasm32-wasip1/release/{0}.wasm', inputs.crate) || '' }}
+
+      - name: Go on Alpine (cgo, purego, then with libgcc removed)
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
+        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        with:
+          binding: go
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: ${{ steps.images.outputs.go }}
+
+      - name: PHP on Alpine
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        with:
+          binding: php
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: php:${{ inputs.php_version }}-cli-alpine
+
+      - name: PHP on Alpine — the declared floor
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.php_floor_version != '' && inputs.php_floor_version != inputs.php_version }}
+        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        with:
+          binding: php
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: php:${{ inputs.php_floor_version }}-cli-alpine
+
+      - name: Ruby on Alpine (Fiddle)
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        with:
+          binding: ruby
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: ruby:${{ inputs.ruby_version }}-alpine
+
+      - name: Ruby on Alpine (Fiddle) — the declared floor
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.ruby_floor_version != '' && inputs.ruby_floor_version != inputs.ruby_version }}
+        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        with:
+          binding: ruby
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: ruby:${{ inputs.ruby_floor_version }}-alpine
+
+      # Builds a musllinux wheel the way the release does, then installs it on a bare image
+      # with no compiler and no libgcc — see suite-musl.sh.
+      - name: Python on Alpine (musllinux wheel on a bare image)
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.pyo3 }}
+        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        with:
+          binding: python
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: python:${{ inputs.python_version }}-alpine
+          wasm_module: ${{ inputs.wasip1_module && format('rust/target/wasm32-wasip1/release/{0}.wasm', inputs.crate) || '' }}
+
+      - name: Python on Alpine — the declared floor
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.pyo3 && inputs.python_floor_version != '' && inputs.python_floor_version != inputs.python_version }}
+        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        with:
+          binding: python
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: python:${{ inputs.python_floor_version }}-alpine
+          wasm_module: ${{ inputs.wasip1_module && format('rust/target/wasm32-wasip1/release/{0}.wasm', inputs.crate) || '' }}

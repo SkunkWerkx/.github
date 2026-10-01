@@ -1,0 +1,53 @@
+name: musl — run one binding's suite on Alpine against the musl library
+description: >
+  One binding, one Alpine container: copies the binding out of the checkout, places the
+  musl library musl-native just built where that binding's package layout puts it, and runs
+  the binding's own test suite. hyper-build-native.yml calls this once per binding so that a
+  red step names the binding that failed.
+
+inputs:
+  binding:
+    description: "Which suite to run — see suite-musl.sh for the list"
+    required: true
+  crate:
+    description: "Lowercase core name — the library is lib{crate}.so"
+    required: true
+  rid:
+    description: "linux-musl-x64 or linux-musl-arm64; must match the runner's architecture"
+    required: true
+  image:
+    description: "Container image to run in, overriding the binding's default — how the same suite runs again on the binding's floor version"
+    required: false
+    default: ""
+  wasm_module:
+    description: "java and python: repo-relative path to the wasm32-wasip1 module, staged beside the musl library so the in-process wasm backend's tests run too; empty skips them"
+    required: false
+    default: ""
+  csharp_test_project:
+    description: "csharp only: path to the test csproj"
+    required: false
+    default: ""
+  csharp_aot_project:
+    description: "csharp only: path to the Native AOT smoke-test csproj; empty skips the AOT publish"
+    required: false
+    default: ""
+  csharp_runtimes_dir:
+    description: "csharp only: the package project's runtimes/ directory, where {rid}/native/ is staged"
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: ${{ inputs.binding }} on Alpine — ${{ inputs.rid }} ${{ inputs.image }}
+      shell: bash
+      env:
+        BINDING: ${{ inputs.binding }}
+        CRATE: ${{ inputs.crate }}
+        RID: ${{ inputs.rid }}
+        SUITE_IMAGE: ${{ inputs.image }}
+        WASM_MODULE: ${{ inputs.wasm_module }}
+        CSHARP_TEST_PROJECT: ${{ inputs.csharp_test_project }}
+        CSHARP_AOT_PROJECT: ${{ inputs.csharp_aot_project }}
+        CSHARP_RUNTIMES_DIR: ${{ inputs.csharp_runtimes_dir }}
+      run: '"$GITHUB_ACTION_PATH/suite-musl.sh" "$BINDING" "$CRATE" "$RID" . out-musl'

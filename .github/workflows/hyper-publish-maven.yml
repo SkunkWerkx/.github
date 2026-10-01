@@ -12,7 +12,8 @@ name: HyperForge — publish to Maven Central
 # A .jar has no package-manager-level platform selection the way NuGet's RID folders or
 # Python wheel tags do (see NativePlatform.java's own doc comment) — one jar bundles every
 # platform's native library under src/main/resources/native/{rid}/{filename} and picks the
-# right one at runtime, so this job stages all six before publishing, the same
+# right one at runtime, so this job stages every one of them before publishing (the six
+# glibc/darwin/windows libraries, plus the two musl ones unless `musl` is off), the same
 # artifact-naming convention hyper-pack-nuget.yml already uses.
 #
 # gradle-maven-publish-plugin's publishAndReleaseToMavenCentral does pack, sign, upload, and
@@ -43,10 +44,15 @@ on:
         type: boolean
         default: false
       jdk_version:
-        description: "Temurin major version (23 is the newest with win-arm64 builds — matches hyper-build-native.yml's own pin, even though this job itself only runs on ubuntu-latest)"
+        description: "Temurin major version — matches hyper-build-native.yml's own pin, the Java bindings' floor"
         required: false
         type: string
-        default: "23"
+        default: "25"
+      musl:
+        description: "Also pack the linux-musl-x64 and linux-musl-arm64 libraries (hyper-build-native.yml's `musl` input, which must have been on for the source run)"
+        required: false
+        type: boolean
+        default: true
       source_run_id:
         description: >
           Workflow run ID to pull native-* artifacts from — unlike hyper-pack-nuget.yml,
@@ -108,6 +114,10 @@ jobs:
             [win-x64]=${{ inputs.crate }}.dll
             [win-arm64]=${{ inputs.crate }}.dll
           )
+          if [ "${{ inputs.musl }}" = "true" ]; then
+            LIB_NAMES[linux-musl-x64]=lib${{ inputs.crate }}.so
+            LIB_NAMES[linux-musl-arm64]=lib${{ inputs.crate }}.so
+          fi
           for rid in "${!LIB_NAMES[@]}"; do
             dest="${{ inputs.java_resources_dir }}/$rid"
             mkdir -p "$dest"

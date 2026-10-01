@@ -1,0 +1,49 @@
+name: musl — build, test, upload and attest the core for one linux-musl RID
+description: >
+  Builds the core crate as a musl shared library inside an Alpine container, runs the
+  crate's own test suite there, and uploads and attests the result as `native-{rid}` —
+  the same artifact shape hyper-build-native.yml's six other legs produce, so every
+  downstream packer picks it up by the name it already globs for.
+
+inputs:
+  crate:
+    description: "Lowercase core name — the library is lib{crate}.so"
+    required: true
+  rid:
+    description: "linux-musl-x64 or linux-musl-arm64; names the artifact, and must match the runner's architecture"
+    required: true
+  attest:
+    description: "Sign SLSA build provenance for the library ('true'/'false'); the calling job must hold id-token and attestations write"
+    required: false
+    default: "false"
+
+outputs:
+  lib:
+    description: "Path to the built library, relative to the workspace"
+    value: out-musl/lib${{ inputs.crate }}.so
+
+runs:
+  using: composite
+  steps:
+    # The script is a file beside this action rather than YAML, for the same reason
+    # ruby-magnus's is: it runs unchanged on a developer's machine, which is how the musl
+    # legs were proven before any runner saw them.
+    - name: Build and test the core on Alpine — ${{ inputs.rid }}
+      shell: bash
+      env:
+        CRATE: ${{ inputs.crate }}
+      run: '"$GITHUB_ACTION_PATH/build-musl.sh" "$CRATE" . out-musl'
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: native-${{ inputs.rid }}
+        path: out-musl/lib${{ inputs.crate }}.so
+
+    # Same footing as every other native library the forge produces: a compiled file a
+    # consumer can neither read nor reproduce. The signer identity is the calling reusable
+    # workflow's, so verifying needs --signer-repo SkunkWerkx/.github.
+    - name: Attest native build provenance — ${{ inputs.rid }}
+      if: inputs.attest == 'true'
+      uses: actions/attest-build-provenance@v3
+      with:
+        subject-path: out-musl/lib${{ inputs.crate }}.so
