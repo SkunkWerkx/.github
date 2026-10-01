@@ -961,17 +961,27 @@ jobs:
       # Not gated on `magnus`: this serves the Fiddle suite below too, which needs it on
       # every leg regardless of whether a Magnus extension was built.
       #
-      # macOS, two things, both so that mkmf can link the test program it builds before it
-      # will compile a native gem (fiddle here). xcode-select: a Command Line Tools-only
-      # developer directory has failed that link before. TOOLCHAINS: when the Xcode on the
-      # image has no Swift of the requested version, setup-swift installs swift.org's
-      # toolchain and exports TOOLCHAINS=org.swift.* for the rest of the job, and from then
-      # on `cc` is that toolchain's clang. It compiles — the ext-php-rs build above is fine
-      # with it — but it does not link an executable against this Xcode's SDK, so `bundle
-      # install` died in fiddle's extconf with "The compiler failed to generate an executable
-      # file" on both Rubies (HyperUuid run 36893952091, the first on Swift 6.4). Everything
-      # that needs Swift has run by this point, so the job goes back to Xcode's own
-      # toolchain here, and proves it by linking the same kind of program mkmf does.
+      # macOS: three things, all so that mkmf can link the test program it builds before it
+      # will compile a native gem (fiddle here).
+      #
+      # xcode-select: a Command Line Tools-only developer directory has failed that link
+      # before.
+      #
+      # The other two undo what setup-swift leaves behind. When the Xcode on the image has no
+      # Swift of the requested version it installs swift.org's toolchain, and for the rest of
+      # the job (a) TOOLCHAINS names that toolchain, so `cc` and every other xcrun shim
+      # dispatch into it, and (b) the toolchain's own bin directory is ahead of /usr/bin on
+      # PATH, so a bare `clang` is no longer Apple's shim at all but swift.org's binary run
+      # directly, with nobody to tell it where the SDK is. Ruby is configured with CC=clang,
+      # so (b) is the one mkmf hits: `bundle install` died in fiddle's extconf with "The
+      # compiler failed to generate an executable file" on both Rubies and both macOS legs
+      # (HyperUuid run 36893952091, the first on Swift 6.4). Fixing (a) alone did not help,
+      # and a probe that linked with `cc` passed while mkmf kept failing, which is why the
+      # probe below links with `clang`, the name mkmf uses.
+      #
+      # A step cannot take an entry off PATH — the runner re-prepends everything an action
+      # added — so a directory holding only `clang` and `clang++`, each a link to Apple's
+      # shim, goes in front instead. Everything that needs Swift has run by this point.
       - name: Point Xcode at a full toolchain (works around a Ruby native-extension mkmf issue)
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'macOS' }}
         shell: bash
@@ -983,10 +993,32 @@ jobs:
           echo "TOOLCHAINS was '${TOOLCHAINS:-}', now '$toolchain'"
           echo "TOOLCHAINS=$toolchain" >> "$GITHUB_ENV"
           export TOOLCHAINS="$toolchain"
-          printf 'int main(void) { return 0; }\n' > "$RUNNER_TEMP/mkmf-probe.c"
-          cc "$RUNNER_TEMP/mkmf-probe.c" -o "$RUNNER_TEMP/mkmf-probe" && "$RUNNER_TEMP/mkmf-probe" \
-            || { echo "::error::cc ($(xcrun -f cc)) cannot link an executable; Ruby's mkmf will fail the same way"; exit 1; }
-          echo "cc is $(xcrun -f cc)"
+
+          probe="$RUNNER_TEMP/mkmf-probe"
+          printf 'int main(void) { return 0; }\n' > "$probe.c"
+          links() { clang "$probe.c" -o "$probe" >/dev/null 2>&1 && "$probe"; }
+
+          # What mkmf has been getting: recorded, not fatal, so the log says whether this
+          # was the cause.
+          if links; then
+            echo "before: clang is $(command -v clang) and links an executable"
+          else
+            echo "before: clang is $(command -v clang) and does NOT link an executable"
+          fi
+
+          shims="$RUNNER_TEMP/xcode-clang"
+          mkdir -p "$shims"
+          ln -sf /usr/bin/clang "$shims/clang"
+          ln -sf /usr/bin/clang++ "$shims/clang++"
+          echo "$shims" >> "$GITHUB_PATH"
+          export PATH="$shims:$PATH"
+
+          if ! links; then
+            clang "$probe.c" -o "$probe" || true
+            echo "::error::clang ($(command -v clang) -> $(xcrun -f clang)) cannot link an executable; Ruby's mkmf will fail the same way"
+            exit 1
+          fi
+          echo "after: clang is $(command -v clang) -> $(xcrun -f clang) and links an executable"
 
       # One placement, three consumers. The Fiddle suite loads this library directly; both
       # Magnus suites load it too, for their cross-backend agreement checks ("agrees with the
