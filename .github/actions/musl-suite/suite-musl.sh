@@ -78,6 +78,14 @@ case "$binding" in
         if grep -nE "warning (IL|AOT)[0-9]{4}" /tmp/aot.log; then
           echo "::error::Native AOT publish emitted trim/AOT warnings on $RID"; exit 1
         fi
+        # Where the package has a static library for this RID the core is linked into
+        # the executable, and the shared library must not have been published beside it.
+        if ls "$(dirname "$RUNTIMES_DIR")/staticlibs/$RID"/* >/dev/null 2>&1; then
+          if ls /work/aot-out | grep -E "^lib$CRATE\.so$"; then
+            echo "::error::lib$CRATE.so was published beside an executable that should have it linked in"; exit 1
+          fi
+          echo "core linked into the executable: no lib$CRATE.so in the publish output"
+        fi
         "/work/aot-out/$(basename "$AOT_PROJECT" .csproj)"
       fi
     '
@@ -94,11 +102,20 @@ case "$binding" in
       mkdir -p "/work/go/native/$RID"
       cp "/musl/lib$CRATE.so" "/work/go/native/$RID/"
       cd /work/go
+      # A module with the core as a static library links it in under cgo (the archive is
+      # staged by the job, from the musl target); its loading cgo backend is then behind
+      # the {crate}_dynamic tag. A module without one has only the loading backend, and
+      # the tag is a no-op there.
       go test -count=1 ./...
+      go test -count=1 -tags "${CRATE}_dynamic" ./...
       CGO_ENABLED=0 go test -count=1 ./...
+      go test -c -tags "${CRATE}_dynamic" -o /work/suite-dynamic.test .
       go test -c -o /work/suite.test .
       apk del build-base >/dev/null
       if ls /usr/lib/libgcc_s.so* >/dev/null 2>&1; then echo "::error::libgcc_s is still installed, so this run proves nothing"; exit 1; fi
+      # The loading build is the one this check is about: it opens the musl shared library
+      # on an image with no libgcc. The linked build runs too, and needs nothing at all.
+      /work/suite-dynamic.test -test.count=1
       /work/suite.test -test.count=1
     '
     ;;

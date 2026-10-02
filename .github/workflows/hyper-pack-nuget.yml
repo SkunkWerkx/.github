@@ -50,6 +50,11 @@ on:
         required: false
         type: boolean
         default: true
+      static_libs:
+        description: "Also pack the static libraries a Native AOT publish links in (hyper-build-native.yml's `static_libs` input, which must have been on for the source run)"
+        required: false
+        type: boolean
+        default: true
       artifact_name:
         description: "Name for the uploaded .nupkg artifact — the caller downloads it by this name"
         required: false
@@ -104,6 +109,30 @@ jobs:
             mkdir -p "$dest"
             cp "artifacts/native-$rid/${LIB_NAMES[$rid]}" "$dest/"
           done
+
+      # The static libraries a Native AOT publish links in, one per RID, beside runtimes/ in
+      # the package (the csproj packs staticlibs/**, and build/{PackageId}.targets hands the
+      # one for the consumer's RID to the AOT linker). The artifact is laid out by repository
+      # path and also carries the Swift and Go trees; only the C# one is taken here.
+      - uses: actions/download-artifact@v8
+        if: inputs.static_libs
+        with:
+          name: static-libs
+          path: static-libs-artifact
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Stage staticlibs/{rid}/
+        if: inputs.static_libs
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="$(dirname "${{ inputs.runtimes_dir }}")/staticlibs"
+          src="static-libs-artifact/$dest"
+          [ -d "$src" ] || { echo "::error::the static-libs artifact has no $dest — nothing to pack for Native AOT"; exit 1; }
+          rm -rf "$dest"
+          cp -r "$src" "$dest"
+          find "$dest" -type f | sort
 
       - uses: actions/setup-dotnet@v6
         with:

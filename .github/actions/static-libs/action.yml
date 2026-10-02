@@ -1,0 +1,89 @@
+name: Static libraries — build the core for the bindings that link it in
+description: >
+  Builds the core crate as a no_std static library for each target named (all nine by
+  default) and places each archive where the binding that links it expects it: the Swift
+  artifact bundle (Linux and WebAssembly), go/staticlib (the cgo backend, Linux and macOS)
+  and the C# package's staticlibs directory (Native AOT, all eight RIDs). With `upload`, the
+  archives leave the job as the `static-libs` artifact, laid out by those same repository
+  paths — what a caller's stage-native-binaries.yml commits and hyper-pack-nuget.yml packs.
+  The Rust toolchain and python3 must already be installed.
+
+inputs:
+  crate:
+    description: "Lowercase core name — the archives are lib{crate}.a, or {crate}.lib for MSVC"
+    required: true
+  project:
+    description: "The bindings' name — swift/{Project}Core.artifactbundle, csharp/{Project}/staticlibs"
+    required: true
+  targets:
+    description: "Space-separated Rust targets to build; empty builds all nine (see build-static-libs.sh)"
+    required: false
+    default: ""
+  upload:
+    description: "Upload the archives as the static-libs artifact ('true'/'false')"
+    required: false
+    default: "false"
+  attest:
+    description: "Sign SLSA build provenance for the archives ('true'/'false'); the calling job must hold id-token and attestations write"
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    # The script is a file beside this action rather than YAML, for the same reason
+    # musl-native's is: it runs unchanged on a developer's machine, which is how an archive
+    # gets refreshed by hand and how this was proven before any runner saw it.
+    - name: Build the static libraries
+      shell: bash
+      env:
+        CRATE: ${{ inputs.crate }}
+        PROJECT: ${{ inputs.project }}
+        TARGETS: ${{ inputs.targets }}
+      # $TARGETS unquoted on purpose: it is a list.
+      run: '"$GITHUB_ACTION_PATH/build-static-libs.sh" "$CRATE" "$PROJECT" . $TARGETS'
+
+    # Copied out under their repository paths, so the artifact's root is the repository's
+    # whatever subset of the three bindings a caller has — upload-artifact roots an artifact
+    # at its paths' common directory, which would otherwise move with that subset. The
+    # Swift bundle's info.json rides along; its header and module map are source, already
+    # in the tree.
+    - name: Collect the archives under their repository paths
+      if: inputs.upload == 'true' || inputs.attest == 'true'
+      shell: bash
+      env:
+        CRATE: ${{ inputs.crate }}
+        PROJECT: ${{ inputs.project }}
+      run: |
+        set -euo pipefail
+        out="$RUNNER_TEMP/static-libs"
+        rm -rf "$out"
+        shopt -s nullglob
+        for file in \
+            "swift/${PROJECT}Core.artifactbundle"/*/"lib$CRATE.a" \
+            "swift/${PROJECT}Core.artifactbundle/info.json" \
+            go/staticlib/*/"lib$CRATE.a" \
+            "csharp/$PROJECT/staticlibs"/*/"lib$CRATE.a" \
+            "csharp/$PROJECT/staticlibs"/*/"$CRATE.lib"; do
+          mkdir -p "$out/$(dirname "$file")"
+          cp "$file" "$out/$file"
+        done
+        (cd "$out" && find . -type f | sort)
+
+    - uses: actions/upload-artifact@v7
+      if: inputs.upload == 'true'
+      with:
+        name: static-libs
+        path: ${{ runner.temp }}/static-libs
+
+    # Attested for the same reason the shared libraries are: stage-native-binaries.yml
+    # commits these bytes and hyper-pack-nuget.yml packs them, and every consumer who links
+    # one gets it inside their own executable. The signer identity is the calling reusable
+    # workflow's, so verifying needs --signer-repo SkunkWerkx/.github.
+    - name: Attest the static libraries' provenance
+      if: inputs.attest == 'true'
+      uses: actions/attest-build-provenance@v3
+      with:
+        subject-path: |
+          ${{ runner.temp }}/static-libs/**/lib${{ inputs.crate }}.a
+          ${{ runner.temp }}/static-libs/**/${{ inputs.crate }}.lib
