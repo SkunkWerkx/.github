@@ -1,6 +1,6 @@
 name: Static libraries — build the core for the bindings that link it in
 description: >
-  Builds the core crate as a no_std static library for each target named (all eleven by
+  Builds the core crate as a no_std static library for each target named (all nine by
   default) and places each archive where the binding that links it expects it: the Swift
   artifact bundle (Linux and WebAssembly), go/staticlib (cgo on Linux, macOS and
   Windows)
@@ -17,7 +17,7 @@ inputs:
     description: "The bindings' name — swift/{Project}Core.artifactbundle, csharp/{Project}/staticlibs"
     required: true
   targets:
-    description: "Space-separated Rust targets to build; empty builds all eleven (see build-static-libs.sh)"
+    description: "Space-separated Rust targets to build; empty builds all nine (see build-static-libs.sh)"
     required: false
     default: ""
   upload:

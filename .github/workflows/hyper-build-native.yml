@@ -250,7 +250,7 @@ on:
           Swift on Linux and WebAssembly (swift/{project}Core.artifactbundle), Go under cgo on
           Linux, macOS and Windows (go/staticlib), and a C# Native AOT publish on every RID
           (csharp/{project}/staticlibs). With this on, each leg builds its own targets'
-          archives before the suites that link them; a separate job builds all eleven, uploads
+          archives before the suites that link them; a separate job builds all nine, uploads
           and attests them as `static-libs`; and the Swift binding is run against them in
           Swift's own containers, on swift_version and again on swift_floor_version.
         required: false
@@ -336,14 +336,14 @@ jobs:
             target: x86_64-pc-windows-msvc
             manylinux: ""
             jdk_distribution: temurin
-            static_targets: x86_64-pc-windows-msvc x86_64-pc-windows-gnu
+            static_targets: x86_64-pc-windows-msvc
           - os: windows-11-arm
             rid: win-arm64
             lib_name: ${{ inputs.crate }}.dll
             target: aarch64-pc-windows-msvc
             manylinux: ""
             jdk_distribution: microsoft
-            static_targets: aarch64-pc-windows-msvc aarch64-pc-windows-gnullvm
+            static_targets: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -1396,13 +1396,13 @@ jobs:
   #    executables with no dynamic loader.
   #  * Go, under cgo on Linux, macOS and Windows — the archive is named on the cgo link
   #    line, and committed under go/staticlib because a Go module is whatever is in the
-  #    tree. Windows takes the GNU targets, since cgo drives MinGW's linker. There is no
+  #    tree. Windows links the MSVC archive C# does; MinGW's linker reads it. There is no
   #    other Go backend: nothing is embedded and nothing is loaded at run time.
   #  * C#, for a Native AOT publish on every RID — the package's targets file hands the
   #    archive to the AOT linker, so the result is one executable with no library beside it.
   #    These are not committed; hyper-pack-nuget.yml packs them from this run's artifact.
   #
-  # Two jobs, so that what is tested is what ships. The first builds all eleven archives on
+  # Two jobs, so that what is tested is what ships. The first builds all nine archives on
   # one runner (a static library is never linked, so every target — macOS and Windows
   # included — cross-compiles with no C toolchain), uploads them as `static-libs` and
   # attests them; a caller's stage-native-binaries.yml commits exactly those bytes into the
