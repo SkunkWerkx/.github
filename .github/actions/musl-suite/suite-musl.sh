@@ -91,31 +91,19 @@ case "$binding" in
     '
     ;;
 
-  # cgo, then purego, then the cgo test binary again with the C toolchain — and with it
-  # libgcc — removed, which is the state a multi-stage Dockerfile's runtime image is in. That
-  # last run is the one that proves the library needs nothing but musl's libc.
+  # The suite, then its test binary again with the C toolchain — and with it libgcc —
+  # removed, which is the state a multi-stage Dockerfile's runtime image is in. The core is
+  # linked in (the archive is staged by the job, from the musl target), so that last run
+  # proves the binary needs nothing but musl's libc.
   go)
     in_alpine "${SUITE_IMAGE:-golang:1.27-alpine}" '
       apk add --no-cache build-base >/dev/null
       cp -r /src/go /work/go
-      rm -rf /work/go/native/linux-x64 /work/go/native/linux-arm64
-      mkdir -p "/work/go/native/$RID"
-      cp "/musl/lib$CRATE.so" "/work/go/native/$RID/"
       cd /work/go
-      # A module with the core as a static library links it in under cgo (the archive is
-      # staged by the job, from the musl target); its loading cgo backend is then behind
-      # the {crate}_dynamic tag. A module without one has only the loading backend, and
-      # the tag is a no-op there.
       go test -count=1 ./...
-      go test -count=1 -tags "${CRATE}_dynamic" ./...
-      CGO_ENABLED=0 go test -count=1 ./...
-      go test -c -tags "${CRATE}_dynamic" -o /work/suite-dynamic.test .
       go test -c -o /work/suite.test .
       apk del build-base >/dev/null
       if ls /usr/lib/libgcc_s.so* >/dev/null 2>&1; then echo "::error::libgcc_s is still installed, so this run proves nothing"; exit 1; fi
-      # The loading build is the one this check is about: it opens the musl shared library
-      # on an image with no libgcc. The linked build runs too, and needs nothing at all.
-      /work/suite-dynamic.test -test.count=1
       /work/suite.test -test.count=1
     '
     ;;

@@ -1,8 +1,9 @@
 name: Static libraries — build the core for the bindings that link it in
 description: >
-  Builds the core crate as a no_std static library for each target named (all nine by
+  Builds the core crate as a no_std static library for each target named (all eleven by
   default) and places each archive where the binding that links it expects it: the Swift
-  artifact bundle (Linux and WebAssembly), go/staticlib (the cgo backend, Linux and macOS)
+  artifact bundle (Linux and WebAssembly), go/staticlib (cgo on Linux, macOS and
+  Windows)
   and the C# package's staticlibs directory (Native AOT, all eight RIDs). With `upload`, the
   archives leave the job as the `static-libs` artifact, laid out by those same repository
   paths — what a caller's stage-native-binaries.yml commits and hyper-pack-nuget.yml packs.
@@ -16,7 +17,7 @@ inputs:
     description: "The bindings' name — swift/{Project}Core.artifactbundle, csharp/{Project}/staticlibs"
     required: true
   targets:
-    description: "Space-separated Rust targets to build; empty builds all nine (see build-static-libs.sh)"
+    description: "Space-separated Rust targets to build; empty builds all eleven (see build-static-libs.sh)"
     required: false
     default: ""
   upload:

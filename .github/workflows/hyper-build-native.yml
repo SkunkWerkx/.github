@@ -135,8 +135,7 @@ on:
           the crate's own .cargo/config.toml export flags) on every leg, stage it beside each
           binding's native library, and run each binding's suite a second time against its
           in-process wasm backend: Java `./gradlew testWasm`, Python and Ruby with `wasm_env`
-          set, Go with the `{crate}_wasm` build tag (non-Windows legs only, since wasmtime-go
-          is cgo throughout and ships no win-arm64 build). The module is uploaded once, from
+          set. The module is uploaded once, from
           the linux-x64 leg, as `wasm-wasip1-module`, and attested like the native library.
         required: false
         type: boolean
@@ -206,11 +205,6 @@ on:
         required: false
         type: boolean
         default: true
-      go_windows:
-        description: "Run Go on the Windows legs too (false for cgo-only bindings until their purego fallback lands)"
-        required: false
-        type: boolean
-        default: true
       magnus:
         description: "Build and test the Ruby Magnus extension backend (every leg)"
         required: false
@@ -253,10 +247,10 @@ on:
       static_libs:
         description: >
           Three bindings link the core rather than load it, each from a no_std static library:
-          Swift on Linux and WebAssembly (swift/{project}Core.artifactbundle), Go's cgo
-          backend on Linux and macOS (go/staticlib), and a C# Native AOT publish on every RID
+          Swift on Linux and WebAssembly (swift/{project}Core.artifactbundle), Go under cgo on
+          Linux, macOS and Windows (go/staticlib), and a C# Native AOT publish on every RID
           (csharp/{project}/staticlibs). With this on, each leg builds its own targets'
-          archives before the suites that link them; a separate job builds all nine, uploads
+          archives before the suites that link them; a separate job builds all eleven, uploads
           and attests them as `static-libs`; and the Swift binding is run against them in
           Swift's own containers, on swift_version and again on swift_floor_version.
         required: false
@@ -342,14 +336,14 @@ jobs:
             target: x86_64-pc-windows-msvc
             manylinux: ""
             jdk_distribution: temurin
-            static_targets: x86_64-pc-windows-msvc
+            static_targets: x86_64-pc-windows-msvc x86_64-pc-windows-gnu
           - os: windows-11-arm
             rid: win-arm64
             lib_name: ${{ inputs.crate }}.dll
             target: aarch64-pc-windows-msvc
             manylinux: ""
             jdk_distribution: microsoft
-            static_targets: aarch64-pc-windows-msvc
+            static_targets: aarch64-pc-windows-msvc aarch64-pc-windows-gnullvm
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -704,58 +698,40 @@ jobs:
         shell: bash
         run: ./gradlew testWasm --console=plain
 
-      # Go: cgo and/or purego, whichever backends the repo ships. go_windows=false for
-      # cgo-only bindings until their purego fallback lands.
+      # Go links the core in on every leg: cgo names this leg's archive, which "Build this
+      # leg's static libraries" has just written over the committed one, so the suite runs
+      # against this commit's core. cgo needs a C compiler: the Linux and macOS images have
+      # one, windows-latest has MinGW-w64 gcc on PATH, and windows-11-arm has nothing that
+      # targets ARM64 Windows, so llvm-mingw is fetched for it. CGO_ENABLED=1 is explicit so
+      # a leg whose compiler went missing fails here, on the binding's own "needs cgo" error,
+      # rather than somewhere less legible.
       - uses: actions/setup-go@v7
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && (inputs.go_windows || runner.os != 'Windows') }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
-      - name: Place native lib for Go in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && (inputs.go_windows || runner.os != 'Windows') }}
+      - name: llvm-mingw, the C compiler cgo needs on ARM64 Windows
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && runner.os == 'Windows' && runner.arch == 'ARM64' }}
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LLVM_MINGW: llvm-mingw-20260922-ucrt-aarch64
+          LLVM_MINGW_SHA256: a317514a7a63badd692032c0c2b8e165f630bbaebbe7a3254348051f43a64949
         run: |
-          mkdir -p "go/native/${{ matrix.rid }}"
-          cp "out/${{ matrix.lib_name }}" "go/native/${{ matrix.rid }}/"
+          set -euo pipefail
+          gh release download 20260922 --repo mstorsjo/llvm-mingw --pattern "$LLVM_MINGW.zip" --dir "$RUNNER_TEMP"
+          echo "$LLVM_MINGW_SHA256  $RUNNER_TEMP/$LLVM_MINGW.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/$LLVM_MINGW.zip" -d "$RUNNER_TEMP"
+          cygpath -w "$RUNNER_TEMP/$LLVM_MINGW/bin" >> "$GITHUB_PATH"
+          echo "CC=aarch64-w64-mingw32-clang" >> "$GITHUB_ENV"
 
-      - name: Place wasm32-wasip1 module for Go in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && inputs.wasip1_module && runner.os != 'Windows' }}
-        shell: bash
-        run: |
-          mkdir -p go/native/wasm32-wasip1
-          cp "rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm" go/native/wasm32-wasip1/
-
-      - name: Test Go bindings against this platform's native lib
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && (inputs.go_windows || runner.os != 'Windows') }}
-        working-directory: go
-        run: go test ./...
-
-      # cgo links the core in (the step above); the loading cgo backend is behind the
-      # {crate}_dynamic tag now, and still has to work for a build that asks for it.
-      - name: Test Go bindings (cgo, shared library loaded — the dynamic tag)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && inputs.static_libs && runner.os != 'Windows' }}
-        working-directory: go
-        run: go test -tags ${{ inputs.crate }}_dynamic ./...
-
-      # The purego backend again, where cgo is the default. Windows already runs purego (it is
-      # the only backend there), so without this step the path both READMEs promise for
-      # `CGO_ENABLED=0` builds and cross-compiles — dlopen_unix.go and every purego shim —
-      # was never executed on Linux or macOS by any CI leg.
-      - name: Test Go bindings (purego backend, CGO_ENABLED=0)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && runner.os != 'Windows' }}
+      - name: Test Go bindings, the core linked in
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
         working-directory: go
         env:
-          CGO_ENABLED: "0"
+          CGO_ENABLED: "1"
         run: go test ./...
-
-      # The same suite through wasmtime-go, selected by build tag. Non-Windows only: the Go
-      # binding keeps Windows on purego precisely to need no C toolchain there, and
-      # wasmtime-go is cgo throughout with no win-arm64 build at all.
-      - name: Test Go bindings (wasm backend)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && inputs.wasip1_module && runner.os != 'Windows' }}
-        working-directory: go
-        run: go test -tags ${{ inputs.crate }}_wasm ./...
 
       # Swift: dlopen/dlsym (LoadLibraryW/GetProcAddress on Windows) + @convention(c).
       # SwiftyLab/setup-swift for its verified windows-11-arm support.
@@ -801,8 +777,8 @@ jobs:
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && !(inputs.static_libs && runner.os == 'Linux') }}
         shell: bash
         run: |
-          mkdir -p "swift/Sources/${{ inputs.project }}/NativeLibs/${{ matrix.rid }}"
-          cp "out/${{ matrix.lib_name }}" "swift/Sources/${{ inputs.project }}/NativeLibs/${{ matrix.rid }}/"
+          mkdir -p "swift/Sources/${{ inputs.project }}NativeLibs/NativeLibs/${{ matrix.rid }}"
+          cp "out/${{ matrix.lib_name }}" "swift/Sources/${{ inputs.project }}NativeLibs/NativeLibs/${{ matrix.rid }}/"
 
       - name: Test Swift bindings against this platform's native lib
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
@@ -810,8 +786,8 @@ jobs:
         run: swift test
 
       # Swift 6.4 made Swift Build SwiftPM's default build system, and it stages a package's
-      # resources under a different name off macOS: {Project}_{Project}.bundle where the
-      # build system before it wrote {Project}_{Project}.resources. The bindings open their
+      # resources under a different name off macOS: {Project}_{Project}NativeLibs.bundle where
+      # the build system before it wrote {Project}_{Project}NativeLibs.resources. The bindings open their
       # shared library out of that directory by name, so with only the old name known, the
       # first run on 6.4 found nothing there and loaded from the source-tree fallback — fine
       # on a build machine, a load failure once deployed. The suite pins the origin, which is
@@ -1342,7 +1318,7 @@ jobs:
           image: eclipse-temurin:${{ inputs.jdk_version }}-jdk-alpine
           wasm_module: ${{ inputs.wasip1_module && format('rust/target/wasm32-wasip1/release/{0}.wasm', inputs.crate) || '' }}
 
-      - name: Go on Alpine (cgo linked and loaded, purego, then with libgcc removed)
+      - name: Go on Alpine (the core linked in, then with libgcc removed)
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
         uses: SkunkWerkx/.github/.github/actions/musl-suite@master
         with:
@@ -1418,14 +1394,15 @@ jobs:
   #    per triple, committed in the binding's artifact bundle. Two of those triples can be
   #    reached no other way: Swift's static Linux SDK (musl) and its WebAssembly SDK build
   #    executables with no dynamic loader.
-  #  * Go, under cgo on Linux and macOS — the archive is named on the cgo link line, and
-  #    committed under go/staticlib because a Go module is whatever is in the tree. Nothing
-  #    is embedded and nothing is extracted to a temp directory at run time.
+  #  * Go, under cgo on Linux, macOS and Windows — the archive is named on the cgo link
+  #    line, and committed under go/staticlib because a Go module is whatever is in the
+  #    tree. Windows takes the GNU targets, since cgo drives MinGW's linker. There is no
+  #    other Go backend: nothing is embedded and nothing is loaded at run time.
   #  * C#, for a Native AOT publish on every RID — the package's targets file hands the
   #    archive to the AOT linker, so the result is one executable with no library beside it.
   #    These are not committed; hyper-pack-nuget.yml packs them from this run's artifact.
   #
-  # Two jobs, so that what is tested is what ships. The first builds all nine archives on
+  # Two jobs, so that what is tested is what ships. The first builds all eleven archives on
   # one runner (a static library is never linked, so every target — macOS and Windows
   # included — cross-compiles with no C toolchain), uploads them as `static-libs` and
   # attests them; a caller's stage-native-binaries.yml commits exactly those bytes into the

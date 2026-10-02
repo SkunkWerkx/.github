@@ -4,7 +4,7 @@
 #
 #   build-static-libs.sh <crate> <Project> <repo-root> [rust-target ...]
 #
-# e.g. `build-static-libs.sh hyperuuid HyperUuid .` builds all nine targets below. Naming
+# e.g. `build-static-libs.sh hyperuuid HyperUuid .` builds all eleven targets below. Naming
 # targets builds only those and leaves every other archive in the tree as it was. Runs on
 # any host with rustup and python3: a static library is compiled and never linked, so every
 # target — macOS and Windows included — cross-compiles from one machine with no C toolchain
@@ -13,7 +13,7 @@
 # Who links what:
 #
 #   Swift   swift/{Project}Core.artifactbundle/{triple}/      Linux (glibc, musl), WebAssembly
-#   Go      go/staticlib/{goos}_{goarch}/                     Linux, macOS — the cgo backend
+#   Go      go/staticlib/{goos}_{goarch}/                     Linux, macOS, Windows — cgo
 #   C#      csharp/{Project}/staticlibs/{rid}/                all eight RIDs — Native AOT
 #
 # A tree that is not in the repository is skipped, so a caller without one of those
@@ -69,6 +69,8 @@ all_targets=(
   aarch64-apple-darwin
   x86_64-pc-windows-msvc
   aarch64-pc-windows-msvc
+  x86_64-pc-windows-gnu
+  aarch64-pc-windows-gnullvm
   wasm32-wasip1
 )
 targets=("$@")
@@ -87,6 +89,11 @@ archive_name() {
 # spelling for the static Linux SDK). Go takes the musl build for Linux on both C
 # libraries: cgo has no build constraint that tells them apart, and of the two objects it
 # is the one that asks the C library for nothing but calls both have had for a decade.
+# Go on Windows takes the GNU targets instead of the MSVC archives C# links: cgo drives
+# MinGW's linker (gcc, or llvm-mingw's clang on arm64), which does not read MSVC objects.
+# Those get the off-Windows trim, the crate's object alone, since MinGW links its own
+# compiler runtime; what is left needs ProcessPrng, which the binding's cgo line takes from
+# bcryptprimitives, and memcpy/memset.
 destinations() {
   local swift="swift/${project}Core.artifactbundle" go="go/staticlib" csharp="csharp/$project/staticlibs"
   case "$1" in
@@ -98,6 +105,8 @@ destinations() {
     aarch64-apple-darwin)       echo "$csharp/osx-arm64"; echo "$go/darwin_arm64" ;;
     x86_64-pc-windows-msvc)     echo "$csharp/win-x64" ;;
     aarch64-pc-windows-msvc)    echo "$csharp/win-arm64" ;;
+    x86_64-pc-windows-gnu)      echo "$go/windows_amd64" ;;
+    aarch64-pc-windows-gnullvm) echo "$go/windows_arm64" ;;
     wasm32-wasip1)              echo "$swift/wasm32-unknown-wasip1" ;;
     *) echo "unsupported rust target: $1" >&2; return 1 ;;
   esac
