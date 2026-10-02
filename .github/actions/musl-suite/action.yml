@@ -20,7 +20,7 @@ inputs:
     required: false
     default: ""
   wasm_module:
-    description: "java and python: repo-relative path to the wasm32-wasip1 module, staged beside the musl library so the in-process wasm backend's tests run too; empty skips them"
+    description: "java only: repo-relative path to the wasm32-wasip1 module, staged beside the musl library so the in-process GraalWasm backend's tests run too; empty skips them"
     required: false
     default: ""
   csharp_test_project:

@@ -1,0 +1,55 @@
+name: Ruby on musl — build, test, upload and attest a Magnus extension for one Ruby ABI
+description: >
+  ruby-magnus's counterpart for the two linux-musl RIDs: the extension is built inside that
+  Ruby's own official Alpine image (setup-ruby has no Alpine story), the binding's suite runs
+  through it on a bare copy of the image, and it is uploaded as ruby-native-{rid}-{abi} — the
+  name ruby-magnus gives every other platform's, so a caller's release.yml packs the
+  x86_64-linux-musl and aarch64-linux-musl platform gems by the pattern it already downloads.
+  hyper-build-native.yml's musl job calls this once per ABI.
+
+inputs:
+  ruby-version:
+    description: "The Ruby minor to build against, e.g. 4.0 — the image is ruby:{ruby-version}-alpine"
+    required: true
+  crate:
+    description: "Lowercase core name — the extension is {crate}_native.so"
+    required: true
+  rid:
+    description: "linux-musl-x64 or linux-musl-arm64; names the artifact, and must match the runner's architecture"
+    required: true
+  musl-lib-dir:
+    description: "Directory holding the lib{crate}.so musl-native built, for the suite's Fiddle agreement checks"
+    required: false
+    default: out-musl
+  attest:
+    description: "Sign SLSA build provenance for the extension ('true'/'false'); the calling job must hold id-token and attestations write"
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    # A file beside this action, like build-musl.sh and build-magnus.sh, so it runs unchanged
+    # on a developer's machine with Docker — which is how it was proven before a runner saw it.
+    - name: Build and test the Magnus extension on Alpine — Ruby ${{ inputs.ruby-version }}, ${{ inputs.rid }}
+      shell: bash
+      env:
+        ABI: ${{ inputs.ruby-version }}
+        CRATE: ${{ inputs.crate }}
+        RID: ${{ inputs.rid }}
+        LIB_DIR: ${{ inputs.musl-lib-dir }}
+      run: '"$GITHUB_ACTION_PATH/build-magnus-musl.sh" "$CRATE" "$RID" "$ABI" . "$LIB_DIR" "out-magnus-musl-$ABI"'
+
+    # The same artifact shape ruby-magnus uploads: one file, {crate}_native.so, with the ABI
+    # in the artifact name rather than the filename.
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ruby-native-${{ inputs.rid }}-${{ inputs.ruby-version }}
+        path: out-magnus-musl-${{ inputs.ruby-version }}/${{ inputs.crate }}_native.so
+
+    # Attested for the reason ruby-magnus gives: these bytes go verbatim into a platform gem.
+    - name: Attest Ruby (Magnus) extension provenance — Ruby ${{ inputs.ruby-version }}, ${{ inputs.rid }}
+      if: inputs.attest == 'true'
+      uses: actions/attest-build-provenance@v3
+      with:
+        subject-path: out-magnus-musl-${{ inputs.ruby-version }}/${{ inputs.crate }}_native.so

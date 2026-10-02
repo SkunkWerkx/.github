@@ -12,8 +12,9 @@
 #
 # Who links what:
 #
-#   Swift   swift/{Project}Core.artifactbundle/{triple}/      Linux (glibc, musl), WebAssembly
+#   Swift   swift/{Project}Core.artifactbundle/{triple}/      all eight RIDs, WebAssembly
 #   Go      go/staticlib/{goos}_{goarch}/                     Linux, macOS, Windows — cgo
+#           go/staticlib/wasm/                                WebAssembly — TinyGo's cgo
 #   C#      csharp/{Project}/staticlibs/{rid}/                all eight RIDs — Native AOT
 #
 # A tree that is not in the repository is skipped, so a caller without one of those
@@ -21,7 +22,8 @@
 #
 # Why static at all. Each of these three produces, or can produce, an executable that has
 # no business opening a shared library at run time: Swift's static Linux SDK and its
-# WebAssembly SDK have no loader to open one with; a Go binary that links the core needs no
+# WebAssembly SDK have no loader to open one with, and a SwiftPM executable that links the
+# core has no resource bundle to deploy beside it; a Go binary that links the core needs no
 # embedded copies of every platform's library and no temp file to extract one into; a
 # Native AOT executable with the core linked in is one file. Everything else — the JIT,
 # the JVM, the interpreters — still loads the shared library, which is unchanged.
@@ -83,14 +85,19 @@ archive_name() {
 }
 
 # Where one target's archive goes, one destination directory per line. The Swift names are
-# the triples SwiftPM matches a variant against (the musl pair is Swift's own vendor
-# spelling for the static Linux SDK). Go takes the musl build for Linux on both C
+# the triples SwiftPM matches a variant against, which compares vendor as well as arch, OS
+# and environment: the musl pair is Swift's own vendor spelling for the static Linux SDK,
+# Windows is `unknown` where Rust says `pc`, and macOS is `macosx` (arm64 and aarch64 are
+# one architecture to both build systems). Go takes the musl build for Linux on both C
 # libraries: cgo has no build constraint that tells them apart, and of the two objects it
 # is the one that asks the C library for nothing but calls both have had for a decade.
-# Go on Windows links the same MSVC archive C# does: MinGW's linker (gcc, or llvm-mingw's
-# lld on arm64) reads MSVC's COFF objects, and the archive carries its own import stub for
-# the system random source, so cgo needs no extra library for it. Go's tree spells every
-# archive lib{crate}.a, the name its cgo lines use on every platform.
+# Go under TinyGo (browser and WASI) takes the wasm32-wasip1 build, the same bytes as
+# Swift's: even TinyGo's browser target is wasm32-wasi underneath, and its wasm_exec.js
+# supplies the one WASI call the archive makes (random_get). Go on Windows links the same
+# MSVC archive C# does: MinGW's linker (gcc, or llvm-mingw's lld on arm64) reads MSVC's COFF
+# objects, and the archive carries its own import stub for the system random source, so cgo
+# needs no extra library for it. Go's tree spells every archive lib{crate}.a, the name its
+# cgo lines use on every platform.
 destinations() {
   local swift="swift/${project}Core.artifactbundle" go="go/staticlib" csharp="csharp/$project/staticlibs"
   case "$1" in
@@ -98,11 +105,11 @@ destinations() {
     aarch64-unknown-linux-gnu)  echo "$swift/aarch64-unknown-linux-gnu"; echo "$csharp/linux-arm64" ;;
     x86_64-unknown-linux-musl)  echo "$swift/x86_64-swift-linux-musl";   echo "$csharp/linux-musl-x64";   echo "$go/linux_amd64" ;;
     aarch64-unknown-linux-musl) echo "$swift/aarch64-swift-linux-musl";  echo "$csharp/linux-musl-arm64"; echo "$go/linux_arm64" ;;
-    x86_64-apple-darwin)        echo "$csharp/osx-x64";   echo "$go/darwin_amd64" ;;
-    aarch64-apple-darwin)       echo "$csharp/osx-arm64"; echo "$go/darwin_arm64" ;;
-    x86_64-pc-windows-msvc)     echo "$csharp/win-x64";   echo "$go/windows_amd64" ;;
-    aarch64-pc-windows-msvc)    echo "$csharp/win-arm64"; echo "$go/windows_arm64" ;;
-    wasm32-wasip1)              echo "$swift/wasm32-unknown-wasip1" ;;
+    x86_64-apple-darwin)        echo "$swift/x86_64-apple-macosx";           echo "$csharp/osx-x64";   echo "$go/darwin_amd64" ;;
+    aarch64-apple-darwin)       echo "$swift/arm64-apple-macosx";            echo "$csharp/osx-arm64"; echo "$go/darwin_arm64" ;;
+    x86_64-pc-windows-msvc)     echo "$swift/x86_64-unknown-windows-msvc";  echo "$csharp/win-x64";   echo "$go/windows_amd64" ;;
+    aarch64-pc-windows-msvc)    echo "$swift/aarch64-unknown-windows-msvc"; echo "$csharp/win-arm64"; echo "$go/windows_arm64" ;;
+    wasm32-wasip1)              echo "$swift/wasm32-unknown-wasip1"; echo "$go/wasm" ;;
     *) echo "unsupported rust target: $1" >&2; return 1 ;;
   esac
 }
@@ -217,23 +224,39 @@ PY
   done < <(destinations "$target")
 done
 
-# The Swift bundle's info.json: one variant per triple, all sharing the header and module
-# map. The version is the crate's, so a bundle staged for a release says which one it is.
+# The Swift bundle's info.json: one variant per triple whose archive is in the bundle, all
+# sharing the header and module map, in a fixed order so the staged file diffs cleanly.
+# Listing only what is there keeps a partial build usable: a CI leg that builds its own
+# triple gets a bundle naming that archive and whatever the tree already carries, never one
+# naming an archive that is missing. The full build (no targets named) lists all nine. The
+# version is the crate's, so a bundle staged for a release says which one it is.
 bundle="$root/swift/${project}Core.artifactbundle"
 if [ -d "$bundle/include" ]; then
   [ -f "$bundle/include/$crate.h" ] && [ -f "$bundle/include/module.modulemap" ] \
     || { echo "error: $bundle/include/ must hold $crate.h and module.modulemap" >&2; exit 1; }
   version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/rust/Cargo.toml" | head -1)"
-  triples=(x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-swift-linux-musl aarch64-swift-linux-musl wasm32-unknown-wasip1)
+  variants=()
+  for triple in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
+                x86_64-swift-linux-musl aarch64-swift-linux-musl \
+                arm64-apple-macosx x86_64-apple-macosx \
+                x86_64-unknown-windows-msvc aarch64-unknown-windows-msvc \
+                wasm32-unknown-wasip1; do
+    case "$triple" in
+      *-windows-msvc) file="$crate.lib" ;;
+      *) file="lib$crate.a" ;;
+    esac
+    [ -f "$bundle/$triple/$file" ] && variants+=("$triple/$file")
+  done
+  [ ${#variants[@]} -gt 0 ] || { echo "error: $bundle has no archive for any triple" >&2; exit 1; }
   {
     printf '{\n  "schemaVersion": "1.0",\n  "artifacts": {\n    "%sCore": {\n      "type": "staticLibrary",\n      "version": "%s",\n      "variants": [\n' "$project" "$version"
-    last=$(( ${#triples[@]} - 1 ))
-    for i in "${!triples[@]}"; do
+    last=$(( ${#variants[@]} - 1 ))
+    for i in "${!variants[@]}"; do
       sep=","; [ "$i" = "$last" ] && sep=""
-      printf '        {\n          "path": "%s/lib%s.a",\n          "supportedTriples": ["%s"],\n          "staticLibraryMetadata": {\n            "headerPaths": ["include"],\n            "moduleMapPath": "include/module.modulemap"\n          }\n        }%s\n' \
-        "${triples[$i]}" "$crate" "${triples[$i]}" "$sep"
+      printf '        {\n          "path": "%s",\n          "supportedTriples": ["%s"],\n          "staticLibraryMetadata": {\n            "headerPaths": ["include"],\n            "moduleMapPath": "include/module.modulemap"\n          }\n        }%s\n' \
+        "${variants[$i]}" "${variants[$i]%%/*}" "$sep"
     done
     printf '      ]\n    }\n  }\n}\n'
   } > "$bundle/info.json"
-  echo "swift bundle: $bundle (version $version)"
+  echo "swift bundle: $bundle (version $version, ${#variants[@]} variants)"
 fi

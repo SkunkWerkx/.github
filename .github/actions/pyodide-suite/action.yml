@@ -1,0 +1,86 @@
+name: Pyodide — install the wasm wheel and run the binding's suite inside Pyodide
+description: >
+  Installs the Pyodide wheel (pyemscripten_*_wasm32) with micropip, checks that it loaded
+  the native backend and reports the crate version, then runs the binding's whole pytest
+  suite in that interpreter — twice: in Pyodide under Node, then in Pyodide in a headless
+  Chrome page served from 127.0.0.1. Fails on any test failure in either.
+  hyper-build-wheels.yml calls this after `pyodide build`.
+
+inputs:
+  crate:
+    description: "Lowercase core name — the Python package and import name"
+    required: true
+  version:
+    description: "The version native_version() must report (the crate version)"
+    required: true
+  pyodide_version:
+    description: "npm pyodide release to run in; must be the one the wheel was built for"
+    required: true
+  wheel_dir:
+    description: "Directory holding exactly one {crate}-{version}-*-pyemscripten_*_wasm32.whl"
+    required: false
+    default: python/dist
+  tests_dir:
+    description: "The binding's pytest directory"
+    required: false
+    default: python/tests
+  chrome:
+    description: "Chrome or Chromium to run the browser pass in; empty finds the one on PATH (the Ubuntu runner image ships google-chrome)"
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7
+      with:
+        node-version: "24"
+
+    # The scripts live beside this action and are generic over the crate, so every Hyper*
+    # repo runs the same ones. They are copied next to their own node_modules because ESM
+    # resolves an import from the importing file, not from the working directory.
+    - name: Pyodide ${{ inputs.pyodide_version }} — ${{ inputs.crate }} ${{ inputs.version }} under Node
+      shell: bash
+      env:
+        CRATE: ${{ inputs.crate }}
+        VERSION: ${{ inputs.version }}
+        PYODIDE_VERSION: ${{ inputs.pyodide_version }}
+        WHEEL_DIR: ${{ inputs.wheel_dir }}
+        TESTS_DIR: ${{ inputs.tests_dir }}
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        wheels=("$WHEEL_DIR/$CRATE-$VERSION-"*-pyemscripten_*_wasm32.whl)
+        if [ "${#wheels[@]}" -ne 1 ]; then
+          echo "::error::Expected one $CRATE $VERSION pyemscripten wheel in $WHEEL_DIR, found ${#wheels[@]}."
+          ls -l "$WHEEL_DIR"
+          exit 1
+        fi
+        wheel=$(realpath "${wheels[0]}")
+        tests=$(realpath "$TESTS_DIR")
+        work="$RUNNER_TEMP/pyodide-suite"
+        mkdir -p "$work"
+        cp "$GITHUB_ACTION_PATH/suite-pyodide.mjs" "$GITHUB_ACTION_PATH/browser-pyodide.mjs" "$work/"
+        cd "$work"
+        npm install --no-save --no-audit --no-fund "pyodide@$PYODIDE_VERSION" puppeteer-core
+        node suite-pyodide.mjs "$CRATE" "$VERSION" "$wheel" "$tests"
+        {
+          echo "PYODIDE_SUITE_WORK=$work"
+          echo "PYODIDE_SUITE_WHEEL=$wheel"
+          echo "PYODIDE_SUITE_TESTS=$tests"
+        } >> "$GITHUB_ENV"
+
+    # A separate step so a red one says which runtime failed. Same checks, same suite, in a
+    # real browser: Pyodide's own files come from the npm package installed above (the Node
+    # pass cached micropip, pytest and its dependencies there), so the page loads nothing
+    # from the network.
+    - name: Pyodide ${{ inputs.pyodide_version }} — ${{ inputs.crate }} ${{ inputs.version }} in headless Chrome
+      shell: bash
+      env:
+        CRATE: ${{ inputs.crate }}
+        VERSION: ${{ inputs.version }}
+        CHROME_PATH: ${{ inputs.chrome }}
+      run: |
+        set -euo pipefail
+        cd "$PYODIDE_SUITE_WORK"
+        node browser-pyodide.mjs "$CRATE" "$VERSION" "$PYODIDE_SUITE_WHEEL" "$PYODIDE_SUITE_TESTS"

@@ -3,8 +3,9 @@ description: >
   One Swift version, one container: copies the binding out of the checkout and runs the
   checks named against the static libraries in swift/{Project}Core.artifactbundle — the
   binding's own suite on glibc or WebAssembly, and swift/StaticSmokeTest on glibc, musl
-  (Swift's static Linux SDK) or WebAssembly. hyper-build-native.yml calls this once for the
-  current Swift and once for the declared floor.
+  (Swift's static Linux SDK) or WebAssembly, the last also in headless Chrome through a WASI
+  shim (browser/index.html; the host needs npm, python3 and google-chrome).
+  hyper-build-native.yml calls this once for the current Swift and once for the declared floor.
 
 inputs:
   project:
@@ -14,7 +15,7 @@ inputs:
     description: "Swift version to run on, e.g. 6.4 — resolved to its newest patch release"
     required: true
   checks:
-    description: "Space-separated checks: test, test-wasm, smoke-glibc, smoke-musl, smoke-wasm (see suite-swift-static.sh)"
+    description: "Space-separated checks: test, test-wasm, smoke-glibc, smoke-musl, smoke-wasm, browser-wasm (see suite-swift-static.sh)"
     required: true
 
 runs:

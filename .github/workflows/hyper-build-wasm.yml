@@ -44,11 +44,46 @@ on:
         description: "Lowercase core name — the output file is lib{crate}.a"
         required: true
         type: string
+      project:
+        description: >
+          The bindings' name (e.g. HyperUuid), which the static-libs action needs. Only
+          go_tinygo_smoke uses it, and then it is required.
+        required: false
+        type: string
+        default: ""
       artifact_name:
         description: "Name for the uploaded .a artifact — the caller downloads it by this name"
         required: false
         type: string
         default: "wasm-emscripten-staticlib"
+      blazor_check:
+        description: >
+          Path to the C# binding's browser check script (e.g.
+          csharp/{Project}.WasmSmokeTest/check.sh). Given, the archive this workflow builds is
+          linked into that Blazor WebAssembly app and the app is run in headless Chrome; the
+          script reads the archive from STATICLIB and must exit non-zero unless the page
+          reports PASS. Empty skips it.
+        required: false
+        type: string
+        default: ""
+      rust_browser_test:
+        description: >
+          Path to a crate of wasm-bindgen tests (e.g. rust/browser-test) that depends on the
+          core the way a browser consumer does. Given, `wasm-pack test --headless --chrome`
+          runs it for wasm32-unknown-unknown in a real browser. Empty skips it.
+        required: false
+        type: string
+        default: ""
+      go_tinygo_smoke:
+        description: >
+          Path to the Go binding's TinyGo smoke package (e.g. go/internal/tinygosmoke), a
+          main package with an index.html beside it. Given, the core's wasm32-wasip1 archive
+          is built from this commit into go/staticlib/wasm, the package is compiled by
+          TinyGo for the browser, and the page is loaded in headless Chrome; it fails unless
+          the page prints DONE and no FAIL. Empty skips it.
+        required: false
+        type: string
+        default: ""
 
 jobs:
   build-wasm:
@@ -97,3 +132,119 @@ jobs:
         with:
           name: ${{ inputs.artifact_name }}
           path: ${{ inputs.working_directory }}/target/wasm32-unknown-emscripten/release/lib${{ inputs.crate }}.a
+
+  # Every browser target a binding claims is run in a real browser, not just built: a wasm
+  # module that links and then fails to instantiate, or traps on its first call, is only
+  # ever caught by loading it. Headless Chrome is the one the runner image ships.
+
+  # C#: the archive above, linked into the binding's Blazor WebAssembly smoke app through the
+  # package's own targets file, published, served, and loaded. .NET 11 is the WebAssembly
+  # floor, and the native relink needs the wasm-tools workload.
+  test-blazor:
+    if: inputs.blazor_check != ''
+    needs: build-wasm
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ runner.temp }}/staticlib
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "11.0.x"
+          dotnet-quality: preview
+      - name: wasm-tools workload
+        run: dotnet workload install wasm-tools
+      - name: Blazor WebAssembly app in headless Chrome
+        env:
+          STATICLIB: ${{ runner.temp }}/staticlib/lib${{ inputs.crate }}.a
+        run: bash "${{ inputs.blazor_check }}"
+
+  # Rust: the crate itself for wasm32-unknown-unknown, the target wasm-bindgen projects use,
+  # with getrandom's wasm_js backend switched on from the consumer's side — the setup the
+  # crate's README tells a browser consumer to use. wasm-pack fetches the wasm-bindgen test
+  # runner that matches the lockfile and drives Chrome through ChromeDriver.
+  test-rust-browser:
+    if: inputs.rust_browser_test != ''
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - name: wasm-bindgen tests in headless Chrome
+        working-directory: ${{ inputs.rust_browser_test }}
+        run: wasm-pack test --headless --chrome
+
+  # Go: the binding compiled by TinyGo for the browser (`-target=wasm`), with the core linked
+  # in from go/staticlib/wasm — the wasm32-wasip1 archive, built here from this commit by the
+  # same static-libs action that builds the one stage-native-binaries.yml commits. Stock Go
+  # cannot get here (its wasm toolchain has no cgo); TinyGo links with wasm-ld and its own
+  # wasm_exec.js supplies the archive's one WASI import, random_get, from
+  # crypto.getRandomValues. The page checks the core's version against rust/Cargo.toml, so a
+  # stale archive fails too. TinyGo is the release tarball, pinned by version and digest:
+  # one download, no container, and its wasm_exec.js is the one that matches the compiler.
+  test-go-tinygo:
+    if: inputs.go_tinygo_smoke != ''
+    runs-on: ubuntu-26.04
+    env:
+      TINYGO_VERSION: "0.42.0"
+      TINYGO_SHA256: b87688fa2e19cee7d813cad7fd7dadb71dff3198e47125aba66ba4af5e490438
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the core's wasm32-wasip1 archive into go/staticlib/wasm
+        uses: SkunkWerkx/.github/.github/actions/static-libs@master
+        with:
+          crate: ${{ inputs.crate }}
+          project: ${{ inputs.project }}
+          targets: wasm32-wasip1
+
+      # 0.42 is the first TinyGo that supports Go 1.27, so that is the Go it runs on.
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          cache: false
+
+      - name: Install TinyGo ${{ env.TINYGO_VERSION }}
+        run: |
+          set -euo pipefail
+          tarball="$RUNNER_TEMP/tinygo.tar.gz"
+          curl -fsSL -o "$tarball" \
+            "https://github.com/tinygo-org/tinygo/releases/download/v$TINYGO_VERSION/tinygo$TINYGO_VERSION.linux-amd64.tar.gz"
+          echo "$TINYGO_SHA256  $tarball" | sha256sum -c -
+          tar -xzf "$tarball" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/tinygo/bin" >> "$GITHUB_PATH"
+
+      - name: TinyGo browser build in headless Chrome
+        env:
+          SMOKE: ${{ inputs.go_tinygo_smoke }}
+          CARGO_TOML: ${{ inputs.working_directory }}/Cargo.toml
+        run: |
+          set -euo pipefail
+          tinygo version
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$CARGO_TOML" | head -1)"
+          site="$RUNNER_TEMP/tinygo-site"
+          mkdir -p "$site"
+          # TinyGo resolves the binding's relative -L against the binding's own package
+          # directory, so the build can run from the smoke package's.
+          (cd "$SMOKE" && tinygo build -target=wasm -no-debug -opt=z \
+              -ldflags "-X main.wantVersion=$version" -o "$site/main.wasm" .)
+          cp "$SMOKE/index.html" "$site/"
+          cp "$(tinygo env TINYGOROOT)/targets/wasm_exec.js" "$site/"
+          echo "main.wasm: $(wc -c < "$site/main.wasm") bytes"
+          (cd "$site" && exec python3 -m http.server 8090 --bind 127.0.0.1 >/dev/null 2>&1) &
+          sleep 1
+          google-chrome --headless=new --no-sandbox --disable-gpu --virtual-time-budget=30000 \
+            --dump-dom "http://127.0.0.1:8090/index.html" 2>/dev/null > "$site/dom.html"
+          sed -n '/<pre/,/<\/pre>/p' "$site/dom.html"
+          if grep -Eq '(^|>)FAIL' "$site/dom.html" || ! grep -Eq '(^|>)DONE$' "$site/dom.html"; then
+            echo "::error::The TinyGo smoke page did not print DONE with every check passing."
+            exit 1
+          fi

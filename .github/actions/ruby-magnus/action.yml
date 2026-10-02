@@ -20,13 +20,6 @@ inputs:
     description: "Sign SLSA build provenance for the extension ('true'/'false'); the calling job must hold id-token and attestations write"
     required: false
     default: "false"
-  bundle-without:
-    description: >
-      Bundler groups to skip for this ABI (BUNDLE_WITHOUT). The compat ABI passes the
-      caller's wasm group: the in-process wasm suite runs once, on the primary Ruby, and the
-      wasmtime gem it needs was 25 s of every compat-ABI `bundle install` on win-x64.
-    required: false
-    default: ""
 
 runs:
   using: composite
@@ -121,8 +114,6 @@ runs:
     # the second Ruby inherited the first one's, and fiddle's mkmf under it found no
     # pkg-config and no libffi. RubyInstaller's devkit belongs to its Ruby.
     - uses: ruby/setup-ruby@v1
-      env:
-        BUNDLE_WITHOUT: ${{ inputs.bundle-without }}
       with:
         ruby-version: ${{ inputs.ruby-version }}
         bundler: default
@@ -142,8 +133,6 @@ runs:
     - name: Test Ruby bindings (Magnus backend) — Ruby ${{ inputs.ruby-version }}
       shell: bash
       working-directory: ruby
-      env:
-        BUNDLE_WITHOUT: ${{ inputs.bundle-without }}
       run: bundle exec rspec
 
     # The compiled extension itself, for a caller to package into a real precompiled

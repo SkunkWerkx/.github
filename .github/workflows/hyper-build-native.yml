@@ -132,19 +132,14 @@ on:
       wasip1_module:
         description: >
           Also build the core as a wasm32-wasip1 module ({crate}.wasm, the cdylib target with
-          the crate's own .cargo/config.toml export flags) on every leg, stage it beside each
-          binding's native library, and run each binding's suite a second time against its
-          in-process wasm backend: Java `./gradlew testWasm`, Python and Ruby with `wasm_env`
-          set. The module is uploaded once, from
-          the linux-x64 leg, as `wasm-wasip1-module`, and attested like the native library.
+          the crate's own .cargo/config.toml export flags) on every leg, stage it beside the
+          Java binding's native library, and run the Java suite a second time against its
+          in-process GraalWasm backend (`./gradlew testWasm`). The module is uploaded once,
+          from the linux-x64 leg, as `wasm-wasip1-module`, and attested like the native
+          library.
         required: false
         type: boolean
         default: false
-      wasm_env:
-        description: "Env var that forces the in-process wasm backend (e.g. HYPERUUID_WASM); required when wasip1_module is on"
-        required: false
-        type: string
-        default: ""
       csharp_test_project:
         description: "Path to the C# test csproj"
         required: true
@@ -206,7 +201,7 @@ on:
         type: boolean
         default: true
       magnus:
-        description: "Build and test the Ruby Magnus extension backend (every leg)"
+        description: "Build and test the Ruby Magnus extension backend (every leg, and both musl RIDs)"
         required: false
         type: boolean
         default: true
@@ -247,7 +242,7 @@ on:
       static_libs:
         description: >
           Three bindings link the core rather than load it, each from a no_std static library:
-          Swift on Linux and WebAssembly (swift/{project}Core.artifactbundle), Go under cgo on
+          Swift on every RID and WebAssembly (swift/{project}Core.artifactbundle), Go under cgo on
           Linux, macOS and Windows (go/staticlib), and a C# Native AOT publish on every RID
           (csharp/{project}/staticlibs). With this on, each leg builds its own targets'
           archives before the suites that link them; a separate job builds all nine, uploads
@@ -265,7 +260,9 @@ on:
         description: >
           Also build the core for linux-musl-x64 and linux-musl-arm64 inside Alpine
           containers, upload and attest each as `native-{rid}` like the glibc/darwin/
-          windows libraries, and run the bindings that have a musl story against it there.
+          windows libraries, and run the bindings that have a musl story against it there —
+          including, with `magnus` on, the Ruby Magnus extension, built per ABI in each Ruby's
+          Alpine image and uploaded as `ruby-native-{rid}-{abi}`.
         required: false
         type: boolean
         default: true
@@ -390,10 +387,10 @@ jobs:
             exit 1
           fi
 
-      # The same crate, the same exports, for the hosts that cannot dlopen anything:
-      # a wasm32-wasip1 module GraalWasm/wasmtime run inside the JVM/Ruby/Python/Go process.
-      # Built on every leg so each leg's second suite run tests a module built by the same
-      # toolchain that built its native library; only one copy needs to leave the job, since
+      # The same crate, the same exports, for a host that cannot dlopen anything: a
+      # wasm32-wasip1 module GraalWasm runs inside the JVM process. Built on every leg so
+      # each leg's second Java suite run tests a module built by the same toolchain that
+      # built its native library; only one copy needs to leave the job, since
       # a wasm module is the same bytes wherever it was linked. Inside rust/ deliberately:
       # cargo only reads the crate's .cargo/config.toml (the --export=malloc/free link flags
       # the hosts depend on) from the crate directory.
@@ -426,8 +423,8 @@ jobs:
           name: wasm-wasip1-module
           path: rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm
 
-      # One artifact, one attestation: the module a caller's release packs into the jar and
-      # the gem is this linux-x64 copy, so this is the copy whose provenance gets recorded.
+      # One artifact, one attestation: the module a caller's release packs into the jar is
+      # this linux-x64 copy, so this is the copy whose provenance gets recorded.
       - name: Attest wasm32-wasip1 module provenance
         if: >-
           inputs.wasip1_module && matrix.rid == 'linux-x64' && inputs.attest_native &&
@@ -469,7 +466,7 @@ jobs:
           subject-path: out/${{ matrix.lib_name }}
 
       # The static libraries this leg's own suites link — the C# Native AOT publish, Go's
-      # cgo backend, Swift on Linux — built from this commit before any of them runs. The
+      # cgo backend, Swift — built from this commit before any of them runs. The
       # archives committed in the tree (Swift's, Go's) are whatever was staged last, and C#'s
       # are not committed at all; without this a leg would link the previous core, or none.
       # What ships is the build-static-libs job's output, not this.
@@ -503,13 +500,6 @@ jobs:
             Windows) cp "rust/target/release/${{ inputs.crate }}.dll" "python/src/${{ inputs.crate }}/_native.pyd" ;;
           esac
 
-      - name: Stage wasm32-wasip1 module for Python
-        if: inputs.pyo3 && inputs.wasip1_module
-        shell: bash
-        run: |
-          mkdir -p "python/src/${{ inputs.crate }}/native/wasm32-wasip1"
-          cp "rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm" "python/src/${{ inputs.crate }}/native/wasm32-wasip1/"
-
       - name: Test Python bindings
         if: inputs.pyo3
         working-directory: python
@@ -518,17 +508,6 @@ jobs:
           # mypy is what tests/test_typing.py checks a consumer file with; without it that
           # test skips, and the package's `py.typed` claim goes unexercised.
           pip install pytest mypy
-          pytest
-
-      # The whole suite again, through wasmtime-py instead of the PyO3 extension. Both are
-      # importable at this point; the env var is what picks the wasm one.
-      - name: Test Python bindings (wasm backend)
-        if: inputs.pyo3 && inputs.wasip1_module
-        working-directory: python
-        shell: bash
-        run: |
-          pip install wasmtime
-          export ${{ inputs.wasm_env }}=1
           pytest
 
       # No wheel is built in this job: maturin is its own compile step, and the extension
@@ -733,7 +712,7 @@ jobs:
           CGO_ENABLED: "1"
         run: go test ./...
 
-      # Swift: dlopen/dlsym (LoadLibraryW/GetProcAddress on Windows) + @convention(c).
+      # Swift: the core linked in from a SwiftPM binary target, called through @convention(c).
       # SwiftyLab/setup-swift for its verified windows-11-arm support.
       - uses: SwiftyLab/setup-swift@v1.14.1
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
@@ -767,36 +746,23 @@ jobs:
           done
           echo "::warning::No /usr/lib/llvm-*/ carries both clang and libclang; bindgen is left to find its own, which is how the mismatch above happens."
 
-      # How the suite below reaches this leg's own build of the core depends on the
-      # platform. macOS and Windows load a shared library out of the package's resources, so
-      # the one just built is placed there. Linux links the core in from the binding's
-      # artifact bundle, and "Build this leg's static libraries" has already written this
-      # leg's triple over the committed archive. A caller without `static_libs` is still on
-      # the loading path everywhere.
-      - name: Place native lib for Swift in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && !(inputs.static_libs && runner.os == 'Linux') }}
-        shell: bash
-        run: |
-          mkdir -p "swift/Sources/${{ inputs.project }}NativeLibs/NativeLibs/${{ matrix.rid }}"
-          cp "out/${{ matrix.lib_name }}" "swift/Sources/${{ inputs.project }}NativeLibs/NativeLibs/${{ matrix.rid }}/"
-
-      - name: Test Swift bindings against this platform's native lib
+      # The Swift binding links the core in on every platform, from its artifact bundle, and
+      # "Build this leg's static libraries" has already written this leg's triple over the
+      # committed archive and regenerated the bundle's info.json, so the suite links the
+      # core this commit built. (A caller without `static_libs` tests the committed archive.)
+      - name: Test Swift bindings, the core linked in
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         working-directory: swift
         run: swift test
 
-      # Swift 6.4 made Swift Build SwiftPM's default build system, and it stages a package's
-      # resources under a different name off macOS: {Project}_{Project}NativeLibs.bundle where
-      # the build system before it wrote {Project}_{Project}NativeLibs.resources. The bindings open their
-      # shared library out of that directory by name, so with only the old name known, the
-      # first run on 6.4 found nothing there and loaded from the source-tree fallback — fine
-      # on a build machine, a load failure once deployed. The suite pins the origin, which is
-      # how it was caught. A consumer on 6.2 or 6.3 still gets the old layout, so it keeps a
-      # run of its own, on the one leg where the name matters: Windows. macOS writes
-      # `.bundle` under both build systems, and Linux no longer loads anything. x64 only,
-      # because a second Swift build on Windows costs minutes. When a future toolchain
-      # removes `--build-system native` (6.4 already warns), this step goes with it.
-      - name: Test Swift bindings — the pre-6.4 build system's resource layout
+      # Swift 6.4 made Swift Build SwiftPM's default build system; consumers on 6.2 and 6.3
+      # still get the one before it, which links a binary target's archive differently:
+      # it copies the archive beside the products and links it by `-l` name, which on
+      # Windows means MSVC's `{crate}.lib` convention and a case-insensitive file system,
+      # where Swift Build passes the path. So Windows keeps a run on the old build system.
+      # x64 only, because a second Swift build on Windows costs minutes. When a future
+      # toolchain removes `--build-system native` (6.4 already warns), this step goes with it.
+      - name: Test Swift bindings — the pre-6.4 build system's link
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid == 'win-x64' }}
         working-directory: swift
         run: swift test --build-system native
@@ -972,14 +938,11 @@ jobs:
       # ruby-native-{rid}-{abi} artifact for the caller's release.yml to pack.
       #
       # `ruby_compat_version` runs FIRST and `ruby_version` LAST, deliberately: setup-ruby
-      # swaps the active Ruby for the rest of the job, and the Fiddle and wasm suites at the
-      # end inherit the primary one. Leaving ruby_compat_version empty (the default) runs
+      # swaps the active Ruby for the rest of the job, and the Fiddle suite at the end
+      # inherits the primary one. Leaving ruby_compat_version empty (the default) runs
       # only the primary — which is also exactly how a caller retires an ABI at its EOL.
       #
-      # One Windows cost is paid once rather than per ABI: the compat ABI skips the caller's
-      # `wasm` bundler group, since the wasm suite runs once, on the primary Ruby (25 s of
-      # wasmtime gem install on win-x64 otherwise, HyperUuid run 33709678437). The MSYS2
-      # toolchain is NOT shared between the two Rubies — see the action for the run that
+      # The MSYS2 toolchain is NOT shared between the two Rubies — see the action for the run that
       # proved it cannot be. Two calls rather than a matrix, on purpose: a matrix would
       # multiply every leg and undo the 48 -> 6 job collapse this file exists to hold.
       #
@@ -1064,7 +1027,6 @@ jobs:
           ruby-version: ${{ inputs.ruby_compat_version }}
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          bundle-without: wasm
           attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       - name: Ruby (Magnus) — primary ABI
@@ -1091,30 +1053,12 @@ jobs:
           working-directory: ruby
 
       # (bash + export because an env: mapping key can't be an expression.)
-      - name: Place wasm32-wasip1 module for Ruby in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module }}
-        shell: bash
-        run: |
-          mkdir -p "ruby/lib/${{ inputs.crate }}/native/wasm32-wasip1"
-          cp "rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm" "ruby/lib/${{ inputs.crate }}/native/wasm32-wasip1/"
-
       - name: Test Ruby bindings (Fiddle backend) against this platform's native lib
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         working-directory: ruby
         shell: bash
         run: |
           export ${{ inputs.pure_env }}=1
-          bundle exec rspec
-
-      # The same suite a third time, through the wasmtime gem: the caller's Gemfile keeps it
-      # in a `wasm` group, which the primary-ABI call above installed (only the compat ABI
-      # skips it).
-      - name: Test Ruby bindings (wasm backend)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module }}
-        working-directory: ruby
-        shell: bash
-        run: |
-          export ${{ inputs.wasm_env }}=1
           bundle exec rspec
 
   # ===========================================================================
@@ -1222,11 +1166,16 @@ jobs:
   # at all: HyperCast claimed PHP 8.1 while using 8.2 syntax, and no run could have noticed.
   # Go needs no second run: its image is the version go.mod names, which is the floor.
   #
-  # Not here, and why: Swift (its musl target links fully statically and has no dynamic
-  # loader, so the binding ships no musl library; a statically linked core via a SwiftPM
-  # binary static-library target, SE-0482, would cover it and is not built yet) and the Ruby Magnus extension (no musl
-  # platform gem is built; RubyGems installs the `*-linux` gem on Alpine, its glibc extension
-  # fails to load, and the gem runs on Fiddle over this library — which is the suite below).
+  # Not here, and why: Swift (its musl target links the core from a SwiftPM binary
+  # static-library target, SE-0482, and is tested through the static Linux SDK in
+  # test-swift-static below).
+  #
+  # The Ruby Magnus extension is built here too, once per ABI like the matrix legs', but not
+  # by a setup-* action: inside that Ruby's own `ruby:<abi>-alpine` image, through the
+  # ruby-magnus-musl action, uploaded as `ruby-native-{rid}-{abi}` for the caller's
+  # x86_64-linux-musl and aarch64-linux-musl platform gems. The glibc gems are named
+  # `*-linux-gnu`, so every supported RubyGems and Bundler resolves the musl ones on Alpine:
+  # with a plain `*-linux` beside them, RubyGems before 4.0 picks that one there instead.
   # ===========================================================================
   build-native-musl:
     if: inputs.musl
@@ -1254,9 +1203,9 @@ jobs:
           rid: ${{ matrix.rid }}
           attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
-      # The wasm module, for the two suites that also exercise an in-process wasm backend
-      # here (Java and Python), and the musl static library, for the two that link the core
-      # in (Go under cgo, and the C# Native AOT publish). Both built on the runner, not in a
+      # The wasm module, for the Java suite's in-process GraalWasm backend, and the musl
+      # static library, for the two suites that link the core in (Go under cgo, and the C#
+      # Native AOT publish). Both built on the runner, not in a
       # container: neither is linked here, so each is the same bytes wherever it is compiled.
       - uses: dtolnay/rust-toolchain@stable
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && (inputs.wasip1_module || inputs.static_libs) }}
@@ -1345,6 +1294,26 @@ jobs:
           rid: ${{ matrix.rid }}
           image: php:${{ inputs.php_floor_version }}-cli-alpine
 
+      # Compat ABI first and primary last, as on the matrix legs. Each builds in its Ruby's
+      # Alpine image and runs the suite on a bare copy of it — see build-magnus-musl.sh.
+      - name: Ruby (Magnus) on Alpine — compat ABI
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' }}
+        uses: SkunkWerkx/.github/.github/actions/ruby-magnus-musl@master
+        with:
+          ruby-version: ${{ inputs.ruby_compat_version }}
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+
+      - name: Ruby (Magnus) on Alpine — primary ABI
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus }}
+        uses: SkunkWerkx/.github/.github/actions/ruby-magnus-musl@master
+        with:
+          ruby-version: ${{ inputs.ruby_version }}
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+
       - name: Ruby on Alpine (Fiddle)
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
         uses: SkunkWerkx/.github/.github/actions/musl-suite@master
@@ -1373,7 +1342,6 @@ jobs:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
           image: python:${{ inputs.python_version }}-alpine
-          wasm_module: ${{ inputs.wasip1_module && format('rust/target/wasm32-wasip1/release/{0}.wasm', inputs.crate) || '' }}
 
       - name: Python on Alpine — the declared floor
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.pyo3 && inputs.python_floor_version != '' && inputs.python_floor_version != inputs.python_version }}
@@ -1383,21 +1351,23 @@ jobs:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
           image: python:${{ inputs.python_floor_version }}-alpine
-          wasm_module: ${{ inputs.wasip1_module && format('rust/target/wasm32-wasip1/release/{0}.wasm', inputs.crate) || '' }}
 
   # ===========================================================================
   # The static libraries.
   #
   # Three bindings link the core instead of loading it, each from a no_std static library:
   #
-  #  * Swift, on Linux and WebAssembly — a SwiftPM binary target (SE-0482) with one archive
-  #    per triple, committed in the binding's artifact bundle. Two of those triples can be
-  #    reached no other way: Swift's static Linux SDK (musl) and its WebAssembly SDK build
-  #    executables with no dynamic loader.
+  #  * Swift, on every RID and WebAssembly — a SwiftPM binary target (SE-0482) with one
+  #    archive per triple, committed in the binding's artifact bundle, so a SwiftPM
+  #    executable has nothing to load or deploy. Two of those triples can be reached no
+  #    other way: Swift's static Linux SDK (musl) and its WebAssembly SDK build executables
+  #    with no dynamic loader.
   #  * Go, under cgo on Linux, macOS and Windows — the archive is named on the cgo link
   #    line, and committed under go/staticlib because a Go module is whatever is in the
-  #    tree. Windows links the MSVC archive C# does; MinGW's linker reads it. There is no
-  #    other Go backend: nothing is embedded and nothing is loaded at run time.
+  #    tree. Windows links the MSVC archive C# does; MinGW's linker reads it. TinyGo on
+  #    WebAssembly links the wasm32-wasip1 one (go/staticlib/wasm, tested in the browser by
+  #    hyper-build-wasm.yml). There is no other Go backend: nothing is embedded and nothing
+  #    is loaded at run time.
   #  * C#, for a Native AOT publish on every RID — the package's targets file hands the
   #    archive to the AOT linker, so the result is one executable with no library beside it.
   #    These are not committed; hyper-pack-nuget.yml packs them from this run's artifact.
@@ -1410,9 +1380,12 @@ jobs:
   # Swift binding against it in Swift's own containers — containers, because the runner
   # image has a Swift toolchain for neither the SDKs nor the floor version:
   #
-  #  * on swift_version: the smoke executable through the static Linux SDK, then the whole
-  #    suite and the smoke executable for WebAssembly. (glibc on swift_version is the
-  #    matrix job's `swift test`, which rebuilds its own triple.)
+  #  * on swift_version: the smoke executable on glibc and through the static Linux SDK,
+  #    then the whole suite and the smoke executable for WebAssembly, and that same wasm
+  #    executable again in headless Chrome through a WASI shim. (The matrix job's
+  #    `swift test` covers glibc too, but only builds the package itself; the smoke
+  #    executable depends on its product the way a consumer does, the path Swift 6.3's
+  #    Swift Build broke — swiftlang/swift-build#1295.)
   #  * on swift_floor_version: the whole suite and the smoke executable on glibc, and the
   #    smoke executable on musl and WebAssembly. Not `swift test` for WebAssembly there:
   #    6.2's XCTest traps inside Foundation's Bundle.main before any test runs
@@ -1465,12 +1438,15 @@ jobs:
           path: ~/.cache/hyper-swift-sdk
           key: swift-sdk-${{ runner.arch }}-${{ inputs.swift_version }}-${{ inputs.swift_floor_version }}
 
-      - name: Swift ${{ inputs.swift_version }} — musl and WebAssembly
+      # browser-wasm on x64 only, where the runner image's Chrome is the one the other
+      # browser checks (hyper-build-wasm.yml) already run on; the module is the same bytes
+      # on either architecture.
+      - name: Swift ${{ inputs.swift_version }} — glibc consumer, musl, WebAssembly and the browser
         uses: SkunkWerkx/.github/.github/actions/swift-static-suite@master
         with:
           project: ${{ inputs.project }}
           swift-version: ${{ inputs.swift_version }}
-          checks: smoke-musl test-wasm smoke-wasm
+          checks: smoke-glibc smoke-musl test-wasm smoke-wasm ${{ matrix.os == 'ubuntu-26.04' && 'browser-wasm' || '' }}
 
       - name: Swift ${{ inputs.swift_floor_version }} — the declared floor, on glibc, musl and WebAssembly
         if: ${{ !cancelled() && inputs.swift_floor_version != '' && inputs.swift_floor_version != inputs.swift_version }}

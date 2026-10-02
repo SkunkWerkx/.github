@@ -152,8 +152,6 @@ case "$binding" in
   # the way the release does (maturin, with patchelf so the extension's libgcc_s is bundled
   # into the wheel). The second installs that wheel on a BARE image — no compiler, no libgcc
   # — and runs the suite: that is the consumer's machine, and it is what proves the bundling.
-  # The wasm backend is then run too, after `apk add libgcc`, which wasmtime's own musl wheel
-  # needs and does not bundle.
   #
   # SUITE_IMAGE picks the interpreter the suite runs on; the wheel is always built on the
   # default image, since it is abi3 and one build serves every supported Python.
@@ -161,7 +159,7 @@ case "$binding" in
     wheels=$(mktemp -d)
     trap 'rm -rf "$wheels"' EXIT
     chmod 777 "$wheels"
-    extra_env=(-v "$wheels:/wheels" -e WASM_MODULE="${WASM_MODULE:-}")
+    extra_env=(-v "$wheels:/wheels")
     in_alpine "python:3.14-alpine" '
       apk add --no-cache build-base curl >/dev/null
       curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -q
@@ -169,15 +167,11 @@ case "$binding" in
       pip install -q --root-user-action=ignore "maturin[patchelf]>=1.9,<2.0"
       (cd /src && tar --exclude=target --exclude=.pytest_cache --exclude=__pycache__ \
           --exclude="_native*.so" --exclude="_native*.pyd" -cf - rust python) | tar -C /work -xf -
-      if [ -n "$WASM_MODULE" ] && [ -f "/src/$WASM_MODULE" ]; then
-        mkdir -p "/work/python/src/$CRATE/native/wasm32-wasip1"
-        cp "/src/$WASM_MODULE" "/work/python/src/$CRATE/native/wasm32-wasip1/"
-      fi
       cd /work/python
       maturin build --release --compatibility musllinux_1_2 --out /wheels
       chmod -R a+rX /wheels
     '
-    extra_env=(-v "$wheels:/wheels:ro" -e WASM_MODULE="${WASM_MODULE:-}")
+    extra_env=(-v "$wheels:/wheels:ro")
     in_alpine "${SUITE_IMAGE:-python:3.14-alpine}" '
       if ls /usr/lib/libgcc_s* >/dev/null 2>&1; then echo "::error::libgcc is installed, so this run proves nothing"; exit 1; fi
       pip install -q --root-user-action=ignore pytest /wheels/*.whl
@@ -186,17 +180,13 @@ case "$binding" in
       mkdir -p /t/rust && cp /work/rust/Cargo.toml /t/rust/
       cd /t
       pytest -q -p no:cacheprovider tests
-      if [ -n "$WASM_MODULE" ]; then
-        pip install -q --root-user-action=ignore wasmtime
-        apk add --no-cache libgcc >/dev/null
-        env "$(echo "$CRATE" | tr a-z A-Z)_WASM=1" pytest -q -p no:cacheprovider tests
-      fi
     '
     ;;
 
-  # The Fiddle backend, forced: there is no Magnus extension for musl, so Fiddle is what an
-  # Alpine consumer runs — RubyGems installs the `x86_64-linux` platform gem there, its
-  # glibc extension fails to load, and the gem falls back to Fiddle over this library.
+  # The Fiddle backend, forced, over this library: what the universal gem runs on Alpine for
+  # a Ruby no musl platform gem covers — the declared floor among them, which is why this
+  # suite also runs on ruby_floor_version. The Magnus extension those platform gems carry is
+  # built and tested by the ruby-magnus-musl action, not here.
   #
   # rspec is installed as a gem and run directly, without Bundler, and that is deliberate.
   # On Ruby 3.3 and 3.4 fiddle is a default gem, and Bundler resolves the newer fiddle from

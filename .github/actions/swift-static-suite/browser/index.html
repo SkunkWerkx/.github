@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Swift WebAssembly smoke test</title>
+<!--
+  Runs smoke.wasm — swift/StaticSmokeTest built with swift.org's WebAssembly SDK, a plain
+  wasm32-wasip1 command module — through @bjorn3/browser_wasi_shim, whose random_get is
+  crypto.getRandomValues. suite-swift-static.sh's browser-wasm check serves this beside the
+  module and the shim's npm package, and passes only when the page ends with "EXIT 0".
+  `?badrng` swaps random_get for one that writes zeros: a negative control, which has to make
+  the smoke test fail ("two v4s differ") and the page end with a non-zero exit.
+-->
+<pre id="out">running</pre>
+<script type="module">
+import { WASI, File, OpenFile, ConsoleStdout } from "./node_modules/@bjorn3/browser_wasi_shim/dist/index.js";
+
+const out = document.getElementById("out");
+let text = "";
+let instance;
+try {
+  const wasi = new WASI(["StaticSmokeTest"], [], [
+    new OpenFile(new File([])),
+    ConsoleStdout.lineBuffered(line => { text += line + "\n"; }),
+    ConsoleStdout.lineBuffered(line => { text += "[stderr] " + line + "\n"; }),
+  ]);
+  if (location.search.includes("badrng")) {
+    wasi.wasiImport.random_get = (ptr, len) => {
+      new Uint8Array(instance.exports.memory.buffer).fill(0, ptr, ptr + len);
+      return 0;
+    };
+  }
+  ({ instance } = await WebAssembly.instantiateStreaming(
+    fetch("smoke.wasm"), { wasi_snapshot_preview1: wasi.wasiImport }));
+  const code = wasi.start(instance);
+  out.textContent = text + "EXIT " + code;
+} catch (error) {
+  out.textContent = text + "THREW " + error;
+}
+</script>

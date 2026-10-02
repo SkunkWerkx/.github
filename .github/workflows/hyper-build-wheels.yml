@@ -1,10 +1,12 @@
 name: HyperForge — build and install-test the PyPI wheels
 
-# The eight wheels a Hyper* Python package publishes, built, installed and called into on
+# The nine wheels a Hyper* Python package publishes, built, installed and called into on
 # every CI run, then uploaded as `pypi-wheels-{rid}` for the caller's release to publish
 # unchanged. abi3-py311 collapses the matrix to one wheel per platform (not per Python
 # version), so eight legs — six desktop platforms and the two musl ones — cover every
-# supported CPython on every platform.
+# supported CPython on every platform, and build-pyodide-wheel adds the ninth: the same
+# extension for Pyodide in the browser (`pypi-wheels-pyodide`), whose job also runs the
+# binding's whole test suite inside Pyodide, under Node and in headless Chrome.
 #
 # This used to live in each caller's release.yml and run only at the tag, on the reasoning
 # that a wheel bakes its version into its own filename and metadata and CI had no version to
@@ -28,7 +30,7 @@ on:
   workflow_call:
     inputs:
       crate:
-        description: "Lowercase core name — the Python package and import name, and {crate}.wasm"
+        description: "Lowercase core name — the Python package and import name"
         required: true
         type: string
       python_version:
@@ -103,21 +105,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip1${{ matrix.rid == 'osx-x64' && ',x86_64-apple-darwin' || '' }}
-
-      # The wheel's wasmtime backend module, built here from the same checkout the wheel
-      # itself is built from, so the two halves of one wheel come from one source tree. From
-      # inside rust/, where cargo reads the crate's .cargo/config.toml export flags.
-      - name: Build wasm32-wasip1 module
-        working-directory: rust
-        run: cargo rustc --release --crate-type cdylib --target wasm32-wasip1
-
-      - name: Stage wasm32-wasip1 module into the package
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "python/src/$CRATE/native/wasm32-wasip1"
-          cp "rust/target/wasm32-wasip1/release/$CRATE.wasm" "python/src/$CRATE/native/wasm32-wasip1/"
+          targets: ${{ matrix.rid == 'osx-x64' && 'x86_64-apple-darwin' || '' }}
 
       # The hosted arm64 images ship with Rosetta 2; this is for the day one does not.
       - name: Make sure Rosetta 2 is there for the x64 Python
@@ -199,5 +187,73 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: pypi-wheels-${{ matrix.rid }}
+          path: python/dist/*.whl
+          if-no-files-found: error
+
+  # The ninth wheel: the same extension compiled for wasm32-unknown-emscripten, for Python in
+  # the browser under Pyodide (`await micropip.install("<crate>")`, straight from PyPI —
+  # PEP 783's pyemscripten_{year}_{patch}_wasm32 tag). Still abi3, but a Pyodide ABI is one
+  # Python minor built with one exact Emscripten, so this wheel serves that one Pyodide line
+  # (314.x is pyemscripten_2026_0: Python 3.14, Emscripten 5.0.3) and the next line needs
+  # PYODIDE_VERSION moved, not a second leg.
+  #
+  # PYODIDE_VERSION is the only pin. pyodide-build reads everything else from that release's
+  # cross-build environment — the Emscripten SDK (installed by it, the exact version or
+  # `pyodide build` refuses to run), the compiler and linker flags a side module needs, and
+  # the platform tag the wheel is repacked under. Stable Rust builds it. The host Python
+  # must be the Pyodide release's own minor, or pyodide-build treats the environment as
+  # incompatible.
+  #
+  # Tested harder than the native legs, because nothing else in CI runs this build: the same
+  # version check, then the binding's whole pytest suite inside Pyodide — under Node, and
+  # again in a headless Chrome page (the runner image's own google-chrome) serving Pyodide
+  # from the npm package, so the browser loads nothing from the network (pyodide-suite).
+  build-pyodide-wheel:
+    runs-on: ubuntu-26.04
+    env:
+      CRATE: ${{ inputs.crate }}
+      PYODIDE_VERSION: "314.0.7"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-emscripten
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Build the Pyodide wheel
+        run: |
+          set -euo pipefail
+          pip install pyodide-build
+          pyodide xbuildenv install "$PYODIDE_VERSION"
+          pyodide xbuildenv install-emscripten
+          # shellcheck disable=SC1091
+          source "$(pyodide config get emsdk_dir)/emsdk_env.sh"
+          cd python
+          pyodide build -o dist
+          ls -l dist
+          echo "VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' ../rust/Cargo.toml | head -1)" >> "$GITHUB_ENV"
+
+      - uses: SkunkWerkx/.github/.github/actions/pyodide-suite@master
+        with:
+          crate: ${{ inputs.crate }}
+          version: ${{ env.VERSION }}
+          pyodide_version: ${{ env.PYODIDE_VERSION }}
+
+      - name: Attest wheel build provenance
+        if: >-
+          inputs.attest &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: python/dist/*.whl
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pypi-wheels-pyodide
           path: python/dist/*.whl
           if-no-files-found: error
