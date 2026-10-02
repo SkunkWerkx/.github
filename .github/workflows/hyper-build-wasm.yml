@@ -14,10 +14,12 @@ name: HyperForge — build the Rust core as a wasm32-unknown-emscripten static l
 # rust/.cargo/config.toml, for `cargo rustc --crate-type staticlib` with std left out. Two
 # things in that one spelling:
 #
-#  * --crate-type staticlib, not cargo build: overrides the crate-type for just this
-#    invocation without touching Cargo.toml's shared [lib] section (cdylib, the default
-#    there, produces an already-linked complete .wasm module — a consumer like .NET's
-#    instead). Verified end-to-end in wasm-spike.yml before this got promoted out of "spike."
+#  * --crate-type staticlib, not cargo build: the crate type belongs to this one
+#    invocation, the same way the shared library's does (`cargo rustc --crate-type cdylib`
+#    in hyper-build-native.yml); Cargo.toml's [lib] section declares only the rlib. A cdylib
+#    for this target would be an already-linked complete .wasm module, where a consumer
+#    like .NET's wants an archive to link into its own. Verified end-to-end in
+#    wasm-spike.yml before this got promoted out of "spike."
 #  * --no-default-features --features staticlib: the library is built without Rust's
 #    standard library, with the crate's own panic handler in its place. A static library
 #    that bundles std defines rust_eh_personality, and two of them cannot be linked into one

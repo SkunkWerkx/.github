@@ -144,19 +144,19 @@ case "$RUNNER_OS" in
       export BINDGEN_EXTRA_CLANG_ARGS="--target=x86_64-w64-mingw32 -isystem \"$clang_inc\" -isystem \"$mingw_inc\""
     fi
 
-    cargo build --release --features ruby --target "$rust_target"
+    cargo rustc --release --crate-type cdylib --features ruby --target "$rust_target"
     built="$CARGO_TARGET_DIR/$rust_target/release/$crate.dll"
     # No `lib` prefix on a gnu/gnullvm-target cdylib, and mingw Ruby's DLEXT is
     # `so`, not `dll` — `require` looks for exactly {crate}_native.so there.
     ext=so
     ;;
   macOS)
-    cargo build --release --features ruby
+    cargo rustc --release --crate-type cdylib --features ruby
     built="$CARGO_TARGET_DIR/release/lib$crate.dylib"
     ext=bundle
     ;;
   *)
-    cargo build --release --features ruby
+    cargo rustc --release --crate-type cdylib --features ruby
     built="$CARGO_TARGET_DIR/release/lib$crate.so"
     ext=so
     ;;
@@ -165,7 +165,7 @@ esac
 # Two staged copies, both wanted. The versioned path is the fat-gem layout the
 # consumer-side loader tries first, so this job exercises the real release load
 # path rather than only the dev one. The flat path is what the upload step globs,
-# and what a plain local `cargo build --release --features ruby` produces.
+# and what a plain local `cargo ruby-ext` produces.
 mkdir -p "../ruby/lib/$crate/$abi"
 cp "$built" "../ruby/lib/$crate/$abi/${crate}_native.$ext"
 cp "$built" "../ruby/lib/${crate}_native.$ext"

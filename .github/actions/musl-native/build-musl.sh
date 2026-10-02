@@ -12,9 +12,11 @@
 # Three things here are load-bearing, and each was a real failure first:
 #
 #  * `-C target-feature=-crt-static`. Every *-linux-musl target defaults to a statically
-#    linked C runtime, and under that default rustc cannot produce a cdylib at all — it
-#    says "dropping unsupported crate type `cdylib`" and builds only the rlib. The build
-#    still exits 0, so the missing .so is caught below rather than by cargo.
+#    linked C runtime, and under that default rustc cannot produce a cdylib at all. Asked
+#    for one by name, as below, cargo stops with "cannot produce cdylib ... the target does
+#    not support these crate types"; a manifest that listed the crate type only got a
+#    "dropping unsupported crate type" warning and exit 0, which is why the .so is still
+#    checked for below.
 #
 #  * The unwinder is linked statically. With a dynamic CRT, Rust's std links `-lgcc_s`,
 #    which leaves a NEEDED entry for libgcc_s.so.1 — a library the bare `alpine`,
@@ -65,11 +67,11 @@ docker run --rm "${platform_args[@]}" \
     echo "GROUP ( $(gcc -print-file-name=libgcc_eh.a) $(gcc -print-file-name=libgcc.a) )" > /unwind/libgcc_s.so
     export RUSTFLAGS="-C target-feature=-crt-static -L native=/unwind"
 
-    cargo build --release
+    cargo rustc --release --crate-type cdylib
     cargo test --release
 
     lib="target/release/lib$CRATE.so"
-    [ -f "$lib" ] || { echo "::error::no $lib — rustc dropped the cdylib, is crt-static back on?"; exit 1; }
+    [ -f "$lib" ] || { echo "::error::no $lib — the cdylib was not produced, is crt-static back on?"; exit 1; }
 
     needed=$(readelf -d "$lib" | sed -n "s/.*(NEEDED).*\[\(.*\)\]/\1/p" | sort | tr "\n" " ")
     echo "NEEDED: $needed"

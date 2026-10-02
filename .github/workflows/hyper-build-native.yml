@@ -97,7 +97,7 @@ name: HyperForge — build native core, test every binding
 #   - Darwin extension linking: a Python/Ruby/PHP extension must not link the host
 #     runtime — Py*/rb_*/php* symbols resolve at load, which needs -undefined
 #     dynamic_lookup, declared once in the core crate's own .cargo/config.toml (a plain
-#     `cargo build` doesn't get this from PyO3/rb-sys/ext-php-rs the way maturin/
+#     cargo invocation doesn't get this from PyO3/rb-sys/ext-php-rs the way maturin/
 #     rake-compiler builds do — harmless for the default, no-feature build too).
 #   - PHP never ships native Windows ARM64 (runs under x64 emulation there — can never
 #     load an ARM64 native lib), so the win-arm64 leg skips the PHP steps entirely (both
@@ -358,9 +358,16 @@ jobs:
         with:
           targets: ${{ inputs.wasip1_module && 'wasm32-wasip1' || '' }}
 
+      # `cargo rustc --crate-type cdylib`, not `cargo build`: a Hyper* core's manifest lists
+      # only the rlib. Cargo builds every crate type a dependency declares, and a cdylib is a
+      # linked artifact that needs std's panic handler, so a manifest that listed it failed
+      # any `default-features = false` consumer on a target that can produce one (the host,
+      # wasm32-unknown-unknown). The shared library is this invocation's own crate type
+      # instead, the way the static libraries already are, and every cdylib build below is
+      # spelled the same way. The spelling also builds a manifest that still lists cdylib.
       - name: Build native core (release)
         working-directory: rust
-        run: cargo build --release
+        run: cargo rustc --release --crate-type cdylib
 
       # Every binding's README promises these two RIDs load on glibc 2.34 or newer, and that
       # number is a property of the build image as much as of the source: a newer image can
@@ -391,7 +398,7 @@ jobs:
       - name: Build wasm32-wasip1 module
         if: inputs.wasip1_module
         working-directory: rust
-        run: cargo build --release --target wasm32-wasip1
+        run: cargo rustc --release --crate-type cdylib --target wasm32-wasip1
 
       # Unit tests, each repo's shared conformance corpus, and its counting-allocator
       # allocation proof, per leg.
@@ -482,7 +489,7 @@ jobs:
       - name: Build Python (PyO3) extension
         if: inputs.pyo3
         working-directory: rust
-        run: cargo build --release --features python
+        run: cargo rustc --release --crate-type cdylib --features python
 
       - name: Stage Python (PyO3) extension
         if: inputs.pyo3
@@ -522,14 +529,10 @@ jobs:
           export ${{ inputs.wasm_env }}=1
           pytest
 
-      # No maturin/real-wheel build here, deliberately: a wheel bakes its version into its
-      # own filename and metadata at build time, and CI runs before any release tag exists —
-      # a wheel built here would always be stamped with whatever pyproject.toml/Cargo.toml
-      # happened to say at PR time, not the eventual release version. CI's job is proving
-      # this compiles and passes its own tests (the plain `cargo build`/pytest above already
-      # does that), not producing a release-shippable, version-stamped artifact it can't get
-      # right. The real wheel gets built once, at actual release time, once the version is
-      # genuinely known — see hyperuuid's own release.yml.
+      # No wheel is built in this job: maturin is its own compile step, and the extension
+      # staged and tested above is what this matrix is for. The wheels a release publishes
+      # are built, installed and attested by hyper-build-wheels.yml, which a caller's CI runs
+      # beside this workflow.
 
       # ---------------------------------------------------------------------------
       # Every binding's suite, in this same job, against the .dylib/.so/.dll this job
@@ -882,7 +885,7 @@ jobs:
       - name: Build PHP (ext-php-rs) extension
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' }}
         working-directory: rust
-        run: cargo build --release --features php
+        run: cargo rustc --release --crate-type cdylib --features php
 
       # This is a Zend extension, not another FFI cdylib: the `--features php` build exports
       # `get_module`, so PHP loads it via `extension=` in php.ini rather than `FFI::cdef`.
@@ -1181,7 +1184,7 @@ jobs:
 
       - name: Build native core for x86_64 (release)
         working-directory: rust
-        run: cargo build --release --target x86_64-apple-darwin
+        run: cargo rustc --release --crate-type cdylib --target x86_64-apple-darwin
 
       # A cross-build that quietly produced the host's architecture would pass every test
       # below and ship an arm64 library under an x64 name.
@@ -1287,7 +1290,7 @@ jobs:
       - name: Build wasm32-wasip1 module
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module }}
         working-directory: rust
-        run: cargo build --release --target wasm32-wasip1
+        run: cargo rustc --release --crate-type cdylib --target wasm32-wasip1
 
       # Every suite below carries `!cancelled()` for the same reason the matrix job's do:
       # one binding's failure must not mask the others, and a red step names its binding.

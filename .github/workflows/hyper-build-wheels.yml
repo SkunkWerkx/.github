@@ -1,0 +1,203 @@
+name: HyperForge — build and install-test the PyPI wheels
+
+# The eight wheels a Hyper* Python package publishes, built, installed and called into on
+# every CI run, then uploaded as `pypi-wheels-{rid}` for the caller's release to publish
+# unchanged. abi3-py311 collapses the matrix to one wheel per platform (not per Python
+# version), so eight legs — six desktop platforms and the two musl ones — cover every
+# supported CPython on every platform.
+#
+# This used to live in each caller's release.yml and run only at the tag, on the reasoning
+# that a wheel bakes its version into its own filename and metadata and CI had no version to
+# give it. That stopped being true when the native libraries started embedding the crate
+# version: a release now reuses the CI run that built the version-bump commit (the caller's
+# find-ci-run refuses any other), so the version CI sees is the version being released. What
+# building at the tag bought after that was the first run of this matrix happening after
+# other registries had already published — which is how 0.4.0's osx-x64 smoke test failed
+# with crates.io, NuGet, Maven Central and RubyGems already out.
+#
+# A separate workflow rather than more steps in hyper-build-native.yml: maturin is the
+# compile step for a wheel (there is no "pack an already-built extension" mode), it builds
+# the manylinux wheels inside its own container, and none of that matrix's suites apply to
+# the result. hyper-build-native.yml still builds and tests the extension as a staged
+# library on every leg; this is the packaging, proven separately.
+#
+# The CALLING job must grant `id-token: write` and `attestations: write` unless it passes
+# `attest: false` — a reusable workflow cannot escalate its own permissions.
+
+on:
+  workflow_call:
+    inputs:
+      crate:
+        description: "Lowercase core name — the Python package and import name, and {crate}.wasm"
+        required: true
+        type: string
+      python_version:
+        description: "Python the wheels are installed and called on (the build itself is abi3 and needs no particular one)"
+        required: false
+        type: string
+        default: "3.14"
+      attest:
+        description: >
+          Emit a signed SLSA build-provenance attestation for each wheel, verifiable with
+          `gh attestation verify <wheel> --repo <caller> --signer-repo SkunkWerkx/.github`.
+          Runs on pushes and same-repo pull requests; skipped for fork PRs, whose tokens
+          cannot sign.
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build-wheels:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-x64
+            target: x86_64-unknown-linux-gnu
+            manylinux: "2_28"
+          - os: ubuntu-26.04-arm
+            rid: linux-arm64
+            target: aarch64-unknown-linux-gnu
+            manylinux: "2_28"
+          # musl (Alpine): a separate wheel tag, not a variant of manylinux — pip on Alpine
+          # ignores every manylinux wheel, and with no sdist published that means no install
+          # at all. maturin turns crt-static off for an extension module itself and bundles
+          # the extension's libgcc_s into the wheel, which the smoke test below holds it to
+          # by importing the wheel on an image that has no libgcc.
+          - os: ubuntu-26.04
+            rid: linux-musl-x64
+            target: x86_64-unknown-linux-musl
+            manylinux: "musllinux_1_2"
+          - os: ubuntu-26.04-arm
+            rid: linux-musl-arm64
+            target: aarch64-unknown-linux-musl
+            manylinux: "musllinux_1_2"
+          # Cross-built on the Apple silicon runner: there is no Intel macOS leg (see
+          # hyper-build-native.yml's build-native-osx-x64 job). The wheel is abi3, so
+          # building it needs no x86_64 interpreter. Installing it for the smoke test below
+          # does, and `python_arch` gets one: the x64 CPython, which runs under Rosetta 2.
+          - os: macos-latest
+            rid: osx-x64
+            target: x86_64-apple-darwin
+            manylinux: ""
+            python_arch: x64
+          - os: macos-latest
+            rid: osx-arm64
+            target: aarch64-apple-darwin
+            manylinux: ""
+          - os: windows-latest
+            rid: win-x64
+            target: x86_64-pc-windows-msvc
+            manylinux: ""
+          - os: windows-11-arm
+            rid: win-arm64
+            target: aarch64-pc-windows-msvc
+            manylinux: ""
+    runs-on: ${{ matrix.os }}
+    env:
+      CRATE: ${{ inputs.crate }}
+      RID: ${{ matrix.rid }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1${{ matrix.rid == 'osx-x64' && ',x86_64-apple-darwin' || '' }}
+
+      # The wheel's wasmtime backend module, built here from the same checkout the wheel
+      # itself is built from, so the two halves of one wheel come from one source tree. From
+      # inside rust/, where cargo reads the crate's .cargo/config.toml export flags.
+      - name: Build wasm32-wasip1 module
+        working-directory: rust
+        run: cargo rustc --release --crate-type cdylib --target wasm32-wasip1
+
+      - name: Stage wasm32-wasip1 module into the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "python/src/$CRATE/native/wasm32-wasip1"
+          cp "rust/target/wasm32-wasip1/release/$CRATE.wasm" "python/src/$CRATE/native/wasm32-wasip1/"
+
+      # The hosted arm64 images ship with Rosetta 2; this is for the day one does not.
+      - name: Make sure Rosetta 2 is there for the x64 Python
+        if: matrix.rid == 'osx-x64'
+        run: |
+          set -euo pipefail
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            softwareupdate --install-rosetta --agree-to-license
+          fi
+          arch -x86_64 /usr/bin/true
+
+      # `architecture` is empty on every row but osx-x64, which setup-python reads as the
+      # runner's own.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python_version }}
+          architecture: ${{ matrix.python_arch }}
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux != '' && matrix.manylinux || 'off' }}
+          args: --release --out dist
+
+      # The wheel itself — maturin's packaging, the bundled libraries, the tag pip selects
+      # it by — installed and imported before anything is attested or uploaded.
+      # hyper-build-native.yml tests the extension as a staged library; through 0.3.0 the
+      # wheels went to PyPI without being installed once. The check is small on purpose: the
+      # right backend loaded, and the core inside reports the version in rust/Cargo.toml,
+      # which is also the version in the wheel's file name. The musl wheels are installed on
+      # a bare Alpine image, where a wheel that failed to bundle libgcc_s cannot import.
+      - name: Install the wheel and call into it
+        shell: bash
+        env:
+          PYTHON_VERSION: ${{ inputs.python_version }}
+        run: |
+          set -euo pipefail
+          want=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)
+          ls "python/dist/$CRATE-$want-"*.whl
+          check="import $CRATE; assert $CRATE.BACKEND == 'native', $CRATE.BACKEND; assert $CRATE.native_version() == '$want', $CRATE.native_version(); print('$CRATE', $CRATE.native_version(), 'on the', $CRATE.BACKEND, 'backend')"
+          if [[ "$RID" == linux-musl-* ]]; then
+            docker run --rm -v "$PWD/python/dist:/dist:ro" "python:$PYTHON_VERSION-alpine" sh -euc \
+              "pip install -q --root-user-action=ignore /dist/*.whl && python -c \"$check\""
+          else
+            # The osx-x64 leg runs on an arm64 runner. setup-python's "x64" macOS build is
+            # the python.org installer, which is a universal binary, and a universal binary
+            # runs its arm64 slice there — where pip rightly refuses an x86_64 wheel ("not a
+            # supported wheel on this platform", the 0.4.0 releases' first run). `arch
+            # -x86_64` runs the Intel slice under Rosetta, which is the interpreter this
+            # wheel is for.
+            py=(python)
+            if [[ "$RID" == osx-x64 ]]; then py=(arch -x86_64 python); fi
+            "${py[@]}" -c 'import platform, sys; print("smoke-test interpreter:", platform.machine(), sys.version.split()[0])'
+            "${py[@]}" -m pip install --quiet --force-reinstall python/dist/*.whl
+            cd "$RUNNER_TEMP"
+            "${py[@]}" -c "$check"
+          fi
+
+      # `pip download` hands a consumer a compiled extension module sealed inside the
+      # package rather than as a file of its own, so the wheel is what gets attested. A
+      # caller's release verifies this before it publishes, and a consumer can afterwards:
+      #
+      #     gh attestation verify <wheel> --repo <owner>/<repo> --signer-repo SkunkWerkx/.github
+      #
+      # --signer-repo because this step lives in the forge: Fulcio records the forge as the
+      # build signer and the calling repository as the source, and `--repo` alone asserts
+      # both are the caller. gh-action-pypi-publish's PEP 740 attestations are separate:
+      # they live on PyPI and are made at publish time, from the caller's own workflow.
+      - name: Attest wheel build provenance
+        if: >-
+          inputs.attest &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: python/dist/*.whl
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pypi-wheels-${{ matrix.rid }}
+          path: python/dist/*.whl
+          if-no-files-found: error
