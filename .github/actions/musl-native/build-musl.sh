@@ -67,7 +67,8 @@ docker run --rm "${platform_args[@]}" \
     echo "GROUP ( $(gcc -print-file-name=libgcc_eh.a) $(gcc -print-file-name=libgcc.a) )" > /unwind/libgcc_s.so
     export RUSTFLAGS="-C target-feature=-crt-static -L native=/unwind"
 
-    cargo rustc --release --crate-type cdylib
+    # The cdylib alias from the crate itself, as in hyper-build-native.yml (its comment has why).
+    cargo cdylib
     cargo test --release
 
     lib="target/release/lib$CRATE.so"

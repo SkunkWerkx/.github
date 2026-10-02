@@ -365,9 +365,17 @@ jobs:
       # wasm32-unknown-unknown). The shared library is this invocation's own crate type
       # instead, the way the static libraries already are, and every cdylib build below is
       # spelled the same way. The spelling also builds a manifest that still lists cdylib.
+      #
+      # The plain core is built through the crate's own `cargo cdylib` alias rather than
+      # that spelling, because how it is built is the crate's call: HyperUuid's alias is
+      # exactly `rustc --release --crate-type cdylib`, while HyperCast's builds the library
+      # without std (its own feature and abort-on-panic setting, output still in
+      # target/release/). The extension, wasm32-wasip1 and test builds stay spelled out —
+      # each has one shape for every crate. A Hyper* crate is expected to define the alias
+      # in rust/.cargo/config.toml, as both do.
       - name: Build native core (release)
         working-directory: rust
-        run: cargo rustc --release --crate-type cdylib
+        run: cargo cdylib
 
       # Every binding's README promises these two RIDs load on glibc 2.34 or newer, and that
       # number is a property of the build image as much as of the source: a newer image can
@@ -1184,7 +1192,7 @@ jobs:
 
       - name: Build native core for x86_64 (release)
         working-directory: rust
-        run: cargo rustc --release --crate-type cdylib --target x86_64-apple-darwin
+        run: cargo cdylib --target x86_64-apple-darwin
 
       # A cross-build that quietly produced the host's architecture would pass every test
       # below and ship an arm64 library under an x64 name.
