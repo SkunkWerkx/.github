@@ -753,6 +753,33 @@ jobs:
         with:
           swift-version: ${{ inputs.swift_version }}
 
+      # setup-swift puts the Swift toolchain's bin directory first on PATH, and that
+      # directory has a `clang` of its own. bindgen — which the ext-php-rs and Magnus builds
+      # further down both run — loads the newest libclang it finds in the system's
+      # directories, but asks whichever `clang` is first on PATH where the compiler's own
+      # headers are. On Ubuntu 26.04 with Swift 6.4 those are two different compilers: the
+      # system's libclang 22 was handed Swift's clang 21 headers, whose SSE intrinsics call
+      # builtins libclang 22 no longer has, and the PHP extension failed on x64 with
+      # `xmmintrin.h:245: invalid conversion between vector type '__m128' and integer type
+      # 'int'` (HyperUuid run 36893952091; arm64 passed only because it has no such header).
+      # CLANG_PATH and LIBCLANG_PATH are clang-sys's own overrides; naming one system LLVM for
+      # both keeps the pair matched whatever a setup action does to PATH. Reproduced and
+      # fixed off-runner by pairing a system libclang 22 with a Swift toolchain's clang.
+      - name: Point bindgen at one system LLVM, not at Swift's clang
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for prefix in $(ls -d /usr/lib/llvm-* 2>/dev/null | sort -t- -k2 -n -r); do
+            if [ -x "$prefix/bin/clang" ] && ls "$prefix"/lib/libclang*.so* >/dev/null 2>&1; then
+              echo "bindgen: clang and libclang from $prefix ($("$prefix/bin/clang" --version | head -1))"
+              echo "CLANG_PATH=$prefix/bin/clang" >> "$GITHUB_ENV"
+              echo "LIBCLANG_PATH=$prefix/lib" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "::warning::No /usr/lib/llvm-*/ carries both clang and libclang; bindgen is left to find its own, which is how the mismatch above happens."
+
       # How the suite below reaches this leg's own build of the core depends on the
       # platform. macOS and Windows load a shared library out of the package's resources, so
       # the one just built is placed there. Linux links the core in from the binding's
