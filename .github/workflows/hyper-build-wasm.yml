@@ -84,6 +84,25 @@ on:
         required: false
         type: string
         default: ""
+      ruby_wasm_smoke:
+        description: >
+          Path to the Ruby binding's ruby.wasm smoke directory (e.g. ruby/wasm-smoke): a
+          Gemfile for `rbwasm build`, test.rb, node-test.mjs, index.html and an npm lockfile
+          for @ruby/wasm-wasi. Given, the Magnus extension is built from this commit for
+          wasm32-wasip1 once per entry in ruby_wasm_abis, attested and uploaded as
+          ruby-wasm-{abi} (the archives the {crate}-wasm gem carries), and the gem packed
+          around each one is linked into a ruby.wasm interpreter and run under Node and in
+          headless Chrome. Empty skips it.
+        required: false
+        type: string
+        default: ""
+      ruby_wasm_abis:
+        description: >
+          JSON list of the Ruby minors the {crate}-wasm gem carries an archive for. Keep it
+          in step with ruby/Rakefile's ABIS and release.yml's list.
+        required: false
+        type: string
+        default: '["3.4", "4.0"]'
 
 jobs:
   build-wasm:
@@ -246,5 +265,141 @@ jobs:
           sed -n '/<pre/,/<\/pre>/p' "$site/dom.html"
           if grep -Eq '(^|>)FAIL' "$site/dom.html" || ! grep -Eq '(^|>)DONE$' "$site/dom.html"; then
             echo "::error::The TinyGo smoke page did not print DONE with every check passing."
+            exit 1
+          fi
+
+  # Ruby: the Magnus extension linked into a ruby.wasm interpreter, one job per Ruby minor the
+  # {crate}-wasm companion gem carries. ruby.wasm cannot load an extension at runtime;
+  # `rbwasm build` cross-compiles every gem's extension in the consumer's Gemfile and links
+  # it into the one interpreter it builds. So the archive is made the same way: the gem's
+  # extconf.rb, run by rbwasm with {CRATE}_RUST_DIR set, builds the crate for wasm32-wasip1
+  # against that minor's headers, and {CRATE}_WASM_OUT receives the finished archive. That
+  # archive is attested and uploaded for release.yml, which packs the published gem around
+  # these exact bytes. Then the gem is packed here the way it ships, with only this minor's
+  # archive and no Rust in reach, and that is what runs under Node and in headless Chrome.
+  #
+  # rbwasm builds the interpreter itself (OpenSSL, zlib, libyaml, Ruby): 15-20 minutes cold,
+  # about 8 with build/ cached per minor. Every build passes --remake. Without it rbwasm
+  # returns rubies/<name>.tar.gz whenever that exists, and the name hashes only the gem names,
+  # so the second build here would hand back the first one's interpreter and the gem as
+  # shipped would never be linked; a cache hit would ship last run's crate. --remake rebuilds
+  # every extension and relinks Ruby, and reuses everything else.
+  build-ruby-wasm:
+    if: inputs.ruby_wasm_smoke != ''
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: ${{ fromJSON(inputs.ruby_wasm_abis) }}
+    env:
+      SMOKE: ${{ inputs.ruby_wasm_smoke }}
+      GEM_NAME: ${{ inputs.crate }}-wasm
+      ARCHIVE: ${{ inputs.crate }}_native.a
+      ABI: ${{ matrix.abi }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      # The host Ruby only runs Bundler, rake and rbwasm; the interpreter rbwasm builds is
+      # matrix.abi whatever this is.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: true
+          working-directory: ruby
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - uses: actions/cache@v6
+        with:
+          path: ${{ inputs.ruby_wasm_smoke }}/build
+          key: ruby-wasm-${{ inputs.crate }}-${{ matrix.abi }}-${{ hashFiles(format('{0}/Gemfile', inputs.ruby_wasm_smoke)) }}
+
+      # Bundler reads a path gem's .gemspec, which a packed .gem does not contain, so each
+      # gem is unpacked with its spec written beside it.
+      - name: Gem unpacker
+        run: |
+          cat > "$RUNNER_TEMP/unpack.sh" <<'SH'
+          set -euo pipefail
+          gem="$1" dest="$2"
+          rm -rf "$dest"
+          gem unpack "$gem" --target "$dest" >&2
+          dir="$(ls -d "$dest"/*/)"
+          gem spec "$gem" --ruby > "$dir/$GEM_NAME.gemspec"
+          echo "$dir"
+          SH
+
+      - name: Build the extension from source for Ruby ${{ matrix.abi }}
+        run: |
+          set -euo pipefail
+          upper="$(echo "${{ inputs.crate }}" | tr '[:lower:]' '[:upper:]')"
+          (cd ruby && bundle exec rake "wasm:gem[source]")
+          export WASM_GEM_NAME="$GEM_NAME"
+          WASM_GEM_DIR="$(bash "$RUNNER_TEMP/unpack.sh" ruby/pkg/"$GEM_NAME"-*.gem "$RUNNER_TEMP/gem-source")"
+          export WASM_GEM_DIR
+          export "${upper}_RUST_DIR=$GITHUB_WORKSPACE/${{ inputs.working_directory }}"
+          export "${upper}_WASM_OUT=$RUNNER_TEMP/archives"
+          cd "$SMOKE"
+          export BUNDLE_GEMFILE="$PWD/Gemfile"
+          rm -f Gemfile.lock
+          bundle install
+          bundle exec rbwasm build --ruby-version "$ABI" --target wasm32-unknown-wasip1 --remake -o source.wasm
+          ls -l "$RUNNER_TEMP/archives/$ABI/$ARCHIVE"
+
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ runner.temp }}/archives/${{ matrix.abi }}/${{ inputs.crate }}_native.a
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ruby-wasm-${{ matrix.abi }}
+          path: ${{ runner.temp }}/archives/${{ matrix.abi }}/${{ inputs.crate }}_native.a
+
+      - name: The gem as a consumer gets it, linked into Ruby ${{ matrix.abi }}
+        run: |
+          set -euo pipefail
+          ext="ruby/ext/${{ inputs.crate }}_native/$ABI"
+          mkdir -p "$ext"
+          cp "$RUNNER_TEMP/archives/$ABI/$ARCHIVE" "$ext/"
+          (cd ruby && rm -f pkg/"$GEM_NAME"-*.gem && bundle exec rake "wasm:gem[$ABI]")
+          export WASM_GEM_NAME="$GEM_NAME"
+          WASM_GEM_DIR="$(bash "$RUNNER_TEMP/unpack.sh" ruby/pkg/"$GEM_NAME"-*.gem "$RUNNER_TEMP/gem-prebuilt")"
+          export WASM_GEM_DIR
+          cd "$SMOKE"
+          export BUNDLE_GEMFILE="$PWD/Gemfile"
+          rm -f Gemfile.lock
+          bundle install
+          bundle exec rbwasm build --ruby-version "$ABI" --target wasm32-unknown-wasip1 --remake -o ruby.wasm
+          echo "ruby.wasm: $(wc -c < ruby.wasm) bytes"
+
+      - name: Under Node
+        working-directory: ${{ inputs.ruby_wasm_smoke }}
+        run: |
+          npm ci
+          node node-test.mjs ruby.wasm
+
+      - name: In headless Chrome
+        working-directory: ${{ inputs.ruby_wasm_smoke }}
+        run: |
+          set -euo pipefail
+          site="$RUNNER_TEMP/ruby-wasm-site"
+          mkdir -p "$site"
+          cp index.html test.rb ruby.wasm node_modules/@ruby/wasm-wasi/dist/browser.umd.js "$site/"
+          (cd "$site" && exec python3 -m http.server 8091 --bind 127.0.0.1 >/dev/null 2>&1) &
+          sleep 1
+          google-chrome --headless=new --no-sandbox --disable-gpu --virtual-time-budget=60000 \
+            --dump-dom "http://127.0.0.1:8091/index.html" 2>/dev/null > "$site/dom.html"
+          sed -n '/<pre/,/<\/pre>/p' "$site/dom.html"
+          if grep -Eq '(^|>)FAIL' "$site/dom.html" || ! grep -Eq '(^|>)DONE(<|$)' "$site/dom.html"; then
+            echo "::error::The ruby.wasm smoke page did not print DONE with every check passing."
             exit 1
           fi
