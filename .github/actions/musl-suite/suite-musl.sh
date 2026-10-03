@@ -53,7 +53,7 @@ in_alpine() {
 
 case "$binding" in
   # The suite, then the Native AOT smoke test published for this RID and run — the same two
-  # receipts the six-leg job takes, on the RID .NET itself selects on Alpine. The library
+  # receipts the five-leg job takes, on the RID .NET itself selects on Alpine. The library
   # goes where the NuGet package puts it (runtimes/{rid}/native/), so this is the layout a
   # consumer's restore produces. The `-aot` image variant carries clang and the linker the
   # AOT compiler needs; the plain `-alpine` one runs `dotnet test` and stops there.
