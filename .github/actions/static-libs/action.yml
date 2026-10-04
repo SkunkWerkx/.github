@@ -66,6 +66,10 @@ runs:
             go/staticlib/*/"lib$CRATE.a" \
             "csharp/$PROJECT/staticlibs"/*/"lib$CRATE.a" \
             "csharp/$PROJECT/staticlibs"/*/"$CRATE.lib"; do
+          # nullglob drops a pattern that matches nothing, but info.json is a plain path,
+          # not a pattern, and stays in the list whether or not it exists — which, in a
+          # repo with no Swift binding yet, it does not.
+          [ -e "$file" ] || continue
           mkdir -p "$out/$(dirname "$file")"
           cp "$file" "$out/$file"
         done
