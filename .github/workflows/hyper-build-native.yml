@@ -210,6 +210,36 @@ on:
         required: false
         type: boolean
         default: true
+      # The five below are on for every repo that has all its bindings, which is what the
+      # defaults say. They exist for a repo that does not yet: a new core joins the pipeline
+      # with the bindings it has and turns each of the rest on in the PR that adds it, rather
+      # than staying out of the pipeline — its native libraries unbuilt on six of eight
+      # platforms, unattested and unstaged — until the last binding is written.
+      csharp:
+        description: "Run the C# binding's suite, its Native AOT publish, and its Alpine run"
+        required: false
+        type: boolean
+        default: true
+      java:
+        description: "Run the Java binding's suite, on every leg and on Alpine"
+        required: false
+        type: boolean
+        default: true
+      swift:
+        description: "Run the Swift binding's suite on every leg, and the static-link suite (glibc, musl, WebAssembly)"
+        required: false
+        type: boolean
+        default: true
+      php:
+        description: "Run the PHP binding's suite (ext-ffi) on every leg and on Alpine, and build the ext-php-rs extension (the crate's `php` feature)"
+        required: false
+        type: boolean
+        default: true
+      ruby:
+        description: "Run the Ruby binding's suite (Fiddle, and Magnus where `magnus` is on) on every leg and on Alpine"
+        required: false
+        type: boolean
+        default: true
       ruby_version:
         description: "Primary Ruby — the current release. The ABI every Magnus artifact and the Fiddle suite run against."
         required: false
@@ -548,20 +578,20 @@ jobs:
 
       # C#: the real [LibraryImport] resolution/marshalling path per OS.
       - uses: actions/setup-dotnet@v6
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp }}
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
           dotnet-quality: ${{ inputs.dotnet_quality }}
 
       - name: Place native lib for C# in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_runtimes_dir != '' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_runtimes_dir != '' && inputs.csharp }}
         shell: bash
         run: |
           mkdir -p "${{ inputs.csharp_runtimes_dir }}/${{ matrix.rid }}/native"
           cp "out/${{ matrix.lib_name }}" "${{ inputs.csharp_runtimes_dir }}/${{ matrix.rid }}/native/"
 
       - name: Test C# bindings against this platform's native lib
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp }}
         run: dotnet test --project ${{ inputs.csharp_test_project }} -c Release
 
       # The bar here is "zero warnings, exit 0" on every platform, not "the csproj sets
@@ -579,7 +609,7 @@ jobs:
       # non-Windows leg passed, because only MSYS2 does this. The -p: spelling is
       # identical to MSBuild and is left alone by the conversion, so it works everywhere.
       - name: Native AOT publish (zero trim warnings required)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' && inputs.csharp }}
         shell: bash
         run: |
           set -uo pipefail
@@ -607,7 +637,7 @@ jobs:
           fi
 
       - name: Run the AOT-published binary (must exit 0)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' && inputs.csharp }}
         shell: bash
         run: |
           set -euo pipefail
@@ -618,7 +648,7 @@ jobs:
           "./$exe" 2>&1 | tee -a aot-publish.log
 
       - name: Upload the AOT report
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' && inputs.csharp }}
         uses: actions/upload-artifact@v7
         with:
           name: aot-report-${{ matrix.rid }}
@@ -626,20 +656,20 @@ jobs:
 
       # Java: the real FFM downcall path per OS.
       - uses: actions/setup-java@v6
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java }}
         with:
           distribution: ${{ matrix.jdk_distribution }}
           java-version: ${{ inputs.jdk_version }}
 
       - name: Place native lib for Java in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java_resources_dir != '' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java_resources_dir != '' && inputs.java }}
         shell: bash
         run: |
           mkdir -p "${{ inputs.java_resources_dir }}/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "${{ inputs.java_resources_dir }}/${{ matrix.rid }}/"
 
       - name: Place wasm32-wasip1 module for Java in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java_resources_dir != '' && inputs.wasip1_module }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java_resources_dir != '' && inputs.wasip1_module && inputs.java }}
         shell: bash
         run: |
           mkdir -p "${{ inputs.java_resources_dir }}/wasm32-wasip1"
@@ -661,7 +691,7 @@ jobs:
       # it. It needs compileJava's classpath but not the native library, so it adds no
       # dependency this step didn't already have.
       - name: Test Java bindings against this platform's native lib
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java }}
         working-directory: java
         shell: bash
         run: |
@@ -672,7 +702,7 @@ jobs:
       # the `test` task with the backend-selecting system property set and GraalWasm on the
       # test runtime classpath only, so the published POM never carries it.
       - name: Test Java bindings (wasm backend)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module && inputs.java }}
         working-directory: java
         shell: bash
         run: ./gradlew testWasm --console=plain
@@ -715,7 +745,7 @@ jobs:
       # Swift: the core linked in from a SwiftPM binary target, called through @convention(c).
       # SwiftyLab/setup-swift for its verified windows-11-arm support.
       - uses: SwiftyLab/setup-swift@v1.14.1
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.swift }}
         with:
           swift-version: ${{ inputs.swift_version }}
 
@@ -751,7 +781,7 @@ jobs:
       # committed archive and regenerated the bundle's info.json, so the suite links the
       # core this commit built. (A caller without `static_libs` tests the committed archive.)
       - name: Test Swift bindings, the core linked in
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.swift }}
         working-directory: swift
         run: swift test
 
@@ -763,7 +793,7 @@ jobs:
       # x64 only, because a second Swift build on Windows costs minutes. When a future
       # toolchain removes `--build-system native` (6.4 already warns), this step goes with it.
       - name: Test Swift bindings — the pre-6.4 build system's link
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid == 'win-x64' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid == 'win-x64' && inputs.swift }}
         working-directory: swift
         run: swift test --build-system native
 
@@ -773,7 +803,7 @@ jobs:
       # with it. Until this step nothing built the root one, so a drift between the two
       # would have shipped to every consumer with the whole matrix green.
       - name: Build the root Swift manifest (the one consumers resolve)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.swift }}
         run: swift build
 
       # =========================================================================
@@ -803,7 +833,7 @@ jobs:
       # the other feature builds.
       # =========================================================================
       - uses: shivammathur/setup-php@v2
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && inputs.php }}
         with:
           php-version: ${{ inputs.php_version }}
           extensions: ffi
@@ -812,19 +842,19 @@ jobs:
       # --- the shipped backend: built-in ext-ffi, the one the Composer package uses ---
 
       - name: Install PHP dependencies
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && inputs.php }}
         working-directory: php
         run: composer install --no-interaction --prefer-dist
 
       - name: Place native lib for PHP in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && inputs.php }}
         shell: bash
         run: |
           mkdir -p "php/src/native/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "php/src/native/${{ matrix.rid }}/"
 
       - name: Test PHP bindings against this platform's native lib
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && inputs.php }}
         working-directory: php
         # Through `php`, not bare — the Composer proxy is a shebang script the Windows
         # legs' default pwsh can't execute.
@@ -833,7 +863,7 @@ jobs:
       # --- ext-php-rs: built, load-checked, uploaded and attested; still no phpunit ---
 
       - name: Build PHP (ext-php-rs) extension
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php }}
         working-directory: rust
         run: cargo rustc --release --crate-type cdylib --features php
 
@@ -849,7 +879,7 @@ jobs:
       # because byte-identical native libraries across a caller's php/, go/ and swift/ trees
       # are what let one committed git blob serve three bindings under one attestation.
       - name: Stage PHP (ext-php-rs) extension
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php }}
         shell: bash
         run: |
           mkdir -p php-ext
@@ -866,7 +896,7 @@ jobs:
       # its own saying so. The module name ext-php-rs registers is CARGO_PKG_NAME, which is
       # what `crate` already is.
       - name: Load-check the PHP extension, and record the ABI it is pinned to
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php }}
         shell: bash
         run: |
           set -euo pipefail
@@ -877,7 +907,7 @@ jobs:
               -r 'exit(extension_loaded("${{ inputs.crate }}") ? 0 : 1);'
 
       - uses: actions/upload-artifact@v7
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php }}
         with:
           name: php-native-${{ matrix.rid }}
           path: php-ext/${{ inputs.crate }}.so
@@ -891,7 +921,7 @@ jobs:
       # and the same fork-PR gate, since a fork's token cannot sign.
       - name: Attest PHP (ext-php-rs) extension provenance
         if: >-
-          !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' &&
+          inputs.php && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' &&
           inputs.attest_native &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
@@ -971,7 +1001,7 @@ jobs:
       # added — so a directory holding only `clang` and `clang++`, each a link to Apple's
       # shim, goes in front instead. Everything that needs Swift has run by this point.
       - name: Point Xcode at a full toolchain (works around a Ruby native-extension mkmf issue)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'macOS' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'macOS' && inputs.ruby }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1014,14 +1044,14 @@ jobs:
       # land before any of them, and it is the same copy for all three — this was two
       # identical steps at opposite ends of the job.
       - name: Place native lib for Ruby in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.ruby }}
         shell: bash
         run: |
           mkdir -p "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}/"
 
       - name: Ruby (Magnus) — compat ABI
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' && inputs.ruby }}
         uses: SkunkWerkx/.github/.github/actions/ruby-magnus@master
         with:
           ruby-version: ${{ inputs.ruby_compat_version }}
@@ -1030,7 +1060,7 @@ jobs:
           attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       - name: Ruby (Magnus) — primary ABI
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby }}
         uses: SkunkWerkx/.github/.github/actions/ruby-magnus@master
         with:
           ruby-version: ${{ inputs.ruby_version }}
@@ -1045,7 +1075,7 @@ jobs:
       # so this inherits it and needs no setup-ruby of its own — the step below exists only
       # for `magnus: false`, where nothing has installed a Ruby yet.
       - uses: ruby/setup-ruby@v1
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && !inputs.magnus }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && !inputs.magnus && inputs.ruby }}
         with:
           ruby-version: ${{ inputs.ruby_version }}
           bundler: default
@@ -1054,7 +1084,7 @@ jobs:
 
       # (bash + export because an env: mapping key can't be an expression.)
       - name: Test Ruby bindings (Fiddle backend) against this platform's native lib
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.ruby }}
         working-directory: ruby
         shell: bash
         run: |
@@ -1246,7 +1276,7 @@ jobs:
           fi
 
       - name: C# on Alpine (suite + Native AOT)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_runtimes_dir != '' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_runtimes_dir != '' && inputs.csharp }}
         uses: SkunkWerkx/.github/.github/actions/musl-suite@master
         with:
           binding: csharp
@@ -1258,7 +1288,7 @@ jobs:
           csharp_runtimes_dir: ${{ inputs.csharp_runtimes_dir }}
 
       - name: Java on Alpine (FFM suite + smoke program)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java }}
         uses: SkunkWerkx/.github/.github/actions/musl-suite@master
         with:
           binding: java
@@ -1277,7 +1307,7 @@ jobs:
           image: ${{ steps.images.outputs.go }}
 
       - name: PHP on Alpine
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.php }}
         uses: SkunkWerkx/.github/.github/actions/musl-suite@master
         with:
           binding: php
@@ -1286,7 +1316,7 @@ jobs:
           image: php:${{ inputs.php_version }}-cli-alpine
 
       - name: PHP on Alpine — the declared floor
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.php_floor_version != '' && inputs.php_floor_version != inputs.php_version }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.php_floor_version != '' && inputs.php_floor_version != inputs.php_version && inputs.php }}
         uses: SkunkWerkx/.github/.github/actions/musl-suite@master
         with:
           binding: php
@@ -1297,7 +1327,7 @@ jobs:
       # Compat ABI first and primary last, as on the matrix legs. Each builds in its Ruby's
       # Alpine image and runs the suite on a bare copy of it — see build-magnus-musl.sh.
       - name: Ruby (Magnus) on Alpine — compat ABI
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' && inputs.ruby }}
         uses: SkunkWerkx/.github/.github/actions/ruby-magnus-musl@master
         with:
           ruby-version: ${{ inputs.ruby_compat_version }}
@@ -1306,7 +1336,7 @@ jobs:
           attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       - name: Ruby (Magnus) on Alpine — primary ABI
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby }}
         uses: SkunkWerkx/.github/.github/actions/ruby-magnus-musl@master
         with:
           ruby-version: ${{ inputs.ruby_version }}
@@ -1315,7 +1345,7 @@ jobs:
           attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       - name: Ruby on Alpine (Fiddle)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.ruby }}
         uses: SkunkWerkx/.github/.github/actions/musl-suite@master
         with:
           binding: ruby
@@ -1324,7 +1354,7 @@ jobs:
           image: ruby:${{ inputs.ruby_version }}-alpine
 
       - name: Ruby on Alpine (Fiddle) — the declared floor
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.ruby_floor_version != '' && inputs.ruby_floor_version != inputs.ruby_version }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.ruby_floor_version != '' && inputs.ruby_floor_version != inputs.ruby_version && inputs.ruby }}
         uses: SkunkWerkx/.github/.github/actions/musl-suite@master
         with:
           binding: ruby
@@ -1415,6 +1445,7 @@ jobs:
 
   test-swift-static:
     needs: build-static-libs
+    if: inputs.swift
     strategy:
       fail-fast: false
       matrix:
