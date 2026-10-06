@@ -281,6 +281,18 @@ on:
         required: false
         type: boolean
         default: true
+      apple_mobile:
+        description: >
+          With static_libs: also build the core for iOS, the iOS simulator (Apple silicon) and
+          Mac Catalyst (both architectures), four more archives in the `static-libs` artifact.
+          The C# package links them into a .NET iOS or Mac Catalyst app from
+          csharp/{project}/staticlibs/{rid}/; Swift links them from
+          swift/{project}CoreApple.xcframework. Off by default, so a caller whose bindings do
+          not link them yet ships none. The apps that prove them are the caller's own job (it
+          needs a Mac, an Xcode and the .NET workloads, which this workflow's legs do not carry).
+        required: false
+        type: boolean
+        default: false
       swift_floor_version:
         description: "Oldest Swift the binding declares (swift-tools-version) — the test-swift-static job runs glibc, musl and WebAssembly on it as well as on swift_version. Empty skips the floor run."
         required: false
@@ -1440,6 +1452,7 @@ jobs:
         with:
           crate: ${{ inputs.crate }}
           project: ${{ inputs.project }}
+          apple_mobile: ${{ inputs.apple_mobile }}
           upload: "true"
           attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 

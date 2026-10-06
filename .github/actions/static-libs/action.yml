@@ -19,6 +19,14 @@ inputs:
     description: "Space-separated Rust targets to build; empty builds all nine (see build-static-libs.sh)"
     required: false
     default: ""
+  apple_mobile:
+    description: >-
+      Also build the four Apple mobile targets when no targets are named ('true'/'false'):
+      iOS, the iOS simulator on Apple silicon, and Mac Catalyst on both architectures. They
+      go to csharp/{Project}/staticlibs/ under their .NET RIDs and to
+      swift/{Project}CoreApple.xcframework, which is written whole (see build-static-libs.sh).
+    required: false
+    default: "false"
   upload:
     description: "Upload the archives as the static-libs artifact ('true'/'false')"
     required: false
@@ -40,6 +48,7 @@ runs:
         CRATE: ${{ inputs.crate }}
         PROJECT: ${{ inputs.project }}
         TARGETS: ${{ inputs.targets }}
+        APPLE_MOBILE: ${{ inputs.apple_mobile == 'true' && '1' || '' }}
       # $TARGETS unquoted on purpose: it is a list.
       run: '"$GITHUB_ACTION_PATH/build-static-libs.sh" "$CRATE" "$PROJECT" . $TARGETS'
 
@@ -47,7 +56,8 @@ runs:
     # whatever subset of the three bindings a caller has — upload-artifact roots an artifact
     # at its paths' common directory, which would otherwise move with that subset. The
     # Swift bundle's info.json rides along; its header and module map are source, already
-    # in the tree.
+    # in the tree. The XCFramework rides along whole, Info.plist and its copies of that
+    # header and module map included: none of it is in the tree until it is staged.
     - name: Collect the archives under their repository paths
       if: inputs.upload == 'true' || inputs.attest == 'true'
       shell: bash
@@ -63,6 +73,9 @@ runs:
             "swift/${PROJECT}Core.artifactbundle"/*/"lib$CRATE.a" \
             "swift/${PROJECT}Core.artifactbundle"/*/"$CRATE.lib" \
             "swift/${PROJECT}Core.artifactbundle/info.json" \
+            "swift/${PROJECT}CoreApple.xcframework/Info.plist" \
+            "swift/${PROJECT}CoreApple.xcframework"/*/"lib$CRATE.a" \
+            "swift/${PROJECT}CoreApple.xcframework"/*/Headers/*/* \
             go/staticlib/*/"lib$CRATE.a" \
             "csharp/$PROJECT/staticlibs"/*/"lib$CRATE.a" \
             "csharp/$PROJECT/staticlibs"/*/"$CRATE.lib"; do

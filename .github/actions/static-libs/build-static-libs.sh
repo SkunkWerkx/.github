@@ -5,7 +5,10 @@
 #   build-static-libs.sh <crate> <Project> <repo-root> [rust-target ...]
 #
 # e.g. `build-static-libs.sh hyperuuid HyperUuid .` builds all nine targets below. Naming
-# targets builds only those and leaves every other archive in the tree as it was. Runs on
+# targets builds only those and leaves every other archive in the tree as it was. With
+# APPLE_MOBILE=1 in the environment the default set is those nine and the four Apple mobile
+# targets (iOS, the iOS simulator on Apple silicon, and Mac Catalyst on both architectures);
+# a repository opts in, so one whose bindings do not link them yet ships none. Runs on
 # any host with rustup and python3: a static library is compiled and never linked, so every
 # target — macOS and Windows included — cross-compiles from one machine with no C toolchain
 # and no SDK for any of them.
@@ -16,6 +19,19 @@
 #   Go      go/staticlib/{goos}_{goarch}/                     Linux, macOS, Windows — cgo
 #           go/staticlib/wasm/                                WebAssembly — TinyGo's cgo
 #   C#      csharp/{Project}/staticlibs/{rid}/                all eight RIDs — Native AOT
+#
+# and with APPLE_MOBILE=1:
+#
+#   Swift   swift/{Project}CoreApple.xcframework/{slice}/     iOS, its simulator, Mac Catalyst
+#   C#      csharp/{Project}/staticlibs/{rid}/                ios-arm64, iossimulator-arm64,
+#                                                             maccatalyst-arm64, maccatalyst-x64
+#
+# Swift takes those three from an XCFramework and not from the artifact bundle because an iOS
+# or Catalyst app is built by Xcode, which has linked a static library out of an XCFramework
+# since Xcode 12 and is not known to read a static-library artifact bundle at all. Its
+# Catalyst slice is arm64 only: a slice holding two architectures is one universal file, and
+# nothing here can write one (lipo is Apple's). C# takes plain archives, one per RID, so it
+# has the x86_64 Catalyst one as well.
 #
 # A tree that is not in the repository is skipped, so a caller without one of those
 # bindings needs no flag for it.
@@ -84,6 +100,13 @@ all_targets=(
   aarch64-pc-windows-msvc
   wasm32-wasip1
 )
+apple_mobile_targets=(
+  aarch64-apple-ios
+  aarch64-apple-ios-sim
+  aarch64-apple-ios-macabi
+  x86_64-apple-ios-macabi
+)
+[ "${APPLE_MOBILE:-}" = 1 ] && all_targets+=("${apple_mobile_targets[@]}")
 targets=("$@")
 [ ${#targets[@]} -gt 0 ] || targets=("${all_targets[@]}")
 
@@ -109,8 +132,11 @@ archive_name() {
 # llvm-mingw's lld on arm64) reads MSVC's COFF objects, and the archive carries its own
 # import stub for the system random source, so cgo needs no extra library for it. Go's tree
 # spells every archive lib{crate}.a, the name its cgo lines use on every platform.
+# The Apple mobile slices are named the way `xcodebuild -create-xcframework` names them
+# (platform, architectures, then the variant), and the C# directories by .NET's RIDs.
 destinations() {
   local swift="swift/${project}Core.artifactbundle" go="go/staticlib" csharp="csharp/$project/staticlibs"
+  local apple="swift/${project}CoreApple.xcframework"
   case "$1" in
     x86_64-unknown-linux-gnu)   echo "$swift/x86_64-unknown-linux-gnu";  echo "$csharp/linux-x64" ;;
     aarch64-unknown-linux-gnu)  echo "$swift/aarch64-unknown-linux-gnu"; echo "$csharp/linux-arm64" ;;
@@ -121,6 +147,10 @@ destinations() {
     x86_64-pc-windows-msvc)     echo "$swift/x86_64-unknown-windows-msvc";  echo "$csharp/win-x64";   echo "$go/windows_amd64" ;;
     aarch64-pc-windows-msvc)    echo "$swift/aarch64-unknown-windows-msvc"; echo "$csharp/win-arm64"; echo "$go/windows_arm64" ;;
     wasm32-wasip1)              echo "$swift/wasm32-unknown-wasip1"; echo "$go/wasm" ;;
+    aarch64-apple-ios)          echo "$apple/ios-arm64";              echo "$csharp/ios-arm64" ;;
+    aarch64-apple-ios-sim)      echo "$apple/ios-arm64-simulator";    echo "$csharp/iossimulator-arm64" ;;
+    aarch64-apple-ios-macabi)   echo "$apple/ios-arm64-maccatalyst";  echo "$csharp/maccatalyst-arm64" ;;
+    x86_64-apple-ios-macabi)    echo "$csharp/maccatalyst-x64" ;;
     *) echo "unsupported rust target: $1" >&2; return 1 ;;
   esac
 }
@@ -287,4 +317,52 @@ if [ -d "$bundle/include" ]; then
     printf '      ]\n    }\n  }\n}\n'
   } > "$bundle/info.json"
   echo "swift bundle: $bundle (version $version, ${#variants[@]} variants)"
+fi
+
+# The Swift XCFramework for iOS, its simulator and Mac Catalyst: one slice per archive that
+# is there, each with its own copy of the header and module map, and the Info.plist that
+# names them. Written by hand because `xcodebuild -create-xcframework` only exists on a Mac
+# and this runs anywhere; the format is a property list with one entry per slice. As with
+# info.json, only what is present is listed, in a fixed order.
+#
+# The header and module map go in Headers/{Project}Core/, not in Headers/ itself. Xcode
+# copies every XCFramework's Headers into one include directory per build, so two packages
+# that each put a module.modulemap at the top of theirs (this one and a sibling Hyper*
+# package in the same app) fail with "multiple commands produce module.modulemap". Clang
+# finds a module map in a directory named for its module, which is what this is.
+xcframework="$root/swift/${project}CoreApple.xcframework"
+slices=()
+if [ -d "$bundle/include" ]; then
+  for slice in ios-arm64 ios-arm64-simulator ios-arm64-maccatalyst; do
+    [ -f "$xcframework/$slice/lib$crate.a" ] || continue
+    slices+=("$slice")
+    headers="$xcframework/$slice/Headers/${project}Core"
+    mkdir -p "$headers"
+    install -m 644 "$bundle/include/$crate.h" "$headers/$crate.h"
+    install -m 644 "$bundle/include/module.modulemap" "$headers/module.modulemap"
+  done
+fi
+if [ ${#slices[@]} -gt 0 ]; then
+  {
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+    printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+    printf '<plist version="1.0">\n<dict>\n\t<key>AvailableLibraries</key>\n\t<array>\n'
+    for slice in "${slices[@]}"; do
+      printf '\t\t<dict>\n'
+      printf '\t\t\t<key>BinaryPath</key>\n\t\t\t<string>lib%s.a</string>\n' "$crate"
+      printf '\t\t\t<key>HeadersPath</key>\n\t\t\t<string>Headers</string>\n'
+      printf '\t\t\t<key>LibraryIdentifier</key>\n\t\t\t<string>%s</string>\n' "$slice"
+      printf '\t\t\t<key>LibraryPath</key>\n\t\t\t<string>lib%s.a</string>\n' "$crate"
+      printf '\t\t\t<key>SupportedArchitectures</key>\n\t\t\t<array>\n\t\t\t\t<string>arm64</string>\n\t\t\t</array>\n'
+      printf '\t\t\t<key>SupportedPlatform</key>\n\t\t\t<string>ios</string>\n'
+      case "$slice" in
+        *-simulator)   printf '\t\t\t<key>SupportedPlatformVariant</key>\n\t\t\t<string>simulator</string>\n' ;;
+        *-maccatalyst) printf '\t\t\t<key>SupportedPlatformVariant</key>\n\t\t\t<string>maccatalyst</string>\n' ;;
+      esac
+      printf '\t\t</dict>\n'
+    done
+    printf '\t</array>\n\t<key>CFBundlePackageType</key>\n\t<string>XFWK</string>\n'
+    printf '\t<key>XCFrameworkFormatVersion</key>\n\t<string>1.0</string>\n</dict>\n</plist>\n'
+  } > "$xcframework/Info.plist"
+  echo "swift xcframework: $xcframework (${#slices[@]} slices: ${slices[*]})"
 fi
