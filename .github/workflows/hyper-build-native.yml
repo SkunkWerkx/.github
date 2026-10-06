@@ -287,9 +287,10 @@ on:
           Mac Catalyst (both architectures), four more archives in the `static-libs` artifact.
           The C# package links them into a .NET iOS or Mac Catalyst app from
           csharp/{project}/staticlibs/{rid}/; Swift links them from
-          swift/{project}CoreApple.xcframework; Go's cgo links them from go/staticlib/. Off by default, so a caller whose bindings do
-          not link them yet ships none. The apps that prove them are the caller's own job (it
-          needs a Mac, an Xcode and the .NET workloads, which this workflow's legs do not carry).
+          swift/{project}CoreApple.xcframework; Go's cgo links them from go/staticlib/. Off by
+          default, so a caller whose bindings do not link them yet ships none. The apps that
+          prove them are the caller's own job (it needs a Mac, an Xcode and the .NET workloads,
+          which this workflow's legs do not carry).
         required: false
         type: boolean
         default: false
