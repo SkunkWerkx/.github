@@ -25,13 +25,17 @@
 #   Swift   swift/{Project}CoreApple.xcframework/{slice}/     iOS, its simulator, Mac Catalyst
 #   C#      csharp/{Project}/staticlibs/{rid}/                ios-arm64, iossimulator-arm64,
 #                                                             maccatalyst-arm64, maccatalyst-x64
+#   Go      go/staticlib/{dir}/                               ios_arm64, iossimulator_arm64,
+#                                                             maccatalyst_arm64, maccatalyst_amd64
 #
 # Swift takes those three from an XCFramework and not from the artifact bundle because an iOS
 # or Catalyst app is built by Xcode, which has linked a static library out of an XCFramework
 # since Xcode 12 and is not known to read a static-library artifact bundle at all. Its
 # Catalyst slice is arm64 only: a slice holding two architectures is one universal file, and
-# nothing here can write one (lipo is Apple's). C# takes plain archives, one per RID, so it
-# has the x86_64 Catalyst one as well.
+# nothing here can write one (lipo is Apple's). C# and Go take plain archives, one per
+# platform, so they have the x86_64 Catalyst one as well. Go builds all four as GOOS=ios, so
+# its directories are named by what its build tags tell apart (the binding's #cgo lines
+# pick one), not by GOOS.
 #
 # A tree that is not in the repository is skipped, so a caller without one of those
 # bindings needs no flag for it.
@@ -147,10 +151,10 @@ destinations() {
     x86_64-pc-windows-msvc)     echo "$swift/x86_64-unknown-windows-msvc";  echo "$csharp/win-x64";   echo "$go/windows_amd64" ;;
     aarch64-pc-windows-msvc)    echo "$swift/aarch64-unknown-windows-msvc"; echo "$csharp/win-arm64"; echo "$go/windows_arm64" ;;
     wasm32-wasip1)              echo "$swift/wasm32-unknown-wasip1"; echo "$go/wasm" ;;
-    aarch64-apple-ios)          echo "$apple/ios-arm64";              echo "$csharp/ios-arm64" ;;
-    aarch64-apple-ios-sim)      echo "$apple/ios-arm64-simulator";    echo "$csharp/iossimulator-arm64" ;;
-    aarch64-apple-ios-macabi)   echo "$apple/ios-arm64-maccatalyst";  echo "$csharp/maccatalyst-arm64" ;;
-    x86_64-apple-ios-macabi)    echo "$csharp/maccatalyst-x64" ;;
+    aarch64-apple-ios)          echo "$apple/ios-arm64";              echo "$csharp/ios-arm64";          echo "$go/ios_arm64" ;;
+    aarch64-apple-ios-sim)      echo "$apple/ios-arm64-simulator";    echo "$csharp/iossimulator-arm64"; echo "$go/iossimulator_arm64" ;;
+    aarch64-apple-ios-macabi)   echo "$apple/ios-arm64-maccatalyst";  echo "$csharp/maccatalyst-arm64";  echo "$go/maccatalyst_arm64" ;;
+    x86_64-apple-ios-macabi)    echo "$csharp/maccatalyst-x64";       echo "$go/maccatalyst_amd64" ;;
     *) echo "unsupported rust target: $1" >&2; return 1 ;;
   esac
 }

@@ -23,7 +23,8 @@ inputs:
     description: >-
       Also build the four Apple mobile targets when no targets are named ('true'/'false'):
       iOS, the iOS simulator on Apple silicon, and Mac Catalyst on both architectures. They
-      go to csharp/{Project}/staticlibs/ under their .NET RIDs and to
+      go to csharp/{Project}/staticlibs/ under their .NET RIDs, to go/staticlib/ (ios_arm64,
+      iossimulator_arm64, maccatalyst_arm64, maccatalyst_amd64) and to
       swift/{Project}CoreApple.xcframework, which is written whole (see build-static-libs.sh).
     required: false
     default: "false"
