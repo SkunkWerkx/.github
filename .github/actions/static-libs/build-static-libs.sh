@@ -51,6 +51,17 @@
 #    carry unwind tables naming `rust_eh_personality`, which a no_std archive does not
 #    define and two of them could not both define — the Blazor collision again.
 #
+#    Go's Windows copy leaves the helper objects out again and keeps only the crate's object
+#    and the import stubs. Go links with MinGW — gcc on amd64, llvm-mingw's clang on arm64 —
+#    whose libgcc or compiler-rt supplies the helpers, so Go never called the archive's
+#    copies; and Rust emits them as COFF weak externals (`__divti3` defaulting to
+#    `.weak.__divti3.default`), which GNU ld, unlike lld, does not settle on the first
+#    archive's: it pulls the same helper out of every Hyper* archive in the program and then
+#    refuses the identical `.weak.*.default` globals as a multiple definition. A Go program
+#    that imports two cores — HyperTabular's module imports HyperCast's — failed to link on
+#    windows/amd64 without `-Wl,--allow-multiple-definition`, a flag that silences every
+#    duplicate symbol in the program, not only these.
+#
 #  * llvm-ar and llvm-nm from the Rust toolchain. GNU ar cannot index a WebAssembly, Mach-O
 #    or COFF object, and each of those linkers refuses an archive without the symbol table
 #    its own format expects; llvm-ar writes the right one for whatever the members are.
@@ -93,11 +104,11 @@ archive_name() {
 # is the one that asks the C library for nothing but calls both have had for a decade.
 # Go under TinyGo (browser and WASI) takes the wasm32-wasip1 build, the same bytes as
 # Swift's: even TinyGo's browser target is wasm32-wasi underneath, and its wasm_exec.js
-# supplies the one WASI call the archive makes (random_get). Go on Windows links the same
-# MSVC archive C# does: MinGW's linker (gcc, or llvm-mingw's lld on arm64) reads MSVC's COFF
-# objects, and the archive carries its own import stub for the system random source, so cgo
-# needs no extra library for it. Go's tree spells every archive lib{crate}.a, the name its
-# cgo lines use on every platform.
+# supplies the one WASI call the archive makes (random_get). Go on Windows links the MSVC
+# archive C# does, less Rust's 128-bit helpers (see the trim above): MinGW's linker (gcc, or
+# llvm-mingw's lld on arm64) reads MSVC's COFF objects, and the archive carries its own
+# import stub for the system random source, so cgo needs no extra library for it. Go's tree
+# spells every archive lib{crate}.a, the name its cgo lines use on every platform.
 destinations() {
   local swift="swift/${project}Core.artifactbundle" go="go/staticlib" csharp="csharp/$project/staticlibs"
   case "$1" in
@@ -137,18 +148,19 @@ for target in "${targets[@]}"; do
   full="$root/rust/target/$target/staticlib/$name"
   [ -f "$full" ] || { echo "error: $full was not produced" >&2; exit 1; }
 
-  mkdir -p "$work/$target"
+  mkdir -p "$work/$target/go"
   trimmed="$work/$target/$name"
+  go_windows="$work/$target/go/lib$crate.a"
   cp "$full" "$trimmed"
 
   # The trim. llvm-nm's posix format puts the member in brackets, which survives the
   # member names a Windows archive has (`C:\a\rust\...\ucmpti2.o`, with a colon, backslashes
   # and a forward slash). Members are removed from a copy rather than the survivors being
   # extracted and re-archived, for the same reason: those names do not make files.
-  "$python" - "$tools" "$trimmed" "$crate" "$target" <<'PY'
-import re, subprocess, sys
+  "$python" - "$tools" "$trimmed" "$crate" "$target" "$go_windows" <<'PY'
+import re, shutil, subprocess, sys
 
-tools, archive, crate, target = sys.argv[1:5]
+tools, archive, crate, target, go_windows = sys.argv[1:6]
 row = re.compile(r"^.*?\[(?P<member>.*)\]: (?P<symbol>\S+) (?P<kind>\S)")
 
 def symbols(flag):
@@ -166,9 +178,20 @@ undefined = {}
 for member, symbol in symbols("--undefined-only"):
     undefined.setdefault(member, set()).add(symbol)
 
-def listing():
-    return subprocess.run([f"{tools}/llvm-ar", "t", archive],
+def listing(path=archive):
+    return subprocess.run([f"{tools}/llvm-ar", "t", path],
                           check=True, capture_output=True, text=True).stdout.splitlines()
+
+def drop_members(path, keep):
+    # A name can repeat (the import members of one DLL all carry its name), and `d` removes
+    # one occurrence of each name it is given per run.
+    remaining = listing(path)
+    while True:
+        drop = sorted({m for m in remaining if m not in keep})
+        if not drop:
+            return remaining
+        subprocess.run([f"{tools}/llvm-ar", "dD", path, *drop], check=True)
+        remaining = listing(path)
 
 members = listing()
 own = [m for m in members if m.startswith(f"{crate}-")]
@@ -183,15 +206,7 @@ while queue and target.endswith("-windows-msvc"):
             keep.add(provider)
             queue.append(provider)
 
-# A name can repeat (the import members of one DLL all carry its name), and `d` removes one
-# occurrence of each name it is given per run.
-remaining = members
-while True:
-    drop = sorted({m for m in remaining if m not in keep})
-    if not drop:
-        break
-    subprocess.run([f"{tools}/llvm-ar", "dD", archive, *drop], check=True)
-    remaining = listing()
+remaining = drop_members(archive, keep)
 
 # What the consumer's toolchain still has to supply: the C library and the compiler's
 # runtime helpers, and nothing from Rust.
@@ -207,6 +222,18 @@ if stray:
     sys.exit(f"error: {target} archive needs Rust symbols it does not carry: {' '.join(stray)}")
 plain = sorted(s for s in still if not mangled.match(s))
 print(f"{target}: {len(remaining)} of {len(members)} members kept; needs: {' '.join(plain)}")
+
+# Go's Windows copy: the crate's object and the import stubs (members named for their DLL),
+# without Rust's helper objects, which MinGW's own runtime library supplies (see above).
+if target.endswith("-windows-msvc"):
+    shutil.copyfile(archive, go_windows)
+    go_keep = {m for m in keep if m in own or m.lower().endswith(".dll")}
+    go_remaining = drop_members(go_windows, go_keep)
+    go_still = {s for m in go_keep for s in undefined.get(m, ()) if defined.get(s) not in go_keep}
+    go_stray = sorted(s for s in go_still if mangled.match(s))
+    if go_stray:
+        sys.exit(f"error: {target} Go archive needs Rust symbols it does not carry: {' '.join(go_stray)}")
+    print(f"{target} (Go): {len(go_remaining)} members kept; needs: {' '.join(sorted(go_still))}")
 PY
 
   while IFS= read -r dir; do
@@ -216,11 +243,12 @@ PY
       go/*)     [ -d "$root/go" ] || continue ;;
       csharp/*) [ -d "$root/csharp/$project" ] || continue ;;
     esac
-    dest="$name"
+    dest="$name" source="$trimmed"
     case "$dir" in go/*) dest="lib$crate.a" ;; esac
+    case "$dir" in go/staticlib/windows_*) source="$go_windows" ;; esac
     mkdir -p "$root/$dir"
-    install -m 644 "$trimmed" "$root/$dir/$dest"
-    echo "  -> $dir/$dest ($(wc -c < "$trimmed") bytes)"
+    install -m 644 "$source" "$root/$dir/$dest"
+    echo "  -> $dir/$dest ($(wc -c < "$source") bytes)"
   done < <(destinations "$target")
 done
 
