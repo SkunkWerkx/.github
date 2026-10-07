@@ -193,6 +193,9 @@ case "$binding" in
   # rubygems.org and compiles its C extension, which needs a toolchain this image does not
   # have. A plain `gem install` of the published gem is satisfied by the default fiddle, so
   # this is also the closer match to what a consumer's install does.
+  # The gem's own runtime dependencies (HyperTabular's on hypercast), from its gemspec, since
+  # Bundler is not used: each a plain `gem install`, --conservative so that one an image
+  # already has (its default or bundled fiddle) is kept rather than rebuilt from source.
   ruby)
     in_alpine "${SUITE_IMAGE:-ruby:4.0-alpine}" '
       cp -r /src/ruby /work/ruby
@@ -202,6 +205,7 @@ case "$binding" in
       cd /work/ruby
       rm -f Gemfile Gemfile.lock
       gem install rspec -v "~> 3.13" --no-document --silent
+      ruby -e "Gem::Specification.load(Dir[%q(*.gemspec)].first).runtime_dependencies.each { |d| system(%q(gem), %q(install), d.name, %q(-v), d.requirement.to_s, %q(--conservative), %q(--no-document), %q(--silent)) or abort(%(could not install #{d.name} #{d.requirement})) }"
       export "$(echo "$CRATE" | tr a-z A-Z)_PURE=1"
       rspec
     '

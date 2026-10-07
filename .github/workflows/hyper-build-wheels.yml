@@ -237,11 +237,35 @@ jobs:
           ls -l dist
           echo "VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' ../rust/Cargo.toml | head -1)" >> "$GITHUB_ENV"
 
+      # The package's own requirements (python/pyproject.toml's [project].dependencies —
+      # HyperTabular's on hypercast, none for HyperCast), as Pyodide wheels for the platform
+      # the wheel above was built for. The browser pass serves its page from 127.0.0.1 and
+      # nothing else, so micropip there cannot fetch them from PyPI; they are installed
+      # first instead (pyodide-suite's dependency_wheels). The Node pass reaches PyPI itself.
+      - name: Fetch the package's dependencies as Pyodide wheels
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pyodide-deps"
+          wheel=$(ls python/dist/*-pyemscripten_*_wasm32.whl)
+          platform=$(basename "$wheel" .whl | sed 's/.*-//')
+          python - > "$RUNNER_TEMP/pyodide-requirements.txt" <<'PY'
+          import tomllib
+          with open("python/pyproject.toml", "rb") as f:
+              print("\n".join(tomllib.load(f)["project"].get("dependencies", [])))
+          PY
+          if [ -s "$RUNNER_TEMP/pyodide-requirements.txt" ]; then
+            pip download -r "$RUNNER_TEMP/pyodide-requirements.txt" --no-deps --only-binary=:all: \
+              --platform "$platform" --python-version 3.14 --implementation cp --abi abi3 \
+              -d "$RUNNER_TEMP/pyodide-deps"
+          fi
+          ls -l "$RUNNER_TEMP/pyodide-deps"
+
       - uses: SkunkWerkx/.github/.github/actions/pyodide-suite@master
         with:
           crate: ${{ inputs.crate }}
           version: ${{ env.VERSION }}
           pyodide_version: ${{ env.PYODIDE_VERSION }}
+          dependency_wheels: ${{ runner.temp }}/pyodide-deps
 
       - name: Attest wheel build provenance
         if: >-

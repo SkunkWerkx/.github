@@ -24,6 +24,10 @@ inputs:
     description: "The binding's pytest directory"
     required: false
     default: python/tests
+  dependency_wheels:
+    description: "Directory of Pyodide wheels the one under test depends on, installed first in the browser pass, which cannot reach PyPI; empty for none"
+    required: false
+    default: ""
   chrome:
     description: "Chrome or Chromium to run the browser pass in; empty finds the one on PATH (the Ubuntu runner image ships google-chrome)"
     required: false
@@ -80,6 +84,7 @@ runs:
         CRATE: ${{ inputs.crate }}
         VERSION: ${{ inputs.version }}
         CHROME_PATH: ${{ inputs.chrome }}
+        PYODIDE_SUITE_DEPS: ${{ inputs.dependency_wheels }}
       run: |
         set -euo pipefail
         cd "$PYODIDE_SUITE_WORK"

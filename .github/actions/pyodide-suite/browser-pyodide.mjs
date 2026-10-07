@@ -56,6 +56,11 @@ function listTree(root, dir = root) {
 }
 
 const wheelName = basename(wheel);
+// The wheels the one under test depends on (PYODIDE_SUITE_DEPS, a directory of Pyodide wheels
+// such as HyperCast's for HyperTabular), installed first, so that micropip finds each
+// requirement already met instead of fetching it from PyPI off 127.0.0.1.
+const depsDir = process.env.PYODIDE_SUITE_DEPS ? resolve(process.env.PYODIDE_SUITE_DEPS) : "";
+const deps = depsDir ? readdirSync(depsDir).filter((name) => name.endsWith(".whl")).sort() : [];
 const page_html = `<!doctype html><meta charset="utf-8"><title>${crate} in Pyodide</title>
 <script src="/pyodide/pyodide.js"></script>
 <script>
@@ -71,7 +76,11 @@ window.result = (async () => {
     py.setStdout({ write });
     py.setStderr({ write });
     await py.loadPackage(["micropip", "pytest"]);
-    await py.pyimport("micropip").install(new URL("/wheel/${wheelName}", location.href).href);
+    const micropip = py.pyimport("micropip");
+    for (const dep of ${JSON.stringify(deps)}) {
+      await micropip.install(new URL("/deps/" + dep, location.href).href);
+    }
+    await micropip.install(new URL("/wheel/${wheelName}", location.href).href);
     const tests = await (await fetch("/tests.json")).json();
     for (const { path, data } of tests) {
       const target = "/work/tests/" + path;
@@ -117,6 +126,9 @@ const server = createServer((req, res) => {
     type = types[".json"];
   } else if (url === `/wheel/${wheelName}`) {
     body = readFileSync(wheel);
+    type = types[".whl"];
+  } else if (url.startsWith("/deps/") && deps.includes(url.slice("/deps/".length))) {
+    body = readFileSync(join(depsDir, url.slice("/deps/".length)));
     type = types[".whl"];
   } else if (url.startsWith("/pyodide/")) {
     const file = resolve(pyodideDir, url.slice("/pyodide/".length));

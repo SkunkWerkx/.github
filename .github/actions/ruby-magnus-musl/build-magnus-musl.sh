@@ -95,6 +95,9 @@ docker run --rm "${platform_args[@]}" \
 # agreement checks, and the extension at the fat-gem path lib/hyperuuid.rb tries first.
 # rspec runs without Bundler for the reason suite-musl.sh's Fiddle run gives: Bundler would
 # resolve fiddle from rubygems.org and compile it, and this image has no compiler.
+# The gem's own runtime dependencies (HyperTabular's on hypercast), from its gemspec, since
+# Bundler is not used: each a plain `gem install`, --conservative so that one an image
+# already has (its default or bundled fiddle) is kept rather than rebuilt from source.
 docker run --rm "${platform_args[@]}" \
   -v "$repo_root:/src:ro" -v "$lib_dir:/musl:ro" -v "$out_dir:/ext:ro" \
   -e CRATE="$crate" -e ABI="$abi" -e RID="$rid" \
@@ -110,6 +113,7 @@ docker run --rm "${platform_args[@]}" \
     cp "/ext/${CRATE}_native.so" "lib/$CRATE/$ABI/"
     rm -f Gemfile Gemfile.lock
     gem install rspec -v "~> 3.13" --no-document --silent
+    ruby -e "Gem::Specification.load(Dir[%q(*.gemspec)].first).runtime_dependencies.each { |d| system(%q(gem), %q(install), d.name, %q(-v), d.requirement.to_s, %q(--conservative), %q(--no-document), %q(--silent)) or abort(%(could not install #{d.name} #{d.requirement})) }"
     ruby -Ilib -e "
       require ENV[%q(CRATE)]
       mod = Object.const_get(Object.constants.find { |c| c.to_s.downcase == ENV[%q(CRATE)] })
