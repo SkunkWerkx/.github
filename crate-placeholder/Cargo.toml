@@ -1,0 +1,14 @@
+# Never published under this name: reserve-crate.sh copies this crate, renames it to the
+# crate it is reserving and publishes that copy once, by hand, as 0.0.1. See README.md.
+[package]
+name = "hyper-crate-placeholder"
+version = "0.0.1"
+edition = "2024"
+description = "Placeholder: reserves this name for a SkunkWerkx Hyper* crate until its first release."
+license = "MIT"
+repository = "https://github.com/SkunkWerkx/.github"
+readme = "README.md"
+publish = false
+
+[lib]
+path = "src/lib.rs"
