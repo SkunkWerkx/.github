@@ -31,8 +31,9 @@ inputs:
   android:
     description: >-
       Also build the two Android targets when no targets are named ('true'/'false'): arm64
-      and x86_64, to csharp/{Project}/staticlibs/android-arm64 and android-x64, for a .NET
-      Native AOT publish on Android (see build-static-libs.sh).
+      and x86_64, to csharp/{Project}/staticlibs/android-* (a .NET Native AOT publish),
+      go/staticlib/android_* (cgo under GOOS=android) and the Swift bundle's
+      *-unknown-linux-android variants (see build-static-libs.sh).
     required: false
     default: "false"
   upload:

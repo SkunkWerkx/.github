@@ -324,13 +324,15 @@ on:
         default: false
       android:
         description: >
-          Also build the core for Android, arm64 and x86_64, for the C# binding on .NET for
-          Android (MAUI). The shared library is built with the runner's NDK, its LOAD segments
+          Also build the core for Android, arm64 and x86_64. The shared library, for the C#
+          binding on .NET for Android (MAUI), is built with the runner's NDK, its LOAD segments
           aligned to 16 KB (Android 15's page size, which Google Play requires of every new
           app), uploaded and attested as `native-android-arm64` and `native-android-x64` for
           hyper-pack-nuget.yml's runtimes/{rid}/native/; that is what an app on CoreCLR loads out
-          of its APK. With static_libs, the static-libs artifact also carries
-          csharp/{project}/staticlibs/android-arm64 and android-x64, for a Native AOT publish.
+          of its APK. With static_libs, the static-libs artifact also carries the two archives
+          for everything that links the core in: csharp/{project}/staticlibs/android-* (a
+          Native AOT publish), go/staticlib/android_* (cgo under GOOS=android) and the Swift
+          bundle's *-unknown-linux-android variants (the Swift SDK for Android).
           No binding's suite runs here: the caller proves the libraries in an emulator, as it
           proves the Apple mobile archives on a Mac. Off by default.
         required: false

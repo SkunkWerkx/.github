@@ -33,11 +33,15 @@
 #
 #   C#      csharp/{Project}/staticlibs/{rid}/                android-arm64, android-x64 —
 #                                                             Native AOT on Android
+#   Swift   swift/{Project}Core.artifactbundle/{triple}/      aarch64-unknown-linux-android,
+#                                                             x86_64-unknown-linux-android
+#   Go      go/staticlib/{goos}_{goarch}/                     android_arm64, android_amd64
 #
-# Android is C# only. A .NET Android app on CoreCLR loads the shared library out of its APK,
-# which hyper-build-native.yml's build-native-android job builds with the NDK's linker; this archive
-# is for the one that links the core in, a Native AOT publish. Like every other archive here
-# it is compiled and never linked, so it needs no NDK.
+# A .NET Android app on CoreCLR loads the shared library out of its APK instead, which
+# hyper-build-native.yml's build-native-android job builds with the NDK's linker; these
+# archives are for what links the core in: a C# Native AOT publish, a Swift package built
+# with the Swift SDK for Android, and Go's cgo under GOOS=android. Like every other archive
+# here they are compiled and never linked, so they need no NDK.
 #
 # Swift takes those three from an XCFramework and not from the artifact bundle because an iOS
 # or Catalyst app is built by Xcode, which has linked a static library out of an XCFramework
@@ -171,8 +175,8 @@ destinations() {
     aarch64-apple-ios-sim)      echo "$apple/ios-arm64-simulator";    echo "$csharp/iossimulator-arm64"; echo "$go/iossimulator_arm64" ;;
     aarch64-apple-ios-macabi)   echo "$apple/ios-arm64-maccatalyst";  echo "$csharp/maccatalyst-arm64";  echo "$go/maccatalyst_arm64" ;;
     x86_64-apple-ios-macabi)    echo "$csharp/maccatalyst-x64";       echo "$go/maccatalyst_amd64" ;;
-    aarch64-linux-android)      echo "$csharp/android-arm64" ;;
-    x86_64-linux-android)       echo "$csharp/android-x64" ;;
+    aarch64-linux-android)      echo "$swift/aarch64-unknown-linux-android"; echo "$csharp/android-arm64"; echo "$go/android_arm64" ;;
+    x86_64-linux-android)       echo "$swift/x86_64-unknown-linux-android";  echo "$csharp/android-x64";   echo "$go/android_amd64" ;;
     *) echo "unsupported rust target: $1" >&2; return 1 ;;
   esac
 }
@@ -308,8 +312,9 @@ done
 # sharing the header and module map, in a fixed order so the staged file diffs cleanly.
 # Listing only what is there keeps a partial build usable: a CI leg that builds its own
 # triple gets a bundle naming that archive and whatever the tree already carries, never one
-# naming an archive that is missing. The full build (no targets named) lists all nine. The
-# version is the crate's, so a bundle staged for a release says which one it is.
+# naming an archive that is missing. The full build (no targets named) lists all nine, and
+# eleven with ANDROID=1. The version is the crate's, so a bundle staged for a release says
+# which one it is.
 bundle="$root/swift/${project}Core.artifactbundle"
 if [ -d "$bundle/include" ]; then
   [ -f "$bundle/include/$crate.h" ] && [ -f "$bundle/include/module.modulemap" ] \
@@ -320,7 +325,8 @@ if [ -d "$bundle/include" ]; then
                 x86_64-swift-linux-musl aarch64-swift-linux-musl \
                 arm64-apple-macosx x86_64-apple-macosx \
                 x86_64-unknown-windows-msvc aarch64-unknown-windows-msvc \
-                wasm32-unknown-wasip1; do
+                wasm32-unknown-wasip1 \
+                aarch64-unknown-linux-android x86_64-unknown-linux-android; do
     case "$triple" in
       *-windows-msvc) file="$crate.lib" ;;
       *) file="lib$crate.a" ;;
