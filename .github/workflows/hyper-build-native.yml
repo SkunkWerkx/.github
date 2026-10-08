@@ -62,7 +62,7 @@ name: HyperForge — build native core, test every binding
 #     reason: clang rejects the gnullvm triple outright. See build-magnus.sh.
 #     Both PHP backends now live in ONE section down with the suites — see it for the two
 #     platform rules and for why its position is load-bearing.
-#   - php (ext-php-rs): darwin + linux, unconditionally. Not wired into the shipped Composer
+#   - php (ext-php-rs): darwin + linux, in `release` mode (a `pr`-mode run skips it). Not wired into the shipped Composer
 #     package (that's ext-ffi, tested in the same section) — built so it can't silently
 #     bit-rot, then load-checked, uploaded and attested like any other shippable binary;
 #     still no phpunit run against it. It began as a benchmark spike behind a
@@ -117,6 +117,20 @@ name: HyperForge — build native core, test every binding
 on:
   workflow_call:
     inputs:
+      mode:
+        description: >
+          `release` (the default) builds, tests and attests everything a release ships.
+          `pr` keeps every leg and every binding's suite, so the conformance corpus is proven
+          in all eight languages on every platform, and drops what only a release needs:
+          attestations, the Magnus build against ruby_compat_version (a second ABI for the
+          fat gem; the primary ABI is still built and tested), the osx-x64 cross-build
+          (packaged, never tested by a binding), and the ext-php-rs extension (shipped by no
+          package; built so it cannot rot, which the weekly release-mode run covers). The floor-version runs stay: they are cheap,
+          off the critical path, and exactly the drift a PR should catch. A caller passes
+          `pr` on pull_request events and `release` on every other.
+        required: false
+        type: string
+        default: release
       project:
         description: "PascalCase project name (Swift target, e.g. HyperCast)"
         required: true
@@ -178,8 +192,8 @@ on:
           `gh attestation verify`.
           On by default: every artifact this forge produces should be verifiable, and an
           unsigned binary is exactly the thing a downstream consumer can't take on trust.
-          Runs on pushes and on same-repo pull requests; skipped only for fork PRs, whose
-          tokens cannot sign. The CALLING job must grant `id-token: write` and
+          Runs in `release` mode only — a `pr`-mode run ships nothing, so it signs nothing —
+          and skips a fork's pull request, whose token cannot sign. The CALLING job must grant `id-token: write` and
           `attestations: write` — a reusable workflow cannot escalate its own permissions, so
           a caller that omits them must pass false.
         required: false
@@ -231,7 +245,7 @@ on:
         type: boolean
         default: true
       php:
-        description: "Run the PHP binding's suite (ext-ffi) on every leg and on Alpine, and build the ext-php-rs extension (the crate's `php` feature)"
+        description: "Run the PHP binding's suite (ext-ffi) on every leg and on Alpine, and, in release mode, build the ext-php-rs extension (the crate's `php` feature)"
         required: false
         type: boolean
         default: true
@@ -470,7 +484,7 @@ jobs:
       # this linux-x64 copy, so this is the copy whose provenance gets recorded.
       - name: Attest wasm32-wasip1 module provenance
         if: >-
-          inputs.wasip1_module && matrix.rid == 'linux-x64' && inputs.attest_native &&
+          inputs.wasip1_module && matrix.rid == 'linux-x64' && inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/attest-build-provenance@v3
@@ -494,14 +508,13 @@ jobs:
       # signer. Omitting --signer-repo fails with a bare `verifying with issuer
       # "sigstore.dev"` that looks like a bad signature but is only an identity mismatch.
       # (`--owner <owner>` is the looser alternative that sidesteps the distinction.)
-      # Runs on same-repo pull requests too, not just pushes. Only a FORK's token genuinely
-      # can't sign, and the distinction matters concretely here: a repo that stages these
-      # artifacts back into its own tree after merge (see HyperUuid's stage-native-binaries.yml)
-      # pulls them from the PR's own run, so skipping all PRs would leave exactly the committed
-      # binaries — the ones a reader can't inspect — as the only unattested artifacts.
+      # Release mode only. A caller's stage-native-binaries.yml commits these bytes from the
+      # release's own dispatched run, never from a PR's, so a `pr`-mode run has nothing that
+      # will ever ship and nothing to sign. A fork's token cannot sign at all, so a fork PR is
+      # skipped in either mode.
       - name: Attest native build provenance
         if: >-
-          inputs.attest_native &&
+          inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/attest-build-provenance@v3
@@ -874,9 +887,12 @@ jobs:
         run: php vendor/bin/phpunit
 
       # --- ext-php-rs: built, load-checked, uploaded and attested; still no phpunit ---
+      #
+      # Release mode only. No package ships this extension; it is built so it cannot rot
+      # unnoticed, and the weekly release-mode run is enough to notice.
 
       - name: Build PHP (ext-php-rs) extension
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.mode != 'pr' }}
         working-directory: rust
         run: cargo rustc --release --crate-type cdylib --features php
 
@@ -892,7 +908,7 @@ jobs:
       # because byte-identical native libraries across a caller's php/, go/ and swift/ trees
       # are what let one committed git blob serve three bindings under one attestation.
       - name: Stage PHP (ext-php-rs) extension
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.mode != 'pr' }}
         shell: bash
         run: |
           mkdir -p php-ext
@@ -909,7 +925,7 @@ jobs:
       # its own saying so. The module name ext-php-rs registers is CARGO_PKG_NAME, which is
       # what `crate` already is.
       - name: Load-check the PHP extension, and record the ABI it is pinned to
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.mode != 'pr' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -920,7 +936,7 @@ jobs:
               -r 'exit(extension_loaded("${{ inputs.crate }}") ? 0 : 1);'
 
       - uses: actions/upload-artifact@v7
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.mode != 'pr' }}
         with:
           name: php-native-${{ matrix.rid }}
           path: php-ext/${{ inputs.crate }}.so
@@ -935,7 +951,7 @@ jobs:
       - name: Attest PHP (ext-php-rs) extension provenance
         if: >-
           inputs.php && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' &&
-          inputs.attest_native &&
+          inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/attest-build-provenance@v3
@@ -1064,13 +1080,13 @@ jobs:
           cp "out/${{ matrix.lib_name }}" "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}/"
 
       - name: Ruby (Magnus) — compat ABI
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' && inputs.ruby }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' && inputs.mode != 'pr' && inputs.ruby }}
         uses: SkunkWerkx/.github/.github/actions/ruby-magnus@master
         with:
           ruby-version: ${{ inputs.ruby_compat_version }}
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       - name: Ruby (Magnus) — primary ABI
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby }}
@@ -1079,7 +1095,7 @@ jobs:
           ruby-version: ${{ inputs.ruby_version }}
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       # --- the Fiddle backend, forced explicitly ---
       #
@@ -1134,7 +1150,7 @@ jobs:
   # when it does or when the RID is retired, whichever is first.
   # ===========================================================================
   build-native-osx-x64:
-    if: inputs.osx_x64
+    if: inputs.osx_x64 && inputs.mode != 'pr'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -1183,7 +1199,7 @@ jobs:
       # Same attestation, for the same reason, as the matrix legs' libraries.
       - name: Attest native build provenance
         if: >-
-          inputs.attest_native &&
+          inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/attest-build-provenance@v3
@@ -1244,7 +1260,7 @@ jobs:
         with:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       # The wasm module, for the Java suite's in-process GraalWasm backend, and the musl
       # static library, for the two suites that link the core in (Go under cgo, and the C#
@@ -1340,13 +1356,13 @@ jobs:
       # Compat ABI first and primary last, as on the matrix legs. Each builds in its Ruby's
       # Alpine image and runs the suite on a bare copy of it — see build-magnus-musl.sh.
       - name: Ruby (Magnus) on Alpine — compat ABI
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' && inputs.ruby }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' && inputs.mode != 'pr' && inputs.ruby }}
         uses: SkunkWerkx/.github/.github/actions/ruby-magnus-musl@master
         with:
           ruby-version: ${{ inputs.ruby_compat_version }}
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       - name: Ruby (Magnus) on Alpine — primary ABI
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby }}
@@ -1355,7 +1371,7 @@ jobs:
           ruby-version: ${{ inputs.ruby_version }}
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       - name: Ruby on Alpine (Fiddle)
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.ruby }}
@@ -1455,7 +1471,7 @@ jobs:
           project: ${{ inputs.project }}
           apple_mobile: ${{ inputs.apple_mobile }}
           upload: "true"
-          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
   test-swift-static:
     needs: build-static-libs
