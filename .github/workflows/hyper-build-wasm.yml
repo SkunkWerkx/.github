@@ -37,9 +37,9 @@ on:
     inputs:
       mode:
         description: >
-          `release` (the default) or `pr`, as in hyper-build-native.yml. Every build and smoke
-          test runs either way; `pr` skips attesting the ruby.wasm archives, which only a
-          release packs.
+          `release` (the default) or `pr`, as in hyper-build-native.yml. `pr` runs every
+          build and browser smoke test except ruby.wasm's, whose per-minor interpreter builds
+          are the longest job here and only a release packs their archives.
         required: false
         type: string
         default: release
@@ -292,8 +292,12 @@ jobs:
   # so the second build here would hand back the first one's interpreter and the gem as
   # shipped would never be linked; a cache hit would ship last run's crate. --remake rebuilds
   # every extension and relinks Ruby, and reuses everything else.
+  #
+  # Release mode only: at 7-10 minutes per minor it was the longest job a PR ran after the
+  # slowest native leg, for an artifact only a release packs. The weekly release-mode run
+  # keeps it from rotting between releases.
   build-ruby-wasm:
-    if: inputs.ruby_wasm_smoke != ''
+    if: inputs.ruby_wasm_smoke != '' && inputs.mode != 'pr'
     runs-on: ubuntu-26.04
     permissions:
       contents: read
@@ -364,7 +368,6 @@ jobs:
           ls -l "$RUNNER_TEMP/archives/$ABI/$ARCHIVE"
 
       - uses: actions/attest-build-provenance@v3
-        if: inputs.mode != 'pr'
         with:
           subject-path: ${{ runner.temp }}/archives/${{ matrix.abi }}/${{ inputs.crate }}_native.a
 

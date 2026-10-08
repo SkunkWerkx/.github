@@ -29,6 +29,15 @@ name: HyperForge — build and install-test the PyPI wheels
 on:
   workflow_call:
     inputs:
+      mode:
+        description: >
+          `release` (the default) or `pr`, as in hyper-build-native.yml. `pr` builds only the
+          Pyodide wheel, whose job is the one place the Python suite runs in the browser, and
+          attests nothing; the eight native wheels are packaging (build-native already builds
+          and tests the PyO3 extension on every leg), so they wait for a release-mode run.
+        required: false
+        type: string
+        default: release
       crate:
         description: "Lowercase core name — the Python package and import name"
         required: true
@@ -42,14 +51,15 @@ on:
         description: >
           Emit a signed SLSA build-provenance attestation for each wheel, verifiable with
           `gh attestation verify <wheel> --repo <caller> --signer-repo SkunkWerkx/.github`.
-          Runs on pushes and same-repo pull requests; skipped for fork PRs, whose tokens
-          cannot sign.
+          Runs in `release` mode only, and skips a fork's pull request, whose token cannot
+          sign.
         required: false
         type: boolean
         default: true
 
 jobs:
   build-wheels:
+    if: inputs.mode != 'pr'
     strategy:
       fail-fast: false
       matrix:
@@ -177,7 +187,7 @@ jobs:
       # they live on PyPI and are made at publish time, from the caller's own workflow.
       - name: Attest wheel build provenance
         if: >-
-          inputs.attest &&
+          inputs.attest && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/attest-build-provenance@v3
@@ -269,7 +279,7 @@ jobs:
 
       - name: Attest wheel build provenance
         if: >-
-          inputs.attest &&
+          inputs.attest && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/attest-build-provenance@v3
