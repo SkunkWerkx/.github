@@ -1,8 +1,10 @@
 name: HyperForge — build native core, test every binding
 
-# The canonical Hyper* CI pipeline. ONE job per leg: `build-native`, matrixed across the 5
-# real-hardware legs, builds the core crate and then runs every binding's suite against the
-# .so/.dylib/.dll it just produced. A second, smaller job, `build-native-musl`, does the same
+# The canonical Hyper* CI pipeline. One job per leg — two on Windows: `build-native`,
+# matrixed across the 5 real-hardware legs, builds the core crate and then runs every
+# binding's suite against the .so/.dylib/.dll it just produced. Each Windows leg runs as two
+# shards (the matrix's `shard` column), because Windows alone held the critical path: see
+# "Two shards on Windows" below. A second, smaller job, `build-native-musl`, does the same
 # for the two musl RIDs inside real Alpine containers — see it for why that is a separate
 # job rather than two more rows of this matrix. A third, `build-native-osx-x64`, cross-builds
 # the one RID that no longer has a leg of its own: Intel macOS, in its sunset — see it for
@@ -17,6 +19,14 @@ name: HyperForge — build native core, test every binding
 # queues. Measured overhead it also removes: ~50s per leg of repeated checkout +
 # download-artifact + job setup, plus a duplicate Ruby and PHP toolchain install (setup-php
 # alone was 56s on macOS) that the Magnus/ext-php-rs sections had already paid for.
+#
+# Two shards on Windows (2026-10): after `pr` mode the board's wall clock was win-x64 alone,
+# 13.1 minutes on HyperUuid run 37710502986, against 8.5 for macOS — Swift 4.9 of it (3.1 just
+# installing the toolchain) and Ruby's Magnus build 2.0. So each Windows leg is two jobs: `ffi`
+# (the crate's suite, the uploaded and attested library, C#, Java, Go, Python, PHP) and
+# `swift-ruby` (Swift and Ruby), each building the core itself, which is seconds, rather than
+# waiting on the other. Windows only: those runners do not count against the macOS cap, and
+# macOS, at 8.5 minutes, does not hold the board. Every other leg is `shard: all`, one job.
 #
 # What that costs, and how it is paid back: six jobs under `fail-fast: false` gave binding
 # isolation for free, so every binding step here carries `!cancelled()` to keep one
@@ -74,7 +84,7 @@ name: HyperForge — build native core, test every binding
 # An earlier version of this file had a `paths` job (dorny/paths-filter) skipping the
 # per-binding jobs per PR when nothing relevant changed. Abandoned then because splitting
 # build-native out seemed to deliver the wall-clock win on its own; still not wanted now,
-# for a better reason — with one job per leg there is nothing granular left to skip, and
+# for a better reason — with a job per leg (two on Windows) there is nothing granular left to skip, and
 # every binding's suite runs against a freshly built core anyway.
 #
 # The archaeology this file banks, so no Hyper* repo re-learns it (each lesson also
@@ -374,6 +384,7 @@ jobs:
             manylinux: "2_28"
             jdk_distribution: temurin
             static_targets: x86_64-unknown-linux-gnu x86_64-unknown-linux-musl
+            shard: all
           - os: ubuntu-26.04-arm
             rid: linux-arm64
             lib_name: lib${{ inputs.crate }}.so
@@ -381,6 +392,7 @@ jobs:
             manylinux: "2_28"
             jdk_distribution: temurin
             static_targets: aarch64-unknown-linux-gnu aarch64-unknown-linux-musl
+            shard: all
           - os: macos-latest
             rid: osx-arm64
             lib_name: lib${{ inputs.crate }}.dylib
@@ -388,6 +400,7 @@ jobs:
             manylinux: ""
             jdk_distribution: temurin
             static_targets: aarch64-apple-darwin
+            shard: all
           - os: windows-latest
             rid: win-x64
             lib_name: ${{ inputs.crate }}.dll
@@ -395,6 +408,15 @@ jobs:
             manylinux: ""
             jdk_distribution: temurin
             static_targets: x86_64-pc-windows-msvc
+            shard: ffi
+          - os: windows-latest
+            rid: win-x64
+            lib_name: ${{ inputs.crate }}.dll
+            target: x86_64-pc-windows-msvc
+            manylinux: ""
+            jdk_distribution: temurin
+            static_targets: x86_64-pc-windows-msvc
+            shard: swift-ruby
           - os: windows-11-arm
             rid: win-arm64
             lib_name: ${{ inputs.crate }}.dll
@@ -402,6 +424,15 @@ jobs:
             manylinux: ""
             jdk_distribution: microsoft
             static_targets: aarch64-pc-windows-msvc
+            shard: ffi
+          - os: windows-11-arm
+            rid: win-arm64
+            lib_name: ${{ inputs.crate }}.dll
+            target: aarch64-pc-windows-msvc
+            manylinux: ""
+            jdk_distribution: microsoft
+            static_targets: aarch64-pc-windows-msvc
+            shard: swift-ruby
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -456,13 +487,14 @@ jobs:
       # cargo only reads the crate's .cargo/config.toml (the --export=malloc/free link flags
       # the hosts depend on) from the crate directory.
       - name: Build wasm32-wasip1 module
-        if: inputs.wasip1_module
+        if: inputs.wasip1_module && matrix.shard != 'swift-ruby'
         working-directory: rust
         run: cargo rustc --release --crate-type cdylib --target wasm32-wasip1
 
       # Unit tests, each repo's shared conformance corpus, and its counting-allocator
       # allocation proof, per leg.
       - name: Run Rust test suite
+        if: matrix.shard != 'swift-ruby'
         working-directory: rust
         run: cargo test --release
 
@@ -474,6 +506,7 @@ jobs:
           cp "rust/target/release/${{ matrix.lib_name }}" "out/${{ matrix.lib_name }}"
 
       - uses: actions/upload-artifact@v7
+        if: matrix.shard != 'swift-ruby'
         with:
           name: native-${{ matrix.rid }}
           path: out/${{ matrix.lib_name }}
@@ -518,7 +551,7 @@ jobs:
       # skipped in either mode.
       - name: Attest native build provenance
         if: >-
-          inputs.attest_native && inputs.mode != 'pr' &&
+          matrix.shard != 'swift-ruby' && inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/attest-build-provenance@v3
@@ -541,17 +574,17 @@ jobs:
       # Python (PyO3 feature), every leg — the only Python backend, so it's proven here
       # rather than deferred to a release-time-only build.
       - uses: actions/setup-python@v7
-        if: inputs.pyo3
+        if: inputs.pyo3 && matrix.shard != 'swift-ruby'
         with:
           python-version: ${{ inputs.python_version }}
 
       - name: Build Python (PyO3) extension
-        if: inputs.pyo3
+        if: inputs.pyo3 && matrix.shard != 'swift-ruby'
         working-directory: rust
         run: cargo rustc --release --crate-type cdylib --features python
 
       - name: Stage Python (PyO3) extension
-        if: inputs.pyo3
+        if: inputs.pyo3 && matrix.shard != 'swift-ruby'
         shell: bash
         run: |
           case "${{ runner.os }}" in
@@ -561,7 +594,7 @@ jobs:
           esac
 
       - name: Test Python bindings
-        if: inputs.pyo3
+        if: inputs.pyo3 && matrix.shard != 'swift-ruby'
         working-directory: python
         shell: bash
         run: |
@@ -588,8 +621,9 @@ jobs:
       # minutes after slots had freed. Waiting on a starved job is not a tradeoff worth any
       # amount of per-binding job granularity.
       #
-      # Collapsed, the whole matrix is 6 jobs instead of 48 — 2 per OS family, comfortably
-      # under the cap, so nothing queues. This is not a new pattern here: Python, Ruby's
+      # Collapsed, the whole matrix was 6 jobs instead of 48 — 2 per OS family, comfortably
+      # under the cap, so nothing queues. (The Windows legs are two shards each since 2026-10,
+      # which adds two Windows jobs and no macOS ones; see the header.) This is not a new pattern here: Python, Ruby's
       # Magnus backend and PHP's ext-php-rs spike were always tested in this job. It extends
       # that to the remaining six rather than inventing anything.
       #
@@ -608,20 +642,20 @@ jobs:
 
       # C#: the real [LibraryImport] resolution/marshalling path per OS.
       - uses: actions/setup-dotnet@v6
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp }}
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
           dotnet-quality: ${{ inputs.dotnet_quality }}
 
       - name: Place native lib for C# in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_runtimes_dir != '' && inputs.csharp }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_runtimes_dir != '' && inputs.csharp }}
         shell: bash
         run: |
           mkdir -p "${{ inputs.csharp_runtimes_dir }}/${{ matrix.rid }}/native"
           cp "out/${{ matrix.lib_name }}" "${{ inputs.csharp_runtimes_dir }}/${{ matrix.rid }}/native/"
 
       - name: Test C# bindings against this platform's native lib
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp }}
         run: dotnet test --project ${{ inputs.csharp_test_project }} -c Release
 
       # The bar here is "zero warnings, exit 0" on every platform, not "the csproj sets
@@ -639,7 +673,7 @@ jobs:
       # non-Windows leg passed, because only MSYS2 does this. The -p: spelling is
       # identical to MSBuild and is left alone by the conversion, so it works everywhere.
       - name: Native AOT publish (zero trim warnings required)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' && inputs.csharp }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' && inputs.csharp }}
         shell: bash
         run: |
           set -uo pipefail
@@ -667,7 +701,7 @@ jobs:
           fi
 
       - name: Run the AOT-published binary (must exit 0)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' && inputs.csharp }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' && inputs.csharp }}
         shell: bash
         run: |
           set -euo pipefail
@@ -678,7 +712,7 @@ jobs:
           "./$exe" 2>&1 | tee -a aot-publish.log
 
       - name: Upload the AOT report
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' && inputs.csharp }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' && inputs.csharp }}
         uses: actions/upload-artifact@v7
         with:
           name: aot-report-${{ matrix.rid }}
@@ -686,20 +720,20 @@ jobs:
 
       # Java: the real FFM downcall path per OS.
       - uses: actions/setup-java@v6
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java }}
         with:
           distribution: ${{ matrix.jdk_distribution }}
           java-version: ${{ inputs.jdk_version }}
 
       - name: Place native lib for Java in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java_resources_dir != '' && inputs.java }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java_resources_dir != '' && inputs.java }}
         shell: bash
         run: |
           mkdir -p "${{ inputs.java_resources_dir }}/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "${{ inputs.java_resources_dir }}/${{ matrix.rid }}/"
 
       - name: Place wasm32-wasip1 module for Java in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java_resources_dir != '' && inputs.wasip1_module && inputs.java }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java_resources_dir != '' && inputs.wasip1_module && inputs.java }}
         shell: bash
         run: |
           mkdir -p "${{ inputs.java_resources_dir }}/wasm32-wasip1"
@@ -721,7 +755,7 @@ jobs:
       # it. It needs compileJava's classpath but not the native library, so it adds no
       # dependency this step didn't already have.
       - name: Test Java bindings against this platform's native lib
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java }}
         working-directory: java
         shell: bash
         run: |
@@ -732,7 +766,7 @@ jobs:
       # the `test` task with the backend-selecting system property set and GraalWasm on the
       # test runtime classpath only, so the published POM never carries it.
       - name: Test Java bindings (wasm backend)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module && inputs.java }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module && inputs.java }}
         working-directory: java
         shell: bash
         run: ./gradlew testWasm --console=plain
@@ -745,13 +779,13 @@ jobs:
       # a leg whose compiler went missing fails here, on the binding's own "needs cgo" error,
       # rather than somewhere less legible.
       - uses: actions/setup-go@v7
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
 
       - name: llvm-mingw, the C compiler cgo needs on ARM64 Windows
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && runner.os == 'Windows' && runner.arch == 'ARM64' }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && runner.os == 'Windows' && runner.arch == 'ARM64' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -766,7 +800,7 @@ jobs:
           echo "CC=aarch64-w64-mingw32-clang" >> "$GITHUB_ENV"
 
       - name: Test Go bindings, the core linked in
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
         working-directory: go
         env:
           CGO_ENABLED: "1"
@@ -774,10 +808,58 @@ jobs:
 
       # Swift: the core linked in from a SwiftPM binary target, called through @convention(c).
       # SwiftyLab/setup-swift for its verified windows-11-arm support.
+      #
+      # On Windows, setup-swift's own cache holds the *installed* toolchain (1.7 GB), and on a
+      # hit it unpacks that to a temporary directory and then copies it file by file into
+      # the runner's tool cache: 2m10s of a 3.1-minute step on win-x64 (HyperUuid run
+      # 37710502986). Caching the tool-cache directory itself lets setup-swift's tool-cache
+      # lookup find the toolchain already in place, so all it does is set PATH and SDKROOT.
+      # setup-swift's own cache is off there, so the toolchain is not stored twice. The key
+      # names the toolchain directory setup-swift actually used, so a new Swift release under
+      # the same swift_version saves a fresh entry rather than living on the old one.
+      - name: Restore the installed Swift toolchain (Windows)
+        id: swift_toolcache
+        if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'Windows' && inputs.swift }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.tool_cache }}/swift-*
+          key: swift-toolcache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.swift_version }}-
+          restore-keys: swift-toolcache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.swift_version }}-
+
       - uses: SwiftyLab/setup-swift@v1.14.1
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.swift }}
+        if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.swift }}
         with:
           swift-version: ${{ inputs.swift_version }}
+          cache-snapshot: ${{ runner.os != 'Windows' }}
+
+      - name: Key the installed Swift toolchain (Windows)
+        id: swift_toolcache_key
+        if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'Windows' && inputs.swift }}
+        shell: bash
+        env:
+          WANT: ${{ inputs.swift_version }}
+        run: |
+          set -euo pipefail
+          tool_cache=$(cygpath -u "$RUNNER_TOOL_CACHE")
+          swift_bin=$(cygpath -u "$(command -v swift)")
+          used=${swift_bin#"$tool_cache"/}
+          used=${used%%/*}
+          case "$used" in
+            swift-*) ;;
+            *) echo "::error::swift ($swift_bin) is not under the tool cache ($tool_cache)"; exit 1 ;;
+          esac
+          # Any other swift-* directory is an older toolchain the restore brought back.
+          for dir in "$tool_cache"/swift-*; do
+            [ "$(basename "$dir")" = "$used" ] || rm -rf "$dir"
+          done
+          echo "key=swift-toolcache-$RUNNER_OS-$RUNNER_ARCH-$WANT-$used" >> "$GITHUB_OUTPUT"
+
+      - name: Save the installed Swift toolchain (Windows)
+        if: ${{ !cancelled() && steps.swift_toolcache_key.outcome == 'success' && steps.swift_toolcache.outputs.cache-matched-key != steps.swift_toolcache_key.outputs.key }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.tool_cache }}/swift-*
+          key: ${{ steps.swift_toolcache_key.outputs.key }}
 
       # setup-swift puts the Swift toolchain's bin directory first on PATH, and that
       # directory has a `clang` of its own. bindgen — which the ext-php-rs and Magnus builds
@@ -811,7 +893,7 @@ jobs:
       # committed archive and regenerated the bundle's info.json, so the suite links the
       # core this commit built. (A caller without `static_libs` tests the committed archive.)
       - name: Test Swift bindings, the core linked in
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.swift }}
+        if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.swift }}
         working-directory: swift
         run: swift test
 
@@ -823,7 +905,7 @@ jobs:
       # x64 only, because a second Swift build on Windows costs minutes. When a future
       # toolchain removes `--build-system native` (6.4 already warns), this step goes with it.
       - name: Test Swift bindings — the pre-6.4 build system's link
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid == 'win-x64' && inputs.swift }}
+        if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid == 'win-x64' && inputs.swift }}
         working-directory: swift
         run: swift test --build-system native
 
@@ -833,7 +915,7 @@ jobs:
       # with it. Until this step nothing built the root one, so a drift between the two
       # would have shipped to every consumer with the whole matrix green.
       - name: Build the root Swift manifest (the one consumers resolve)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.swift }}
+        if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.swift }}
         run: swift build
 
       # =========================================================================
@@ -863,7 +945,7 @@ jobs:
       # the other feature builds.
       # =========================================================================
       - uses: shivammathur/setup-php@v2
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && runner.os != 'macOS' && inputs.php }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && runner.os != 'macOS' && inputs.php }}
         with:
           php-version: ${{ inputs.php_version }}
           extensions: ffi
@@ -876,7 +958,7 @@ jobs:
       # it is always the newest PHP, which is the platform every binding tracks; so this leg
       # moves to the next PHP the day core does, possibly ahead of php_version, and says so.
       - name: PHP and Composer from Homebrew (macOS)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'macOS' && inputs.php }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'macOS' && inputs.php }}
         shell: bash
         env:
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
@@ -895,19 +977,19 @@ jobs:
       # --- the shipped backend: built-in ext-ffi, the one the Composer package uses ---
 
       - name: Install PHP dependencies
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && inputs.php }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && inputs.php }}
         working-directory: php
         run: composer install --no-interaction --prefer-dist
 
       - name: Place native lib for PHP in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && inputs.php }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && inputs.php }}
         shell: bash
         run: |
           mkdir -p "php/src/native/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "php/src/native/${{ matrix.rid }}/"
 
       - name: Test PHP bindings against this platform's native lib
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && inputs.php }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && inputs.php }}
         working-directory: php
         # Through `php`, not bare — the Composer proxy is a shebang script the Windows
         # legs' default pwsh can't execute.
@@ -919,7 +1001,7 @@ jobs:
       # unnoticed, and the weekly release-mode run is enough to notice.
 
       - name: Build PHP (ext-php-rs) extension
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.mode != 'pr' }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.mode != 'pr' }}
         working-directory: rust
         run: cargo rustc --release --crate-type cdylib --features php
 
@@ -935,7 +1017,7 @@ jobs:
       # because byte-identical native libraries across a caller's php/, go/ and swift/ trees
       # are what let one committed git blob serve three bindings under one attestation.
       - name: Stage PHP (ext-php-rs) extension
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.mode != 'pr' }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.mode != 'pr' }}
         shell: bash
         run: |
           mkdir -p php-ext
@@ -952,7 +1034,7 @@ jobs:
       # its own saying so. The module name ext-php-rs registers is CARGO_PKG_NAME, which is
       # what `crate` already is.
       - name: Load-check the PHP extension, and record the ABI it is pinned to
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.mode != 'pr' }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.mode != 'pr' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -977,7 +1059,7 @@ jobs:
       # and the same fork-PR gate, since a fork's token cannot sign.
       - name: Attest PHP (ext-php-rs) extension provenance
         if: >-
-          inputs.php && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' &&
+          matrix.shard != 'swift-ruby' && inputs.php && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' &&
           inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
@@ -1057,7 +1139,7 @@ jobs:
       # added — so a directory holding only `clang` and `clang++`, each a link to Apple's
       # shim, goes in front instead. Everything that needs Swift has run by this point.
       - name: Point Xcode at a full toolchain (works around a Ruby native-extension mkmf issue)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'macOS' && inputs.ruby }}
+        if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'macOS' && inputs.ruby }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1100,14 +1182,14 @@ jobs:
       # land before any of them, and it is the same copy for all three — this was two
       # identical steps at opposite ends of the job.
       - name: Place native lib for Ruby in-repo testing
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.ruby }}
+        if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.ruby }}
         shell: bash
         run: |
           mkdir -p "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}/"
 
       - name: Ruby (Magnus) — compat ABI
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' && inputs.mode != 'pr' && inputs.ruby }}
+        if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' && inputs.mode != 'pr' && inputs.ruby }}
         uses: SkunkWerkx/.github/.github/actions/ruby-magnus@master
         with:
           ruby-version: ${{ inputs.ruby_compat_version }}
@@ -1116,7 +1198,7 @@ jobs:
           attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       - name: Ruby (Magnus) — primary ABI
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby }}
+        if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby }}
         uses: SkunkWerkx/.github/.github/actions/ruby-magnus@master
         with:
           ruby-version: ${{ inputs.ruby_version }}
@@ -1131,7 +1213,7 @@ jobs:
       # so this inherits it and needs no setup-ruby of its own — the step below exists only
       # for `magnus: false`, where nothing has installed a Ruby yet.
       - uses: ruby/setup-ruby@v1
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && !inputs.magnus && inputs.ruby }}
+        if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && !inputs.magnus && inputs.ruby }}
         with:
           ruby-version: ${{ inputs.ruby_version }}
           bundler: default
@@ -1140,7 +1222,7 @@ jobs:
 
       # (bash + export because an env: mapping key can't be an expression.)
       - name: Test Ruby bindings (Fiddle backend) against this platform's native lib
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.ruby }}
+        if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.ruby }}
         working-directory: ruby
         shell: bash
         run: |
