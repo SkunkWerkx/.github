@@ -275,6 +275,10 @@ on:
         type: string
         default: "3.14"
       php_version:
+        description: >
+          The newest PHP, which every leg but macOS installs through setup-php. macOS takes
+          Homebrew core's `php`, always the newest, and posts a notice when that has moved
+          past this value — the cue to bump this default.
         required: false
         type: string
         default: "8.5"
@@ -859,11 +863,34 @@ jobs:
       # the other feature builds.
       # =========================================================================
       - uses: shivammathur/setup-php@v2
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && inputs.php }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && runner.os != 'macOS' && inputs.php }}
         with:
           php-version: ${{ inputs.php_version }}
           extensions: ffi
           tools: composer
+
+      # macOS takes PHP from Homebrew core, not setup-php. setup-php installs it on macOS
+      # from its own tap with brew's output discarded, and on 2026-10-08 that began failing
+      # with nothing but "Could not setup PHP 8.5" (HyperUuid run 37710502986, both
+      # attempts). Core's `php` is built `--with-ffi` and bottled by Homebrew's own CI, and
+      # it is always the newest PHP, which is the platform every binding tracks; so this leg
+      # moves to the next PHP the day core does, possibly ahead of php_version, and says so.
+      - name: PHP and Composer from Homebrew (macOS)
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'macOS' && inputs.php }}
+        shell: bash
+        env:
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          WANT: ${{ inputs.php_version }}
+        run: |
+          set -euo pipefail
+          brew install php composer
+          php -v
+          php -r 'exit(extension_loaded("ffi") ? 0 : 1);' \
+            || { echo "::error::Homebrew's php has no ffi extension loaded"; exit 1; }
+          got=$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')
+          if [ "$got" != "$WANT" ]; then
+            echo "::notice::macOS is testing PHP $got (Homebrew core's newest); php_version is $WANT — bump the forge's default to match."
+          fi
 
       # --- the shipped backend: built-in ext-ffi, the one the Composer package uses ---
 
