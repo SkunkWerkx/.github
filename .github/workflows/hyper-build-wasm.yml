@@ -35,6 +35,14 @@ name: HyperForge — build the Rust core as a wasm32-unknown-emscripten static l
 on:
   workflow_call:
     inputs:
+      mode:
+        description: >
+          `release` (the default) or `pr`, as in hyper-build-native.yml. Every build and smoke
+          test runs either way; `pr` skips attesting the ruby.wasm archives, which only a
+          release packs.
+        required: false
+        type: string
+        default: release
       working_directory:
         description: "Path to the crate's own directory (the one with Cargo.toml)"
         required: false
@@ -356,6 +364,7 @@ jobs:
           ls -l "$RUNNER_TEMP/archives/$ABI/$ARCHIVE"
 
       - uses: actions/attest-build-provenance@v3
+        if: inputs.mode != 'pr'
         with:
           subject-path: ${{ runner.temp }}/archives/${{ matrix.abi }}/${{ inputs.crate }}_native.a
 

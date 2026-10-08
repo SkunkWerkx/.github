@@ -117,6 +117,19 @@ name: HyperForge — build native core, test every binding
 on:
   workflow_call:
     inputs:
+      mode:
+        description: >
+          `release` (the default) builds, tests and attests everything a release ships.
+          `pr` keeps every leg and every binding's suite, so the conformance corpus is proven
+          in all eight languages on every platform, and drops what only a release needs:
+          attestations, the Magnus build against ruby_compat_version (a second ABI for the
+          fat gem; the primary ABI is still built and tested), and the osx-x64 cross-build
+          (packaged, never tested by a binding). The floor-version runs stay: they are cheap,
+          off the critical path, and exactly the drift a PR should catch. A caller passes
+          `pr` on pull_request events and `release` on every other.
+        required: false
+        type: string
+        default: release
       project:
         description: "PascalCase project name (Swift target, e.g. HyperCast)"
         required: true
@@ -470,7 +483,7 @@ jobs:
       # this linux-x64 copy, so this is the copy whose provenance gets recorded.
       - name: Attest wasm32-wasip1 module provenance
         if: >-
-          inputs.wasip1_module && matrix.rid == 'linux-x64' && inputs.attest_native &&
+          inputs.wasip1_module && matrix.rid == 'linux-x64' && inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/attest-build-provenance@v3
@@ -501,7 +514,7 @@ jobs:
       # binaries — the ones a reader can't inspect — as the only unattested artifacts.
       - name: Attest native build provenance
         if: >-
-          inputs.attest_native &&
+          inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/attest-build-provenance@v3
@@ -935,7 +948,7 @@ jobs:
       - name: Attest PHP (ext-php-rs) extension provenance
         if: >-
           inputs.php && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' &&
-          inputs.attest_native &&
+          inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/attest-build-provenance@v3
@@ -1064,13 +1077,13 @@ jobs:
           cp "out/${{ matrix.lib_name }}" "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}/"
 
       - name: Ruby (Magnus) — compat ABI
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' && inputs.ruby }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' && inputs.mode != 'pr' && inputs.ruby }}
         uses: SkunkWerkx/.github/.github/actions/ruby-magnus@master
         with:
           ruby-version: ${{ inputs.ruby_compat_version }}
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       - name: Ruby (Magnus) — primary ABI
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby }}
@@ -1079,7 +1092,7 @@ jobs:
           ruby-version: ${{ inputs.ruby_version }}
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       # --- the Fiddle backend, forced explicitly ---
       #
@@ -1134,7 +1147,7 @@ jobs:
   # when it does or when the RID is retired, whichever is first.
   # ===========================================================================
   build-native-osx-x64:
-    if: inputs.osx_x64
+    if: inputs.osx_x64 && inputs.mode != 'pr'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -1183,7 +1196,7 @@ jobs:
       # Same attestation, for the same reason, as the matrix legs' libraries.
       - name: Attest native build provenance
         if: >-
-          inputs.attest_native &&
+          inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/attest-build-provenance@v3
@@ -1244,7 +1257,7 @@ jobs:
         with:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       # The wasm module, for the Java suite's in-process GraalWasm backend, and the musl
       # static library, for the two suites that link the core in (Go under cgo, and the C#
@@ -1340,13 +1353,13 @@ jobs:
       # Compat ABI first and primary last, as on the matrix legs. Each builds in its Ruby's
       # Alpine image and runs the suite on a bare copy of it — see build-magnus-musl.sh.
       - name: Ruby (Magnus) on Alpine — compat ABI
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' && inputs.ruby }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' && inputs.mode != 'pr' && inputs.ruby }}
         uses: SkunkWerkx/.github/.github/actions/ruby-magnus-musl@master
         with:
           ruby-version: ${{ inputs.ruby_compat_version }}
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       - name: Ruby (Magnus) on Alpine — primary ABI
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby }}
@@ -1355,7 +1368,7 @@ jobs:
           ruby-version: ${{ inputs.ruby_version }}
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       - name: Ruby on Alpine (Fiddle)
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.ruby }}
@@ -1455,7 +1468,7 @@ jobs:
           project: ${{ inputs.project }}
           apple_mobile: ${{ inputs.apple_mobile }}
           upload: "true"
-          attest: ${{ inputs.attest_native && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
   test-swift-static:
     needs: build-static-libs

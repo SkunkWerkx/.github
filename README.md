@@ -1,6 +1,6 @@
 # HyperForge
 
-The shared foundry behind SkunkWerkx's Hyper* projects ([HyperUuid](https://github.com/SkunkWerkx/HyperUuid), [HyperCast](https://github.com/SkunkWerkx/HyperCast), and the ingestion round — [HyperTabular](https://github.com/SkunkWerkx/HyperTabular), [HyperDelimited](https://github.com/SkunkWerkx/HyperDelimited), [HyperWorkbook](https://github.com/SkunkWerkx/HyperWorkbook)): reusable CI pipelines, 5 real-hardware platforms plus the two musl RIDs and a cross-built Intel macOS, that prove one Rust core against every language binding's real test suite, scaffolding conventions for new bindings, and the build archaeology — learned once, banked here, never re-learned.
+The shared foundry behind SkunkWerkx's Hyper* projects ([HyperUuid](https://github.com/SkunkWerkx/HyperUuid), [HyperCast](https://github.com/SkunkWerkx/HyperCast), and the ingestion round's [HyperTabular](https://github.com/SkunkWerkx/HyperTabular), which reads delimited text and workbooks alike): reusable CI pipelines, 5 real-hardware platforms plus the two musl RIDs and a cross-built Intel macOS, that prove one Rust core against every language binding's real test suite, scaffolding conventions for new bindings, and the build archaeology — learned once, banked here, never re-learned.
 
 ## The pipeline
 
@@ -19,6 +19,11 @@ name: CI — build native, build wasm, test every binding
 on:
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"     # the whole release-mode board, weekly
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   build-native:
     uses: SkunkWerkx/.github/.github/workflows/hyper-build-native.yml@master
@@ -27,6 +32,7 @@ jobs:
       id-token: write
       attestations: write
     with:
+      mode: ${{ github.event_name == 'pull_request' && 'pr' || 'release' }}
       project: HyperCast
       crate: hypercast
       pure_env: HYPERCAST_PURE
@@ -40,8 +46,10 @@ jobs:
   build-wasm:
     uses: SkunkWerkx/.github/.github/workflows/hyper-build-wasm.yml@master
     with:
+      mode: ${{ github.event_name == 'pull_request' && 'pr' || 'release' }}
       crate: hypercast
   build-wheels:
+    if: github.event_name != 'pull_request'
     uses: SkunkWerkx/.github/.github/workflows/hyper-build-wheels.yml@master
     permissions:
       contents: read
@@ -50,6 +58,8 @@ jobs:
     with:
       crate: hypercast
 ```
+
+A pull request runs the forge in `pr` mode: every leg, every binding's suite and every floor still run, so the corpus is proven in all eight languages on every platform, but nothing a release alone needs is built or signed — no attestations, no second Ruby ABI, no osx-x64 cross-build, no wheels, and no Apple-mobile job in the caller. Those ran on the PR critical path for packaging nobody would ship until the next release; on HyperCast run 37559419462 the Apple-mobile job alone held a board whose slowest leg finished at minute 16 open until minute 44. Every other event — the release's dispatched run and the weekly schedule — runs `release` mode, so the whole board is still exercised between releases rather than first on release day.
 
 No `push` trigger, deliberately: the stage-native-binaries and prepare-release workflows direct-push mechanical commits, and a matrix run on each of those is wasted compute. The one push that does need a run is a release's version bump, and `prepare-release.yml` dispatches it explicitly (see "A library that reports its version" in the ledger).
 
