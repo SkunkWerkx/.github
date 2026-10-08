@@ -7,8 +7,9 @@
 # e.g. `build-static-libs.sh hyperuuid HyperUuid .` builds all nine targets below. Naming
 # targets builds only those and leaves every other archive in the tree as it was. With
 # APPLE_MOBILE=1 in the environment the default set is those nine and the four Apple mobile
-# targets (iOS, the iOS simulator on Apple silicon, and Mac Catalyst on both architectures);
-# a repository opts in, so one whose bindings do not link them yet ships none. Runs on
+# targets (iOS, the iOS simulator on Apple silicon, and Mac Catalyst on both architectures),
+# and with ANDROID=1 the two Android ones (arm64 and x86_64); a repository opts in to each,
+# so one whose bindings do not link them yet ships none. Runs on
 # any host with rustup and python3: a static library is compiled and never linked, so every
 # target — macOS and Windows included — cross-compiles from one machine with no C toolchain
 # and no SDK for any of them.
@@ -27,6 +28,16 @@
 #                                                             maccatalyst-arm64, maccatalyst-x64
 #   Go      go/staticlib/{dir}/                               ios_arm64, iossimulator_arm64,
 #                                                             maccatalyst_arm64, maccatalyst_amd64
+#
+# and with ANDROID=1:
+#
+#   C#      csharp/{Project}/staticlibs/{rid}/                android-arm64, android-x64 —
+#                                                             Native AOT on Android
+#
+# Android is C# only. A .NET Android app on CoreCLR loads the shared library out of its APK,
+# which hyper-build-native.yml's build-native-android job builds with the NDK's linker; this archive
+# is for the one that links the core in, a Native AOT publish. Like every other archive here
+# it is compiled and never linked, so it needs no NDK.
 #
 # Swift takes those three from an XCFramework and not from the artifact bundle because an iOS
 # or Catalyst app is built by Xcode, which has linked a static library out of an XCFramework
@@ -110,7 +121,12 @@ apple_mobile_targets=(
   aarch64-apple-ios-macabi
   x86_64-apple-ios-macabi
 )
+android_targets=(
+  aarch64-linux-android
+  x86_64-linux-android
+)
 [ "${APPLE_MOBILE:-}" = 1 ] && all_targets+=("${apple_mobile_targets[@]}")
+[ "${ANDROID:-}" = 1 ] && all_targets+=("${android_targets[@]}")
 targets=("$@")
 [ ${#targets[@]} -gt 0 ] || targets=("${all_targets[@]}")
 
@@ -155,6 +171,8 @@ destinations() {
     aarch64-apple-ios-sim)      echo "$apple/ios-arm64-simulator";    echo "$csharp/iossimulator-arm64"; echo "$go/iossimulator_arm64" ;;
     aarch64-apple-ios-macabi)   echo "$apple/ios-arm64-maccatalyst";  echo "$csharp/maccatalyst-arm64";  echo "$go/maccatalyst_arm64" ;;
     x86_64-apple-ios-macabi)    echo "$csharp/maccatalyst-x64";       echo "$go/maccatalyst_amd64" ;;
+    aarch64-linux-android)      echo "$csharp/android-arm64" ;;
+    x86_64-linux-android)       echo "$csharp/android-x64" ;;
     *) echo "unsupported rust target: $1" >&2; return 1 ;;
   esac
 }

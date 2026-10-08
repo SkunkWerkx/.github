@@ -28,6 +28,13 @@ inputs:
       swift/{Project}CoreApple.xcframework, which is written whole (see build-static-libs.sh).
     required: false
     default: "false"
+  android:
+    description: >-
+      Also build the two Android targets when no targets are named ('true'/'false'): arm64
+      and x86_64, to csharp/{Project}/staticlibs/android-arm64 and android-x64, for a .NET
+      Native AOT publish on Android (see build-static-libs.sh).
+    required: false
+    default: "false"
   upload:
     description: "Upload the archives as the static-libs artifact ('true'/'false')"
     required: false
@@ -50,6 +57,7 @@ runs:
         PROJECT: ${{ inputs.project }}
         TARGETS: ${{ inputs.targets }}
         APPLE_MOBILE: ${{ inputs.apple_mobile == 'true' && '1' || '' }}
+        ANDROID: ${{ inputs.android == 'true' && '1' || '' }}
       # $TARGETS unquoted on purpose: it is a list.
       run: '"$GITHUB_ACTION_PATH/build-static-libs.sh" "$CRATE" "$PROJECT" . $TARGETS'
 

@@ -50,6 +50,11 @@ on:
         required: false
         type: boolean
         default: true
+      android:
+        description: "Also pack the android-arm64 and android-x64 libraries a .NET for Android app loads out of its APK (hyper-build-native.yml's `android` input, which must have been on for the source run). Their Native AOT archives come with static_libs."
+        required: false
+        type: boolean
+        default: false
       static_libs:
         description: "Also pack the static libraries a Native AOT publish links in (hyper-build-native.yml's `static_libs` input, which must have been on for the source run)"
         required: false
@@ -103,6 +108,10 @@ jobs:
           if [ "${{ inputs.musl }}" = "true" ]; then
             LIB_NAMES[linux-musl-x64]=lib${{ inputs.crate }}.so
             LIB_NAMES[linux-musl-arm64]=lib${{ inputs.crate }}.so
+          fi
+          if [ "${{ inputs.android }}" = "true" ]; then
+            LIB_NAMES[android-arm64]=lib${{ inputs.crate }}.so
+            LIB_NAMES[android-x64]=lib${{ inputs.crate }}.so
           fi
           for rid in "${!LIB_NAMES[@]}"; do
             dest="${{ inputs.runtimes_dir }}/$rid/native"
