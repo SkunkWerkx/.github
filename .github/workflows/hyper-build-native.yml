@@ -1341,7 +1341,9 @@ jobs:
   # run on the host: the library is the architecture its name says; every LOAD segment is
   # aligned to 16 KB, the page size Android 15 devices may use and Google Play requires of
   # new apps (a 4 KB-aligned library fails to load on such a device, and the build would not
-  # say so); and the cast_* exports are there. The caller runs its binding in an emulator.
+  # say so); and the core's exports are there — {crate}_version and at least one door, since
+  # this job has no list of the caller's doors (each repo's own CI holds its exact export
+  # list). The caller runs its binding in an emulator.
   #
   # Uploaded and attested as `native-android-{rid}`, the name hyper-pack-nuget.yml's
   # `android` input looks for. The static archives a Native AOT publish links are not built
@@ -1408,12 +1410,13 @@ jobs:
               || { echo "::error::a LOAD segment is aligned to $align, below 16 KB; the library will not load on a 16 KB-page device"; exit 1; }
           done < <("$readelf" -lW "$lib")
           "$readelf" -d "$lib" | grep NEEDED || true
-          exports="$("$readelf" --dyn-syms -W "$lib" | awk '$5 == "GLOBAL" && $7 != "UND" { print $8 }')"
-          count="$(printf '%s\n' "$exports" | grep -c '^cast_' || true)"
-          echo "cast_* exports: $count"
+          exports="$("$readelf" --dyn-syms -W "$lib" | awk '$5 == "GLOBAL" && $7 != "UND" { print $8 }' | sort -u)"
+          printf '%s\n' "$exports"
           printf '%s\n' "$exports" | grep -qx "${{ inputs.crate }}_version" \
             || { echo "::error::${{ inputs.crate }}_version is not exported"; exit 1; }
-          [ "$count" -gt 0 ] || { echo "::error::no cast_* exports"; exit 1; }
+          count="$(printf '%s\n' "$exports" | grep -cvx "${{ inputs.crate }}_version" || true)"
+          echo "exports besides ${{ inputs.crate }}_version: $count"
+          [ "$count" -gt 0 ] || { echo "::error::no exports besides ${{ inputs.crate }}_version"; exit 1; }
 
       - name: Collect native artifact
         run: |
