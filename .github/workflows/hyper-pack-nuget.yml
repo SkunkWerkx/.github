@@ -147,7 +147,7 @@ jobs:
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
 
-      # Stages runtimes/browser-wasm/nativeassets/net10.0/ before packing, so NuGet's own
+      # Stages runtimes/browser-wasm/nativeassets/net11.0/ before packing, so NuGet's own
       # RID-based asset selection picks the wasm staticlib up automatically for any consumer
       # building with RuntimeIdentifier=browser-wasm — see HyperUuid.csproj's own WASM
       # comments for the full story. No wasm-tools workload and no second `dotnet build`
@@ -168,7 +168,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          native_dest="${{ inputs.runtimes_dir }}/browser-wasm/nativeassets/net10.0"
+          native_dest="${{ inputs.runtimes_dir }}/browser-wasm/nativeassets/net11.0"
           mkdir -p "$native_dest"
           cp wasm-artifact/lib${{ inputs.crate }}.a "$native_dest/"
 
