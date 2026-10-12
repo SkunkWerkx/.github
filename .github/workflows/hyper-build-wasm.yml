@@ -115,6 +115,10 @@ on:
 jobs:
   build-wasm:
     runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
 
@@ -154,6 +158,19 @@ jobs:
             exit 1
           fi
           echo "no rust_eh_personality in $lib"
+
+      # The archive hyper-pack-nuget.yml packs into runtimes/browser-wasm/, attested like every
+      # other native the package carries; that job verifies it before packing. Skipped where
+      # the other natives' attestations are (hyper-build-native.yml): pr mode, which no release
+      # packs from, and a fork's pull request, whose token cannot sign.
+      - name: Attest the static library
+        if: >-
+          inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ inputs.working_directory }}/target/wasm32-unknown-emscripten/release/lib${{ inputs.crate }}.a
 
       - uses: actions/upload-artifact@v7
         with:

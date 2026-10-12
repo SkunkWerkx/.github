@@ -172,6 +172,35 @@ jobs:
           mkdir -p "$native_dest"
           cp wasm-artifact/lib${{ inputs.crate }}.a "$native_dest/"
 
+      # Every native about to go into the package, the browser-wasm archive included, must
+      # carry the build provenance hyper-build-native.yml / hyper-build-wasm.yml attested in
+      # the source run. Nothing checked this before 0.8.1, and 0.8.0 shipped a browser-wasm
+      # archive with none. --signer-repo for the reason release.yml's gem gate gives: the
+      # attest steps live here in the forge.
+      - name: Verify build provenance of every native about to be packed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runtimes="${{ inputs.runtimes_dir }}"
+          dirs=("$runtimes")
+          staticlibs="$(dirname "$runtimes")/staticlibs"
+          [ -d "$staticlibs" ] && dirs+=("$staticlibs")
+          count=0
+          while IFS= read -r f; do
+            echo "::group::verify $f"
+            if ! gh attestation verify "$f" \
+                 --repo "$GITHUB_REPOSITORY" --signer-repo SkunkWerkx/.github; then
+              echo "::error::No valid build provenance for $f — refusing to pack it."
+              exit 1
+            fi
+            echo "::endgroup::"
+            count=$((count + 1))
+          done < <(find "${dirs[@]}" -type f | sort)
+          [ "$count" -gt 0 ] || { echo "::error::no natives found under ${dirs[*]}"; exit 1; }
+          echo "$count natives verified"
+
       - name: Pack
         run: dotnet pack ${{ inputs.csproj_path }} -c Release -o nupkg-org
 
