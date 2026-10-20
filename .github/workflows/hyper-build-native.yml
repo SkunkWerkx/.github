@@ -284,6 +284,14 @@ on:
         required: false
         type: string
         default: "3.14"
+      python_freethreaded_version:
+        description: >
+          Free-threaded CPython the PyO3 suite runs on a second time, every leg, against the
+          extension rebuilt for it: the abi3t floor the crate's PyO3 `abi3t-py3XX` feature
+          names, with a `t`. Empty skips it.
+        required: false
+        type: string
+        default: "3.15t"
       php_version:
         description: >
           The newest PHP, which every leg but macOS installs through setup-php. macOS takes
@@ -618,6 +626,38 @@ jobs:
           # test skips, and the package's `py.typed` claim goes unexercised.
           pip install pytest mypy
           pytest
+
+      # The same suite on a free-threaded CPython, where threads run in parallel and a GIL
+      # assumption in the extension would show (the suite's threading tests are written for
+      # that), against the extension rebuilt for it: PYO3_PYTHON picks the interpreter, and
+      # with abi3t-py3XX enabled a free-threaded one builds abi3t. Then the GIL must still be
+      # off after the import. Off PATH, so every later step keeps the interpreter above.
+      - uses: actions/setup-python@v7
+        id: ft-python
+        if: inputs.pyo3 && matrix.shard != 'swift-ruby' && inputs.python_freethreaded_version != ''
+        with:
+          python-version: ${{ inputs.python_freethreaded_version }}
+          update-environment: false
+
+      - name: Test Python bindings — free-threaded
+        if: inputs.pyo3 && matrix.shard != 'swift-ruby' && inputs.python_freethreaded_version != ''
+        shell: bash
+        env:
+          PY: ${{ steps.ft-python.outputs.python-path }}
+          PYO3_PYTHON: ${{ steps.ft-python.outputs.python-path }}
+          CRATE: ${{ inputs.crate }}
+        run: |
+          set -euo pipefail
+          (cd rust && cargo rustc --release --crate-type cdylib --features python)
+          case "${{ runner.os }}" in
+            macOS)   cp "rust/target/release/lib$CRATE.dylib" "python/src/$CRATE/_native.so" ;;
+            Linux)   cp "rust/target/release/lib$CRATE.so" "python/src/$CRATE/_native.so" ;;
+            Windows) cp "rust/target/release/$CRATE.dll" "python/src/$CRATE/_native.pyd" ;;
+          esac
+          cd python
+          "$PY" -m pip install --quiet pytest
+          "$PY" -m pytest
+          PYTHONPATH=src "$PY" -W error::RuntimeWarning -c "import sys, $CRATE; assert not sys._is_gil_enabled(), 'the GIL came back on'; print('$CRATE on', sys.version.split()[0], 'GIL', sys._is_gil_enabled())"
 
       # No wheel is built in this job: maturin is its own compile step, and the extension
       # staged and tested above is what this matrix is for. The wheels a release publishes

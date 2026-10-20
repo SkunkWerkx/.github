@@ -1,12 +1,21 @@
 name: HyperForge — build and install-test the PyPI wheels
 
-# The nine wheels a Hyper* Python package publishes, built, installed and called into on
+# The 25 wheels a Hyper* Python package publishes, built, installed and called into on
 # every CI run, then uploaded as `pypi-wheels-{rid}` for the caller's release to publish
-# unchanged. abi3-py311 collapses the matrix to one wheel per platform (not per Python
-# version), so eight legs — six desktop platforms and the two musl ones — cover every
-# supported CPython on every platform, and build-pyodide-wheel adds the ninth: the same
-# extension for Pyodide in the browser (`pypi-wheels-pyodide`), whose job also runs the
-# binding's whole test suite inside Pyodide, under Node and in headless Chrome.
+# unchanged. Eight legs — six desktop platforms and the two musl ones — build three wheels
+# each, which between them cover every supported CPython on that platform, with the GIL or
+# without it:
+#
+#   cp311-abi3         abi3-py311: every CPython 3.11+ with the GIL, one wheel rather than
+#                      one per minor
+#   cp314-cp314t       free-threaded 3.14, which has no stable ABI, so its own wheel
+#                      (python_freethreaded_version; empty once 3.14 leaves support)
+#   cp315-abi3.abi3t   PEP 803's abi3t (the crate's PyO3 `abi3t-py315`): 3.15+, free-threaded
+#                      or not
+#
+# build-pyodide-wheel adds the 25th: the same extension for Pyodide in the browser
+# (`pypi-wheels-pyodide`), whose job also runs the binding's whole test suite inside Pyodide,
+# under Node and in headless Chrome.
 #
 # This used to live in each caller's release.yml and run only at the tag, on the reasoning
 # that a wheel bakes its version into its own filename and metadata and CI had no version to
@@ -43,10 +52,26 @@ on:
         required: true
         type: string
       python_version:
-        description: "Python the wheels are installed and called on (the build itself is abi3 and needs no particular one)"
+        description: "CPython with the GIL that builds the abi3 wheel, and that it is installed and called on"
         required: false
         type: string
         default: "3.14"
+      python_freethreaded_version:
+        description: >
+          The free-threaded CPython older than the abi3t floor, which has no stable ABI and so
+          gets a version-specific wheel of its own, installed and called on it. Empty builds
+          none: how a caller drops it once that CPython leaves support.
+        required: false
+        type: string
+        default: "3.14t"
+      python_abi3t_version:
+        description: >
+          The CPython that builds the abi3t wheel: the floor the crate's PyO3 `abi3t-py3XX`
+          feature names. The wheel is installed and called on it and on its free-threaded
+          build.
+        required: false
+        type: string
+        default: "3.15"
       attest:
         description: >
           Emit a signed SLSA build-provenance attestation for each wheel, verifiable with
@@ -110,6 +135,9 @@ jobs:
     env:
       CRATE: ${{ inputs.crate }}
       RID: ${{ matrix.rid }}
+      GIL_PYTHON: ${{ inputs.python_version }}
+      FT_PYTHON: ${{ inputs.python_freethreaded_version }}
+      ABI3T_PYTHON: ${{ inputs.python_abi3t_version }}
     steps:
       - uses: actions/checkout@v7
 
@@ -127,39 +155,140 @@ jobs:
           fi
           arch -x86_64 /usr/bin/true
 
-      # `architecture` is empty on every row but osx-x64, which setup-python reads as the
-      # runner's own.
+      # Every interpreter a wheel is built with or installed on. The musl legs need none of
+      # them: maturin builds those in its own image, and the wheels are installed in
+      # containers. `architecture` is empty on every row but osx-x64, which setup-python
+      # reads as the runner's own. Only the last one, the GIL CPython, goes on PATH; the
+      # others are reached by the paths they report.
       - uses: actions/setup-python@v7
+        id: ft-python
+        if: inputs.python_freethreaded_version != '' && !startsWith(matrix.rid, 'linux-musl-')
+        with:
+          python-version: ${{ inputs.python_freethreaded_version }}
+          architecture: ${{ matrix.python_arch }}
+          update-environment: false
+
+      - uses: actions/setup-python@v7
+        id: abi3t-python
+        if: ${{ !startsWith(matrix.rid, 'linux-musl-') }}
+        with:
+          python-version: ${{ inputs.python_abi3t_version }}
+          architecture: ${{ matrix.python_arch }}
+          update-environment: false
+
+      - uses: actions/setup-python@v7
+        id: abi3t-ft-python
+        if: ${{ !startsWith(matrix.rid, 'linux-musl-') }}
+        with:
+          python-version: ${{ inputs.python_abi3t_version }}t
+          architecture: ${{ matrix.python_arch }}
+          update-environment: false
+
+      - uses: actions/setup-python@v7
+        id: gil-python
         with:
           python-version: ${{ inputs.python_version }}
           architecture: ${{ matrix.python_arch }}
 
-      - uses: PyO3/maturin-action@v1
+      # Two maturin runs, not one with every interpreter: given an abi3t-capable one beside
+      # the GIL CPython, maturin builds abi3t once and makes the GIL wheel version-specific
+      # (cp314-cp314), which loses the abi3 wheel 3.11-3.13 install. On Linux maturin runs in
+      # its own image, where the runner's interpreters don't exist, so they go by name: the
+      # manylinux image has them all under /opt/python, and in the musl cross image, which
+      # has none, maturin uses its own sysconfig for each.
+      - name: Choose the interpreters maturin builds with
+        id: interpreters
+        shell: bash
+        env:
+          GIL_PATH: ${{ steps.gil-python.outputs.python-path }}
+          FT_PATH: ${{ steps.ft-python.outputs.python-path }}
+          ABI3T_PATH: ${{ steps.abi3t-python.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          if [[ "$RID" == linux-* ]]; then
+            abi3="python$GIL_PYTHON"
+            rest="${FT_PYTHON:+python$FT_PYTHON }python$ABI3T_PYTHON"
+          else
+            abi3="$GIL_PATH"
+            rest="${FT_PYTHON:+$FT_PATH }$ABI3T_PATH"
+          fi
+          echo "abi3=$abi3" >> "$GITHUB_OUTPUT"
+          echo "rest=$rest" >> "$GITHUB_OUTPUT"
+
+      - name: Build the abi3 wheel
+        uses: PyO3/maturin-action@v1
         with:
           working-directory: python
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux != '' && matrix.manylinux || 'off' }}
-          args: --release --out dist
+          args: --release --out dist -i ${{ steps.interpreters.outputs.abi3 }}
 
-      # The wheel itself — maturin's packaging, the bundled libraries, the tag pip selects
-      # it by — installed and imported before anything is attested or uploaded.
-      # hyper-build-native.yml tests the extension as a staged library; through 0.3.0 the
-      # wheels went to PyPI without being installed once. The check is small on purpose: the
-      # right backend loaded, and the core inside reports the version in rust/Cargo.toml,
-      # which is also the version in the wheel's file name. The musl wheels are installed on
-      # a bare Alpine image, where a wheel that failed to bundle libgcc_s cannot import.
-      - name: Install the wheel and call into it
+      - name: Build the free-threaded and abi3t wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux != '' && matrix.manylinux || 'off' }}
+          args: --release --out dist -i ${{ steps.interpreters.outputs.rest }}
+
+      # Each wheel itself — maturin's packaging, the bundled libraries, the tag pip selects
+      # it by — installed and imported on every interpreter it is for, before anything is
+      # attested or uploaded. hyper-build-native.yml tests the extension as a staged
+      # library; through 0.3.0 the wheels went to PyPI without being installed once. The
+      # check is small on purpose: the right backend loaded, the core inside reports the
+      # version in rust/Cargo.toml (also the version in the wheel's file name), and the GIL
+      # is off on a free-threaded interpreter after the import, which is the extension
+      # declaring it needs none (an extension that doesn't gets the GIL switched back on,
+      # with a RuntimeWarning, here an error). Each interpreter installs the wheel by its own
+      # path, so pip refuses it outright if its tags don't fit, and its dependencies come
+      # from PyPI: a package depending on another Hyper* one needs that one's free-threaded
+      # wheels published first. Each musl wheel must carry its own libgcc_s, and the abi3 one
+      # is installed on a bare Alpine image, where a wheel without it cannot import. The
+      # abi3t one goes on Alpine's 3.15 image, and the free-threaded installs run on the pypa
+      # musllinux image, since Alpine's python images have no free-threaded build.
+      - name: Install each wheel and call into it
         shell: bash
-        env:
-          PYTHON_VERSION: ${{ inputs.python_version }}
         run: |
           set -euo pipefail
           want=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)
-          ls "python/dist/$CRATE-$want-"*.whl
-          check="import $CRATE; assert $CRATE.BACKEND == 'native', $CRATE.BACKEND; assert $CRATE.native_version() == '$want', $CRATE.native_version(); print('$CRATE', $CRATE.native_version(), 'on the', $CRATE.BACKEND, 'backend')"
+          abi3=$(ls python/dist/"$CRATE-$want"-cp311-abi3-*.whl)
+          abi3t=$(ls python/dist/"$CRATE-$want"-cp3*-abi3.abi3t-*.whl)
+          wheels=(python/dist/*.whl)
+          expected=2
+          if [[ -n "$FT_PYTHON" ]]; then
+            ft_tag="cp${FT_PYTHON%t}"; ft_tag="${ft_tag/./}"
+            ft=$(ls python/dist/"$CRATE-$want-$ft_tag-${ft_tag}t"-*.whl)
+            expected=3
+          fi
+          if [[ "${#wheels[@]}" -ne "$expected" ]]; then
+            echo "::error::Expected $expected wheels, found ${#wheels[@]}: ${wheels[*]}"
+            exit 1
+          fi
+          check() {
+            echo "import sys, $CRATE; assert $CRATE.BACKEND == 'native', $CRATE.BACKEND; assert $CRATE.native_version() == '$want', $CRATE.native_version(); assert getattr(sys, '_is_gil_enabled', lambda: True)() == $1, 'GIL enabled: ' + str(sys._is_gil_enabled()); print('$CRATE', $CRATE.native_version(), 'on', sys.version.split()[0], 'GIL', sys._is_gil_enabled())"
+          }
           if [[ "$RID" == linux-musl-* ]]; then
-            docker run --rm -v "$PWD/python/dist:/dist:ro" "python:$PYTHON_VERSION-alpine" sh -euc \
-              "pip install -q --root-user-action=ignore /dist/*.whl && python -c \"$check\""
+            in_docker() {
+              docker run --rm -v "$PWD/python/dist:/dist:ro" "$1" sh -euc "$2"
+            }
+            for wheel in "${wheels[@]}"; do
+              if ! python -m zipfile -l "$wheel" | grep -q "$CRATE.libs/libgcc_s-"; then
+                echo "::error::$wheel does not bundle libgcc_s"
+                exit 1
+              fi
+            done
+            # Only the GIL image is bare: from 3.15, Alpine's python image links the system
+            # mpdecimal, which brings libstdc++ and libgcc with it.
+            in_docker "python:$GIL_PYTHON-alpine" "if ls /usr/lib/libgcc_s* >/dev/null 2>&1; then echo libgcc is installed, so this run proves nothing; exit 1; fi; pip install -q --root-user-action=ignore /dist/$(basename "$abi3") && python -W error::RuntimeWarning -c \"$(check True)\""
+            in_docker "python:$ABI3T_PYTHON-alpine" "pip install -q --root-user-action=ignore /dist/$(basename "$abi3t") && python -W error::RuntimeWarning -c \"$(check True)\""
+            arch=x86_64; [[ "$RID" == *-arm64 ]] && arch=aarch64
+            pypa=quay.io/pypa/musllinux_1_2_$arch
+            pairs="${ABI3T_PYTHON}t:$(basename "$abi3t")"
+            [[ -n "$FT_PYTHON" ]] && pairs="$FT_PYTHON:$(basename "$ft") $pairs"
+            for pair in $pairs; do
+              v="${pair%%:*}"; v="${v%t}"; tag="cp${v/./}"
+              in_docker "$pypa" "/opt/python/$tag-${tag}t/bin/python -m venv /v && /v/bin/pip install -q /dist/${pair#*:} && /v/bin/python -W error::RuntimeWarning -c \"$(check False)\""
+            done
           else
             # The osx-x64 leg runs on an arm64 runner. setup-python's "x64" macOS build is
             # the python.org installer, which is a universal binary, and a universal binary
@@ -167,12 +296,20 @@ jobs:
             # supported wheel on this platform", the 0.4.0 releases' first run). `arch
             # -x86_64` runs the Intel slice under Rosetta, which is the interpreter this
             # wheel is for.
-            py=(python)
-            if [[ "$RID" == osx-x64 ]]; then py=(arch -x86_64 python); fi
-            "${py[@]}" -c 'import platform, sys; print("smoke-test interpreter:", platform.machine(), sys.version.split()[0])'
-            "${py[@]}" -m pip install --quiet --force-reinstall python/dist/*.whl
-            cd "$RUNNER_TEMP"
-            "${py[@]}" -c "$check"
+            run=()
+            if [[ "$RID" == osx-x64 ]]; then run=(arch -x86_64); fi
+            on() {
+              local name=$1 py=$2 wheel=$3 gil=$4
+              "${run[@]}" "$py" -c 'import platform, sys; print("'"$name"' interpreter:", platform.machine(), sys.version.split()[0])'
+              "${run[@]}" "$py" -m pip install --quiet --force-reinstall "$wheel"
+              (cd "$RUNNER_TEMP" && "${run[@]}" "$py" -W error::RuntimeWarning -c "$(check "$gil")")
+            }
+            on gil "${{ steps.gil-python.outputs.python-path }}" "$abi3" True
+            if [[ -n "$FT_PYTHON" ]]; then
+              on ft "${{ steps.ft-python.outputs.python-path }}" "$ft" False
+            fi
+            on abi3t "${{ steps.abi3t-python.outputs.python-path }}" "$abi3t" True
+            on abi3t-ft "${{ steps.abi3t-ft-python.outputs.python-path }}" "$abi3t" False
           fi
 
       # `pip download` hands a consumer a compiled extension module sealed inside the
