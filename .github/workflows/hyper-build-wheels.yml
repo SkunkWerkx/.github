@@ -295,14 +295,15 @@ jobs:
             # runs its arm64 slice there — where pip rightly refuses an x86_64 wheel ("not a
             # supported wheel on this platform", the 0.4.0 releases' first run). `arch
             # -x86_64` runs the Intel slice under Rosetta, which is the interpreter this
-            # wheel is for.
-            run=()
-            if [[ "$RID" == osx-x64 ]]; then run=(arch -x86_64); fi
+            # wheel is for. A function, not an empty array: macOS ships bash 3.2, where
+            # expanding an empty array under `set -u` is an "unbound variable" error.
+            run() { "$@"; }
+            if [[ "$RID" == osx-x64 ]]; then run() { arch -x86_64 "$@"; }; fi
             on() {
               local name=$1 py=$2 wheel=$3 gil=$4
-              "${run[@]}" "$py" -c 'import platform, sys; print("'"$name"' interpreter:", platform.machine(), sys.version.split()[0])'
-              "${run[@]}" "$py" -m pip install --quiet --force-reinstall "$wheel"
-              (cd "$RUNNER_TEMP" && "${run[@]}" "$py" -W error::RuntimeWarning -c "$(check "$gil")")
+              run "$py" -c 'import platform, sys; print("'"$name"' interpreter:", platform.machine(), sys.version.split()[0])'
+              run "$py" -m pip install --quiet --force-reinstall "$wheel"
+              (cd "$RUNNER_TEMP" && run "$py" -W error::RuntimeWarning -c "$(check "$gil")")
             }
             on gil "${{ steps.gil-python.outputs.python-path }}" "$abi3" True
             if [[ -n "$FT_PYTHON" ]]; then
