@@ -46,6 +46,35 @@ production are separate producers; Apple and Android consumer tests start when
 their own artifacts are ready. PHP extension work runs in parallel through the
 explicit `php_extension_schedule` input; other consumers keep the inline default.
 
+## After publication
+
+Smoke every package from its public registry, in fresh isolated directories, never from
+the checkout: a version probe that reports the new version, then the repo's own corpus or
+test suite run against the installed package. Fan out one check per binding; keep the
+Blazor publish and the free-threaded Python wheels in hand, since those are the ones that
+have failed only on the real registries.
+
+- Attestations: the `.nupkg`, the gems and the jar's inner natives verify with
+  `--repo SkunkWerkx/<Repo>`; the wheels and the natives inside the packages are signed by
+  the Forge's reusable workflows and need `--signer-repo SkunkWerkx/.github` (or
+  `--owner SkunkWerkx`). `gh attestation verify` prints nothing on success when stdout is
+  not a TTY: check the exit code or use `--format json`. Add
+  `--source-digest <the commit the natives were built from>` (A, the parent of B).
+- Where each package carries its native: nupkg `runtimes/<rid>/native`, `staticlibs/<rid>`
+  and `runtimes/browser-wasm/nativeassets/net11.0`; Go
+  `$(go env GOMODCACHE)/github.com/!skunk!werkx/<repo>/go@vX/staticlib/<os_arch>`; Swift
+  `.build/checkouts/<Repo>/swift/<Repo>Core.artifactbundle/<triple>`; PHP
+  `vendor/skunkwerkx/<repo>/php/src/native/<rid>` (Packagist ships the repo zipball).
+- Registry lag is not failure: Maven Central takes 20 to 30 minutes to serve a new
+  version, and PyPI's JSON endpoint can report a stale latest for a few minutes (read
+  `releases["X.Y.Z"]` directly).
+- pip on a 3.15 GIL build picks the `cp315-abi3.abi3t` wheel over `cp311-abi3` by design
+  (PEP 803). `dotnet new blazorwasm -o App` does not compile (the `App` namespace collides
+  with the component); use another name, and prove the missing-workload diagnostic with
+  `-p:WasmNativeWorkloadAvailable=false`.
+- Check an agent's claim against the published artifact before reporting it; the 0.8.0
+  gauntlet produced one false alarm.
+
 ## Recover a failed publication
 
 Prefer rerunning **failed jobs** after a transient failure. A new dispatch is the
