@@ -67,6 +67,9 @@ publishers look for receipts in this run's earlier attempts before
 `PUBLICATION_RUN_ID`, and refuse a fresh upload unless the history of both shows none
 was attempted. Their caller jobs must grant `actions: read` alongside `contents: read`,
 `id-token: write` and `attestations: write`; the publishers declare exactly those.
+The NuGet publisher does not search earlier attempts yet: once nuget.org has accepted a
+package, rerunning failed jobs stops and asks for `publication_run_id`. Dispatch again
+with it naming the run that pushed the package.
 
 Recovery verifies the selected release run, A/B source record, inventory, complete
 file set, hashes, embedded versions and provenance again. It does not require A's

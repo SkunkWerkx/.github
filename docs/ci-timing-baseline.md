@@ -20,7 +20,8 @@ The PHP FFI suites and musl floor tests keep their original conditions. Parallel
 extension builds add a macOS runner and repeat PHP setup; their effect requires a
 new run and is not included in the timing model below.
 
-Forge composites remain the existing seven actions. Each job that calls one
+Forge composites remain the existing seven build and test actions, plus the
+`prepare-crate-package` and `prepare-maven-package` release actions. Each job that calls one
 checks out the consumer at the workspace root and Forge under `.hyperforge` at
 `job.workflow_sha`, then calls the action from that checkout. An absent or mutable
 revision fails before checkout. GitHub documents `job.workflow_repository` and
