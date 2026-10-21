@@ -34,6 +34,10 @@ class FinalizationTests(unittest.TestCase):
         self.subject=self.git(self.repo,'rev-parse','HEAD')
         self.git(self.repo,'tag','-a','v0.10.0','-m','release')
         self.git(self.repo,'push','-q','origin','refs/tags/v0.10.0')
+        # A fresh runner has no Git identity: finalize must supply its own tagger.
+        self.git(self.repo,'config','--unset','user.name')
+        self.git(self.repo,'config','--unset','user.email')
+        self.git(self.repo,'config','user.useConfigOnly','true')
         self.inventory=self.repo/'inventory.json'
         self.inventory.write_text('{"source":"B"}')
         (self.bin/'gh').write_text('''#!/usr/bin/env python3
@@ -56,7 +60,8 @@ if args[:2]==['release','download']:
 ''')
         (self.bin/'gh').chmod(0o755)
         self.env=patch.dict(os.environ,{'PATH':str(self.bin)+os.pathsep+os.environ['PATH'],
-                                      'FAKE_GH_ROOT':str(self.root)})
+                                      'FAKE_GH_ROOT':str(self.root),
+                                      'GIT_CONFIG_GLOBAL':os.devnull,'GIT_CONFIG_NOSYSTEM':'1'})
         self.env.start()
         self.addCleanup(self.env.stop)
 
@@ -78,7 +83,7 @@ if args[:2]==['release','download']:
 
     def test_rejects_existing_go_tag_with_another_subject(self):
         (self.repo/'file').write_text('unrelated')
-        self.git(self.repo,'commit','-am','other','-q')
+        self.git(self.repo,'-c','user.name=test','-c','user.email=test@example.com','commit','-am','other','-q')
         self.git(self.repo,'tag','go/v0.10.0')
         self.git(self.repo,'push','-q','origin','refs/tags/go/v0.10.0')
         with self.assertRaisesRegex(ValueError,'Go tag'):

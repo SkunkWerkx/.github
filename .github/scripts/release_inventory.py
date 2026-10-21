@@ -272,7 +272,9 @@ def finalize(repo, version, subject, inventory):
     if existing and existing != subject:
         raise ValueError('existing Go tag points to a different commit')
     if not existing:
-        subprocess.run(['git','-c','tag.gpgSign=false','tag','-a',go,subject,'-m',f'Go module v{version}'],check=True)
+        subprocess.run(['git','-c','tag.gpgSign=false','-c','user.name=github-actions[bot]',
+                        '-c','user.email=41898282+github-actions[bot]@users.noreply.github.com',
+                        'tag','-a',go,subject,'-m',f'Go module v{version}'],check=True)
         subprocess.run(['git','push','origin',f'refs/tags/{go}'],check=True)
     result = subprocess.run(['gh','release','view',f'v{version}','--repo',repo,'--json','tagName,isDraft,assets'],capture_output=True,text=True)
     if result.returncode:

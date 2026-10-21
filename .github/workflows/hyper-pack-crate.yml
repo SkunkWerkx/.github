@@ -38,30 +38,8 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .hyperforge
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Package the tested crate without a second native build
-        working-directory: ${{ inputs.working_directory }}
-        run: cargo package --locked --no-verify
-
-      - name: Preserve the exact crate and registry request
-        env:
-          CRATE_DIR: ${{ inputs.working_directory }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          crates=("$CRATE_DIR"/target/package/*.crate)
-          [ "${#crates[@]}" -eq 1 ] || { echo "::error::Expected one packaged crate"; exit 1; }
-          python3 .hyperforge/.github/scripts/package_preparation.py crate-prepare "${crates[0]}" crate-package
-
-      - name: Attest the complete prepared crate request
-        uses: actions/attest-build-provenance@v3
+      - name: Package, verify, preserve, attest and upload the exact crate request
+        uses: ./.hyperforge/.github/actions/prepare-crate-package
         with:
-          subject-path: crate-package/*
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ inputs.artifact_name }}
-          path: crate-package
-          if-no-files-found: error
-          retention-days: 90
+          working_directory: ${{ inputs.working_directory }}
+          artifact_name: ${{ inputs.artifact_name }}

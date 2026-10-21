@@ -11,7 +11,6 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import stat
-import struct
 import tarfile
 import tomllib
 from xml.etree import ElementTree as ET
@@ -151,12 +150,9 @@ def rust_crate(path, crate, version):
     metadata = json.loads(metadata_bytes, object_pairs_hook=unique_pairs)
     if metadata.get('name') != crate or metadata.get('vers') != version:
         raise ValueError('crate saved request metadata name/version differs')
-    payload = path.read_bytes()
-    expected = struct.pack('<I', len(metadata_bytes)) + metadata_bytes + struct.pack('<I', len(payload)) + payload
-    if (path.parent / 'upload.bin').read_bytes() != expected:
-        raise ValueError('crate upload request does not contain the preserved metadata and archive')
-    # Apply the publisher's complete dependency/features validation at the global
-    # gate too, so malformed requests cannot fail only after other registries ship.
+    # Apply the publisher's own framing and complete dependency/features validation
+    # at the global gate too, so malformed requests cannot fail only after other
+    # registries ship.
     crate_payload(path.parent)
 
 

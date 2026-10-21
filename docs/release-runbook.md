@@ -42,6 +42,12 @@ Use the appropriate consumer repository. `PACKAGE_RUN_ID` is an exact earlier
 receipts; omit it if no publication was attempted. `ci_run_id`, if supplied, is
 only an assertion of B's recorded CI run and cannot choose a different build.
 
+A recovery dispatch can itself have its failed jobs rerun. The crates.io and Maven
+publishers look for receipts in this run's earlier attempts before
+`PUBLICATION_RUN_ID`, and refuse a fresh upload unless the history of both shows none
+was attempted. Their caller jobs must grant `actions: read` alongside `contents: read`,
+`id-token: write` and `attestations: write`; the publishers declare exactly those.
+
 Recovery verifies the selected release run, A/B source record, inventory, complete
 file set, hashes, embedded versions and provenance again. It does not require A's
 native artifacts to remain downloadable once the complete verified registry inputs

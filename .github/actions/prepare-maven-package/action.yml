@@ -1,0 +1,156 @@
+name: Prepare the signed Maven Central package
+description: >
+  Stages only attestation-verified native (and optionally WASI) bytes from source run A,
+  assembles and signs the local Maven repository without any Central upload task, then
+  saves, attests and uploads the complete bundle. hyper-pack-maven.yml and
+  hyper-publish-maven.yml's legacy path both run this, so prepared and legacy releases
+  cannot drift apart. Writes maven-package/ in the workspace; needs actions:read,
+  id-token:write and attestations:write.
+
+inputs:
+  crate:
+    description: "Lowercase core name (lib{crate}.so / {crate}.dll — matches hyper-build-native.yml's own artifact naming)"
+    required: true
+  java_project_dir:
+    description: "Path to the Java project's own directory (the one with build.gradle.kts)"
+    required: false
+    default: "java"
+  java_resources_dir:
+    description: "Directory to stage native/{rid}/{filename} resources under (e.g. java/src/main/resources/native)"
+    required: true
+  wasip1_module:
+    description: "Also stage the wasm-wasip1-module artifact at {java_resources_dir}/wasm32-wasip1/ ('true'/'false')"
+    required: false
+    default: "false"
+  jdk_version:
+    description: "Temurin major version"
+    required: false
+    default: "25"
+  musl:
+    description: "Also pack the linux-musl-x64 and linux-musl-arm64 libraries ('true'/'false')"
+    required: false
+    default: "true"
+  source_run_id:
+    description: "Exact successful source CI run A"
+    required: true
+  artifact_name:
+    description: "Name of the uploaded prepared package artifact"
+    required: false
+    default: "maven-central-package"
+  signing_key:
+    description: "In-memory PGP signing key"
+    required: true
+  signing_key_password:
+    description: "In-memory PGP signing key password"
+    required: true
+  github_token:
+    description: "Token able to read run A's artifacts and attestations"
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve the reused artifacts' source SHA
+      id: source
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      run: |
+        set -euo pipefail
+        [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Invalid source_run_id"; exit 1; }
+        sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" --jq .head_sha)
+        [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Source run has no valid head_sha"; exit 1; }
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/download-artifact@v8
+      with:
+        pattern: native-*
+        path: artifacts
+        run-id: ${{ inputs.source_run_id }}
+        github-token: ${{ inputs.github_token }}
+
+    - uses: actions/download-artifact@v8
+      if: inputs.wasip1_module == 'true'
+      with:
+        name: wasm-wasip1-module
+        path: artifacts/wasm-wasip1-module
+        run-id: ${{ inputs.source_run_id }}
+        github-token: ${{ inputs.github_token }}
+
+    - name: Stage native/{rid}/{filename} resources
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        CRATE: ${{ inputs.crate }}
+        MUSL: ${{ inputs.musl }}
+        WASIP1_MODULE: ${{ inputs.wasip1_module }}
+        RESOURCES_DIR: ${{ inputs.java_resources_dir }}
+      run: |
+        set -euo pipefail
+        verify() {
+          gh attestation verify "$1" --repo "$GITHUB_REPOSITORY" \
+            --signer-repo SkunkWerkx/.github --source-digest "$SOURCE_SHA"
+        }
+        declare -A LIB_NAMES=(
+          [linux-x64]=lib$CRATE.so
+          [linux-arm64]=lib$CRATE.so
+          [osx-x64]=lib$CRATE.dylib
+          [osx-arm64]=lib$CRATE.dylib
+          [win-x64]=$CRATE.dll
+          [win-arm64]=$CRATE.dll
+        )
+        if [ "$MUSL" = "true" ]; then
+          LIB_NAMES[linux-musl-x64]=lib$CRATE.so
+          LIB_NAMES[linux-musl-arm64]=lib$CRATE.so
+        fi
+        for rid in "${!LIB_NAMES[@]}"; do
+          dest="$RESOURCES_DIR/$rid"
+          mkdir -p "$dest"
+          src="artifacts/native-$rid/${LIB_NAMES[$rid]}"
+          verify "$src"
+          cp "$src" "$dest/"
+        done
+        if [ "$WASIP1_MODULE" = "true" ]; then
+          mkdir -p "$RESOURCES_DIR/wasm32-wasip1"
+          src="artifacts/wasm-wasip1-module/$CRATE.wasm"
+          verify "$src"
+          cp "$src" "$RESOURCES_DIR/wasm32-wasip1/"
+        fi
+
+    - uses: actions/setup-java@v6
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.jdk_version }}
+
+    - name: Assemble and sign the local Maven repository (no Central upload)
+      shell: bash
+      working-directory: ${{ inputs.java_project_dir }}
+      env:
+        ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ inputs.signing_key }}
+        ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ inputs.signing_key_password }}
+        INIT_SCRIPT: ${{ github.action_path }}/../../scripts/release_maven.init.gradle
+      run: ./gradlew --init-script "$INIT_SCRIPT" publishMavenPublicationToReleaseBundleRepository
+
+    - name: Preserve the complete signed Central bundle
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ inputs.java_project_dir }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: python3 "$FORGE_SCRIPTS/package_preparation.py" maven-bundle "$PROJECT_DIR/build/release-maven-repository" maven-package
+
+    - name: Attest the complete prepared Maven package
+      uses: actions/attest-build-provenance@v3
+      with:
+        subject-path: |
+          maven-package/central-bundle.zip
+          maven-package/repository/**/*
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact_name }}
+        path: maven-package
+        if-no-files-found: error
+        retention-days: 90

@@ -32,8 +32,14 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-26.04
-    # Inherit caller permissions: prepared/recovery callers grant actions:read;
-    # existing legacy callers keep their original contents/OIDC/attestation scopes.
+    # Explicit, so a caller's broader grant never reaches the job holding registry
+    # credentials. actions:read is new: receipts and attempt history are read from
+    # this run and any recovered run, so callers must grant it alongside the rest.
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
 
@@ -53,38 +59,11 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .hyperforge
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Package, verify, preserve, attest and upload the exact crate request
         if: inputs.prepared_run_id == ''
-
-      - name: Package the tested crate without a second native build
-        if: inputs.prepared_run_id == ''
-        working-directory: ${{ inputs.working_directory }}
-        run: cargo package --locked --no-verify
-
-      - name: Preserve the exact crate and registry request
-        if: inputs.prepared_run_id == ''
-        env:
-          CRATE_DIR: ${{ inputs.working_directory }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          crates=("$CRATE_DIR"/target/package/*.crate)
-          [ "${#crates[@]}" -eq 1 ] || { echo "::error::Expected one packaged crate"; exit 1; }
-          python3 .hyperforge/.github/scripts/package_preparation.py crate-prepare "${crates[0]}" crate-package
-
-      - name: Attest the complete prepared crate request
-        if: inputs.prepared_run_id == ''
-        uses: actions/attest-build-provenance@v3
+        uses: ./.hyperforge/.github/actions/prepare-crate-package
         with:
-          subject-path: crate-package/*
-
-      - uses: actions/upload-artifact@v7
-        if: inputs.prepared_run_id == ''
-        with:
-          name: crate-package
-          path: crate-package
-          if-no-files-found: error
-          retention-days: 90
+          working_directory: ${{ inputs.working_directory }}
 
       - name: Validate the prepared package run
         if: inputs.prepared_run_id != ''
@@ -123,16 +102,31 @@ jobs:
         id: receipt
         env:
           GH_TOKEN: ${{ github.token }}
-          PRIOR_RUN: ${{ inputs.publication_run_id || github.run_id }}
+          RECOVERY_RUN: ${{ inputs.publication_run_id }}
         run: |
           set -euo pipefail
-          [[ "$PRIOR_RUN" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Invalid publication_run_id"; exit 1; }
-          sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PRIOR_RUN" --jq .head_sha)
-          [ "$sha" = "$GITHUB_SHA" ] || { echo "::error::Receipt run is not this release source B"; exit 1; }
-          name=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$PRIOR_RUN/artifacts" \
-            --jq '[.[].artifacts[] | select(.expired == false) | select(.name | test("^crate-publication-receipt-[0-9]+$"))] | sort_by(.created_at) | last | .name // empty')
+          # Earlier attempts of this run hold newer receipts than any recovered run.
+          runs=("$GITHUB_RUN_ID")
+          if [ -n "$RECOVERY_RUN" ]; then
+            [[ "$RECOVERY_RUN" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Invalid publication_run_id"; exit 1; }
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RECOVERY_RUN" --jq .head_sha)
+            [ "$sha" = "$GITHUB_SHA" ] || { echo "::error::Receipt run is not this release source B"; exit 1; }
+            [ "$RECOVERY_RUN" = "$GITHUB_RUN_ID" ] || runs+=("$RECOVERY_RUN")
+          fi
+          name=
+          run_id=
+          for run in "${runs[@]}"; do
+            # --jq applies per page; gh refuses it together with --slurp.
+            name=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" \
+              --jq '.artifacts[] | select(.expired == false) | select(.name | test("^crate-publication-receipt-[0-9]+$")) | [.created_at, .name] | @tsv' |
+              sort | tail -n 1 | cut -f 2)
+            if [ -n "$name" ]; then
+              run_id=$run
+              break
+            fi
+          done
           echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "run_id=$PRIOR_RUN" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@v8
         if: steps.receipt.outputs.name != ''
@@ -150,7 +144,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
-          PRIOR_PUBLICATION_RUN_ID: ${{ steps.receipt.outputs.run_id }}
+          RECOVERY_RUN_ID: ${{ inputs.publication_run_id }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: python3 .hyperforge/.github/scripts/package_preparation.py crate-publish crate-package publication-receipt/crate.json
 

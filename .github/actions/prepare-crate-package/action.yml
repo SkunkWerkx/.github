@@ -1,0 +1,54 @@
+name: Prepare the exact crates.io package
+description: >
+  Packages the crate once with `cargo package --locked`, saves the .crate with the exact
+  registry request built from it, attests every saved file and uploads them as one
+  artifact. hyper-pack-crate.yml and hyper-publish-crate.yml's legacy path both run this,
+  so prepared and legacy releases cannot drift apart. Writes crate-package/ in the
+  workspace; python3 must already be installed.
+
+inputs:
+  working_directory:
+    description: "Path to the crate's own directory (the one with Cargo.toml)"
+    required: false
+    default: "rust"
+  artifact_name:
+    description: "Name of the uploaded prepared package artifact"
+    required: false
+    default: "crate-package"
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+
+    # Keep cargo's verify build: it compiles the packaged sources on their own, the only
+    # guard against an include/exclude that drops a file the crate needs. crates.io
+    # versions are irreversible, so a crate that does not build must fail here.
+    - name: Package and verify the tested crate
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: cargo package --locked
+
+    - name: Preserve the exact crate and registry request
+      shell: bash
+      env:
+        CRATE_DIR: ${{ inputs.working_directory }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        crates=("$CRATE_DIR"/target/package/*.crate)
+        [ "${#crates[@]}" -eq 1 ] || { echo "::error::Expected one packaged crate"; exit 1; }
+        python3 "$FORGE_SCRIPTS/package_preparation.py" crate-prepare "${crates[0]}" crate-package
+
+    - name: Attest the complete prepared crate request
+      uses: actions/attest-build-provenance@v3
+      with:
+        subject-path: crate-package/*
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact_name }}
+        path: crate-package
+        if-no-files-found: error
+        retention-days: 90

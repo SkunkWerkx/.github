@@ -69,6 +69,17 @@ class Packages(unittest.TestCase):
         self.assertEqual((dest / crate.name).read_bytes(), original)
         self.assertEqual(json.loads((dest / 'metadata.json').read_text()), metadata)
 
+    def test_crate_rejects_alternative_registry_dependencies(self):
+        for dependency in ('registry = "internal"', 'registry-index = "sparse+https://example.com/index/"'):
+            crate = self.root / 'other-1.0.0.crate'
+            manifest = f'[package]\nname="other"\nversion="1.0.0"\n[dependencies.private]\nversion="1"\n{dependency}\n'.encode()
+            with tarfile.open(crate, 'w:gz') as archive:
+                entry = tarfile.TarInfo('other-1.0.0/Cargo.toml')
+                entry.size = len(manifest)
+                archive.addfile(entry, io.BytesIO(manifest))
+            with self.subTest(dependency=dependency), self.assertRaisesRegex(ValueError, 'crates.io dependencies'):
+                self.p.crate_metadata(crate)
+
     def test_crate_rejects_metadata_or_payload_changed_after_preparation(self):
         dest = self.root / 'prepared'
         self.p.prepare_crate(self.crate(), dest)
@@ -262,27 +273,67 @@ class Packages(unittest.TestCase):
         job.update({'conclusion': 'skipped', 'steps': []})
         self.require_unused(records=records)
 
-    def test_other_registry_receipt_does_not_abort_maven_or_crate_reconciliation(self):
+    FAKE_GH = r'''#!/usr/bin/env python3
+import json, os, re, sys
+if '--slurp' in sys.argv and ('--jq' in sys.argv or '-q' in sys.argv):
+    sys.exit('the `--slurp` option is not supported with `--jq` or `--template`')
+if '.head_sha' in sys.argv:
+    print('b' * 40)
+    sys.exit(0)
+run = re.search(r'/runs/([0-9]+)/artifacts', ' '.join(sys.argv))[1]
+for created, name in json.loads(os.environ['RECEIPTS']).get(run, []):
+    print(created + '\t' + name)
+'''
+
+    def locate_receipt(self, registry, receipts, recovery='66'):
+        # The gh double prints what the step's per-page --jq filter would print.
         gh = self.root / 'gh'
-        gh.write_text("#!/usr/bin/env python3\nimport sys\nprint('b'*40 if '.head_sha' in sys.argv else '')\n")
+        gh.write_text(self.FAKE_GH)
         gh.chmod(0o755)
+        workflow = SCRIPT.parents[1] / 'workflows' / f'hyper-publish-{registry}.yml'
+        tail = workflow.read_text().split('      - name: Locate the latest preserved publication receipt\n', 1)[1]
+        lines = []
+        for line in tail.split('        run: |\n', 1)[1].splitlines():
+            if line and not line.startswith('          '):
+                break
+            lines.append(line)
+        script = textwrap.dedent('\n'.join(lines))
+        outputs = self.root / (registry + '-outputs')
+        outputs.unlink(missing_ok=True)
+        result = subprocess.run(['bash', '-c', script], env={**os.environ,
+                                'PATH': str(self.root) + ':' + os.environ['PATH'],
+                                'RECOVERY_RUN': recovery, 'GITHUB_RUN_ID': '77',
+                                'GITHUB_REPOSITORY': 'SkunkWerkx/HyperUuid',
+                                'GITHUB_SHA': 'b' * 40, 'GITHUB_OUTPUT': str(outputs),
+                                'RECEIPTS': json.dumps(receipts)},
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return outputs.read_text()
+
+    def test_other_registry_receipt_does_not_abort_maven_or_crate_reconciliation(self):
         for registry in ('maven', 'crate'):
-            workflow = SCRIPT.parents[1] / 'workflows' / f'hyper-publish-{registry}.yml'
-            tail = workflow.read_text().split('      - name: Locate the latest preserved publication receipt\n', 1)[1]
-            lines = []
-            for line in tail.split('        run: |\n', 1)[1].splitlines():
-                if line and not line.startswith('          '):
-                    break
-                lines.append(line)
-            script = textwrap.dedent('\n'.join(lines))
-            outputs = self.root / (registry + '-outputs')
-            result = subprocess.run(['bash', '-c', script], env={**os.environ,
-                                    'PATH': str(self.root) + ':' + os.environ['PATH'],
-                                    'PRIOR_RUN': '66', 'GITHUB_REPOSITORY': 'SkunkWerkx/HyperUuid',
-                                    'GITHUB_SHA': 'b' * 40, 'GITHUB_OUTPUT': str(outputs)},
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(outputs.read_text(), 'name=\nrun_id=66\n')
+            self.assertEqual(self.locate_receipt(registry, {}), 'name=\nrun_id=\n')
+
+    def test_receipt_lookup_prefers_this_runs_earlier_attempts_over_the_recovered_run(self):
+        for registry in ('maven', 'crate'):
+            name = f'{registry}-publication-receipt-'
+            older = {'66': [['2026-10-20T00:00:00Z', name + '1']]}
+            self.assertEqual(self.locate_receipt(registry, older), f'name={name}1\nrun_id=66\n')
+            both = {**older, '77': [['2026-10-21T02:00:00Z', name + '2'], ['2026-10-21T01:00:00Z', name + '1']]}
+            self.assertEqual(self.locate_receipt(registry, both), f'name={name}2\nrun_id=77\n')
+            self.assertEqual(self.locate_receipt(registry, both, recovery=''), f'name={name}2\nrun_id=77\n')
+
+    def test_recovery_upload_check_covers_this_runs_earlier_attempts_too(self):
+        environment = {'GITHUB_REPOSITORY': 'SkunkWerkx/HyperUuid', 'GITHUB_SHA': 'b' * 40,
+                       'CALLER_WORKFLOW_REF': 'SkunkWerkx/HyperUuid/.github/workflows/release.yml@refs/heads/master',
+                       'GITHUB_RUN_ID': '77', 'GITHUB_RUN_ATTEMPT': '2'}
+        for recovery, checked in (('66', ['77', '66']), ('77', ['77']), ('', ['77'])):
+            with patch.dict(os.environ, {**environment, 'RECOVERY_RUN_ID': recovery}), \
+                    patch.object(self.p, 'require_unattempted_publication') as require:
+                self.p.prior_upload_check('maven')
+            self.assertEqual([call.args[1] for call in require.call_args_list], checked)
+            for call in require.call_args_list:
+                self.assertEqual(call.kwargs, {'current_run_id': '77', 'current_attempt': '2'})
 
     def test_missing_receipt_still_allows_verified_explicit_central_deployment(self):
         package = self.root / 'package'
@@ -341,6 +392,26 @@ class Packages(unittest.TestCase):
             return next(responses)
         with patch.object(self.p, 'request', side_effect=remote):
             self.p.publish_maven(package, receipt, 'secret', sleep=lambda _: None)
+        self.assertEqual(json.loads(receipt.read_text())['state'], 'published')
+
+    def test_maven_requests_publication_once_while_central_still_reports_validated(self):
+        package = self.root / 'package'
+        package.mkdir()
+        (package / 'central-bundle.zip').write_bytes(b'exact bundle')
+        receipt = self.root / 'receipt.json'
+        receipt.write_text(json.dumps({'state': 'uploaded', 'deployment_id': 'deployment-1',
+                                      'bundle_sha256': hashlib.sha256(b'exact bundle').hexdigest()}))
+        phases = iter(['VALIDATED', 'VALIDATED', 'VALIDATED', 'PUBLISHING', 'PUBLISHED'])
+        publishes = []
+        def remote(method, url, **kwargs):
+            if '/status?' in url:
+                return json.dumps({'deploymentState': next(phases)}).encode()
+            self.assertIn('/deployment/deployment-1', url)
+            publishes.append(url)
+            return b''
+        with patch.object(self.p, 'request', side_effect=remote):
+            self.p.publish_maven(package, receipt, 'secret', sleep=lambda _: None)
+        self.assertEqual(len(publishes), 1)
         self.assertEqual(json.loads(receipt.read_text())['state'], 'published')
 
     def test_maven_resume_polls_recorded_deployment_without_uploading_again(self):

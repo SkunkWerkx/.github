@@ -122,10 +122,18 @@ def prior_upload_check(registry):
     if not reference.startswith(repo + '/') or '@' not in reference:
         raise ValueError('Cannot identify the caller publication workflow')
     workflow_path = reference[len(repo) + 1:].split('@', 1)[0]
-    require_unattempted_publication(repo, os.environ['PRIOR_PUBLICATION_RUN_ID'],
-                                   os.environ['GITHUB_SHA'], workflow_path, registry,
-                                   current_run_id=os.environ['GITHUB_RUN_ID'],
-                                   current_attempt=os.environ['GITHUB_RUN_ATTEMPT'])
+    # A recovery run can itself be rerun: an earlier attempt of this run may have
+    # uploaded and lost its receipt, so its history is checked alongside the
+    # recovered run's, never instead of it.
+    current = os.environ['GITHUB_RUN_ID']
+    runs = [current]
+    recovery = os.environ.get('RECOVERY_RUN_ID', '')
+    if recovery and recovery != current:
+        runs.append(recovery)
+    for run_id in runs:
+        require_unattempted_publication(repo, run_id, os.environ['GITHUB_SHA'], workflow_path, registry,
+                                       current_run_id=current,
+                                       current_attempt=os.environ['GITHUB_RUN_ATTEMPT'])
 
 
 def crate_metadata(crate):
@@ -159,7 +167,7 @@ def crate_metadata(crate):
             for section, kind in (('dependencies', 'normal'), ('dev-dependencies', 'dev'), ('build-dependencies', 'build')):
                 for alias, value in table.get(section, {}).items():
                     value = {'version': value} if isinstance(value, str) else value
-                    if 'version' not in value or 'git' in value or 'path' in value or 'registry' in value:
+                    if 'version' not in value or any(key in value for key in ('git', 'path', 'registry', 'registry-index')):
                         raise ValueError('Only normalized crates.io dependencies are supported')
                     metadata['deps'].append({'name': value.get('package', alias), 'version_req': value['version'],
                                              'features': value.get('features', []), 'optional': value.get('optional', False),
@@ -296,7 +304,9 @@ def maven_registry_matches(package):
     return bool(found)
 
 
-def confirm_maven(package, attempts=60, sleep=time.sleep):
+def confirm_maven(package, attempts=120, sleep=time.sleep):
+    # Central reports PUBLISHED before repo1 and its CDN serve every file, and
+    # maven-check has just cached 404s for them; allow up to an hour.
     for attempt in range(attempts):
         try:
             if maven_registry_matches(package):
@@ -305,7 +315,7 @@ def confirm_maven(package, attempts=60, sleep=time.sleep):
             if 'partially visible' not in str(error):
                 raise
         if attempt + 1 < attempts:
-            sleep(10)
+            sleep(30)
     raise TimeoutError('Maven publication is not fully visible; recover using the saved bundle and receipt')
 
 
@@ -350,6 +360,7 @@ def publish_maven(package, receipt, token, deployment_id=None, sleep=time.sleep,
         save(receipt, state)
     deployment_id = state['deployment_id']
     endpoint = 'https://central.sonatype.com/api/v1/publisher/'
+    publish_requested = False
     for _ in range(180):
         status = json.loads(request('POST', endpoint + 'status?id=' + urllib.parse.quote(deployment_id, safe=''), headers=auth))
         phase = status['deploymentState']
@@ -360,10 +371,13 @@ def publish_maven(package, receipt, token, deployment_id=None, sleep=time.sleep,
             save(receipt, state)
             return
         # A status response still naming VALIDATED permits the same transition
-        # on the same deployment ID; this never creates a second upload.
-        if phase == 'VALIDATED':
+        # on the same deployment ID; this never creates a second upload. Request
+        # it once per invocation: Central can keep reporting VALIDATED after
+        # accepting it and may reject a repeated request for the deployment.
+        if phase == 'VALIDATED' and not publish_requested:
             state['state'] = 'publish-in-flight'
             save(receipt, state)
+            publish_requested = True
             request('POST', endpoint + 'deployment/' + urllib.parse.quote(deployment_id, safe=''), headers=auth)
         sleep(10)
     raise TimeoutError('Central deployment is pending; resume using its preserved ID and bundle')
