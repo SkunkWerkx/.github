@@ -241,10 +241,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Build the core's wasm32-wasip1 archive into go/staticlib/wasm
-        uses: SkunkWerkx/.github/.github/actions/static-libs@master
+        uses: ./.hyperforge/.github/actions/static-libs
         with:
           crate: ${{ inputs.crate }}
           project: ${{ inputs.project }}

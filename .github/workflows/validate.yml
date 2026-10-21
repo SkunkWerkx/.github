@@ -1,0 +1,32 @@
+name: Validate shared release workflows
+
+on:
+  pull_request:
+    paths: [".github/**", "docs/**"]
+  push:
+    branches: [master]
+    paths: [".github/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  release-contracts:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Exercise provenance, exact package bytes and recovery contracts
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache: false
+      - name: Install the pinned workflow validator
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Validate workflow syntax, interfaces and dependency graph
+        # This release predates GitHub.com's documented job.workflow_* properties.
+        # Only those two property diagnostics are excluded; runners are configured.
+        run: actionlint -shellcheck= -ignore 'property "workflow_(sha|repository)" is not defined'

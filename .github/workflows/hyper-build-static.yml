@@ -1,0 +1,62 @@
+name: HyperForge — build static libraries
+
+on:
+  workflow_call:
+    inputs:
+      crate:
+        description: "Lowercase Rust core crate name"
+        type: string
+        required: true
+      project:
+        description: "PascalCase binding project name"
+        type: string
+        required: true
+      mode:
+        description: "Release signs artifacts; pr only builds and tests"
+        type: string
+        default: release
+      attest_native:
+        description: "Sign build provenance (requires id-token and attestations write)"
+        type: boolean
+        default: true
+      apple_mobile:
+        description: "Include iOS, simulator and Mac Catalyst archives"
+        type: boolean
+        default: false
+      android:
+        description: "Include Android archives"
+        type: boolean
+        default: false
+
+jobs:
+  build-static-libs:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build, upload and attest the static libraries
+        uses: ./.hyperforge/.github/actions/static-libs
+        with:
+          crate: ${{ inputs.crate }}
+          project: ${{ inputs.project }}
+          apple_mobile: ${{ inputs.apple_mobile }}
+          android: ${{ inputs.android }}
+          upload: "true"
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}

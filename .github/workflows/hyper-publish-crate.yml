@@ -1,109 +1,164 @@
 name: HyperForge — publish Rust core to crates.io
 
-# Companion to hyper-build-native.yml: where that one builds and tests the core on every
-# platform, this one publishes it. Unlike the NuGet/Maven pack jobs (which bundle every
-# platform's native artifact and so need build-native's output first), a crates.io publish
-# ships source only — no native artifact, no matrix, just one `cargo publish` from a single
-# runner. Reusable as-is by any Hyper* project with a rust/-shaped core crate.
-#
-# Publishing is tokenless — crates.io Trusted Publishing, OIDC. A crate has to be registered
-# as a trusted publisher on crates.io before this works, and that registration can only be
-# made after the crate already exists, so a brand-new crate needs one manual token publish
-# first. See the bootstrap row in this repo's README ledger.
-
+# Keep this file and jobs.publish: crates.io Trusted Publishing is registered
+# against this executing workflow. No cargo publish/repack occurs after assembly.
 on:
   workflow_call:
     inputs:
       working_directory:
-        description: "Path to the crate's own directory (the one with Cargo.toml)"
         required: false
         type: string
         default: "rust"
+      prepared_artifact_name:
+        description: "Prepared package artifact name (the caller may re-upload a globally verified copy)"
+        required: false
+        type: string
+        default: "crate-package"
+      prepared_run_id:
+        description: "Run holding crate-package attested on this SHA B; empty preserves prepare then publish"
+        required: false
+        type: string
+        default: ""
+      publication_run_id:
+        description: "Prior release attempt holding a crates.io upload receipt"
+        required: false
+        type: string
+        default: ""
     secrets:
-      # Legacy, and no longer read — publishing goes through crates.io Trusted Publishing
-      # (OIDC) below, so there is no stored token to leak or rotate. Kept declared, and
-      # optional, purely so a caller that still passes it stays valid: a `secrets:` block
-      # naming an undeclared secret is a workflow-level validation error, which would break
-      # every caller the instant this file landed. Drop the block from your caller at leisure,
-      # then this declaration can go.
       CARGO_REGISTRY_TOKEN:
+        description: "Legacy declaration only; publishing uses OIDC"
         required: false
 
 jobs:
   publish:
     runs-on: ubuntu-26.04
-    # attest-build-provenance mints an OIDC token to sign with and records the result. A
-    # reusable workflow can never escalate past what its caller was granted, so the caller's
-    # own `pack-crates` job has to hand these down too.
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
+    # Inherit caller permissions: prepared/recovery callers grant actions:read;
+    # existing legacy callers keep their original contents/OIDC/attestation scopes.
     steps:
       - uses: actions/checkout@v7
 
+      - name: Require the exact executing Forge revision
+        env:
+          FORGE_SHA: ${{ job.workflow_sha }}
+          FORGE_REPOSITORY: ${{ job.workflow_repository }}
+        run: |
+          set -euo pipefail
+          [[ "$FORGE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Executing Forge SHA is missing or invalid"; exit 1; }
+          [ "$FORGE_REPOSITORY" = SkunkWerkx/.github ] || { echo "::error::Unexpected executing Forge repository"; exit 1; }
+
+      - name: Check out the exact executing Forge revision
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+
       - uses: dtolnay/rust-toolchain@stable
+        if: inputs.prepared_run_id == ''
 
-      # --locked: package exactly what Cargo.lock pins, not a fresh re-resolution against
-      # whatever's newest on crates.io the moment this runs.
-      #
-      # Packaged as its own step, BEFORE the upload, so the attestation below can run while
-      # the release is still reversible. This used to be a single `cargo publish --locked`
-      # with the attestation after it, and the ordering was the bug: a crates.io publish is
-      # irreversible — yank hides a version, it never deletes one, and the number can never
-      # be reused. So an attestation failure after the upload left the crate published and
-      # unsigned with no way to retry that version. Exactly that happened on HyperUuid
-      # v0.2.0, where the attest step could not find the .crate at all and 0.2.0 went out
-      # unattested.
-      - name: cargo package
+      - name: Package the tested crate without a second native build
+        if: inputs.prepared_run_id == ''
         working-directory: ${{ inputs.working_directory }}
-        run: cargo package --locked
+        run: cargo package --locked --no-verify
 
-      # Attested BEFORE the push, over the .crate `cargo package` just wrote. A failure here
-      # costs nothing but a re-run; the same failure after `cargo publish` would be permanent.
-      #
-      # Attesting the packaged file rather than the uploaded one is sound because a .crate is
-      # byte-identical wherever it is produced, and `cargo publish` below re-packages from the
-      # same locked inputs. Measured twice, not assumed: `cargo package --locked` on a local
-      # cargo 1.98.0 reproduces
-      #
-      #     244296a60c6e1fff1c53fccc045a0d112af5b9a6d94eb27b59b08ed27ce360ac   (v0.1.1)
-      #     10cd57c50b84cc1b06be953c3b7fcea4efa993d2b60ab18c338153e496f4c573   (v0.2.0)
-      #
-      # each byte-for-byte the `cksum` crates.io's own index records and the digest
-      # static.crates.io serves. So unlike NuGet — where nuget.org's repository signature
-      # rewrites the package and forces the two-layer dance in hyper-pack-nuget.yml, and where
-      # the published-artifact attestation genuinely has to come after the push — one
-      # attestation here covers the bytes a consumer downloads. crates.io structurally cannot
-      # rewrite them: cargo verifies every download against that index cksum.
-      #
-      #     gh attestation verify <crate>-<version>.crate \
-      #       --repo <owner>/<repo> --signer-repo SkunkWerkx/.github
-      #
-      # --signer-repo because this signing step lives here in the forge, same as everything
-      # hyper-build-native.yml signs.
-      - name: Attest the .crate before publishing it
+      - name: Preserve the exact crate and registry request
+        if: inputs.prepared_run_id == ''
+        env:
+          CRATE_DIR: ${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          crates=("$CRATE_DIR"/target/package/*.crate)
+          [ "${#crates[@]}" -eq 1 ] || { echo "::error::Expected one packaged crate"; exit 1; }
+          python3 .hyperforge/.github/scripts/package_preparation.py crate-prepare "${crates[0]}" crate-package
+
+      - name: Attest the complete prepared crate request
+        if: inputs.prepared_run_id == ''
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: ${{ inputs.working_directory }}/target/package/*.crate
+          subject-path: crate-package/*
 
-      # Trusted Publishing: exchange this job's OIDC identity for a short-lived crates.io
-      # token, scoped to this crate and revoked by the action's own post step when the job
-      # ends. No stored CARGO_REGISTRY_TOKEN, so nothing to rotate and nothing to leak.
-      #
-      # Needs no new permission — `id-token: write` is already granted above for
-      # attest-build-provenance, and the same token serves both.
-      #
-      # Deliberately AFTER the attestation: this is the first step that can touch crates.io,
-      # and everything that can fail should fail before it.
+      - uses: actions/upload-artifact@v7
+        if: inputs.prepared_run_id == ''
+        with:
+          name: crate-package
+          path: crate-package
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Validate the prepared package run
+        if: inputs.prepared_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.prepared_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Invalid prepared_run_id"; exit 1; }
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .head_sha)
+          [ "$sha" = "$GITHUB_SHA" ] || { echo "::error::Prepared package run is not this release source B"; exit 1; }
+
+      - uses: actions/download-artifact@v8
+        if: inputs.prepared_run_id != ''
+        with:
+          name: ${{ inputs.prepared_artifact_name }}
+          path: crate-package
+          run-id: ${{ inputs.prepared_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify every prepared file against this release source B
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [ -f crate-package/upload.bin ]
+          count=0
+          while IFS= read -r -d '' file; do
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
+              --signer-repo SkunkWerkx/.github --source-digest "$GITHUB_SHA"
+            count=$((count + 1))
+          done < <(find crate-package -type f -print0)
+          [ "$count" -eq 3 ] || { echo "::error::Incomplete prepared crate request"; exit 1; }
+
+      - name: Locate the latest preserved publication receipt
+        id: receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIOR_RUN: ${{ inputs.publication_run_id || github.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$PRIOR_RUN" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Invalid publication_run_id"; exit 1; }
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PRIOR_RUN" --jq .head_sha)
+          [ "$sha" = "$GITHUB_SHA" ] || { echo "::error::Receipt run is not this release source B"; exit 1; }
+          name=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$PRIOR_RUN/artifacts" \
+            --jq '[.[].artifacts[] | select(.expired == false) | select(.name | test("^crate-publication-receipt-[0-9]+$"))] | sort_by(.created_at) | last | .name // empty')
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "run_id=$PRIOR_RUN" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v8
+        if: steps.receipt.outputs.name != ''
+        with:
+          name: ${{ steps.receipt.outputs.name }}
+          path: publication-receipt
+          run-id: ${{ steps.receipt.outputs.run_id }}
+          github-token: ${{ github.token }}
+
       - name: Authenticate to crates.io (Trusted Publishing)
         id: auth
         uses: rust-lang/crates-io-auth-action@v1
 
-      # --no-verify: `cargo package` above already ran the verify build, and repeating it here
-      # would compile the crate a second time for no added signal.
-      - name: cargo publish
-        working-directory: ${{ inputs.working_directory }}
+      - name: Publish the preserved crate request
         env:
+          GH_TOKEN: ${{ github.token }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          PRIOR_PUBLICATION_RUN_ID: ${{ steps.receipt.outputs.run_id }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: cargo publish --locked --no-verify
+        run: python3 .hyperforge/.github/scripts/package_preparation.py crate-publish crate-package publication-receipt/crate.json
+
+      - name: Preserve the crates.io receipt even after a lost response
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: crate-publication-receipt-${{ github.run_attempt }}
+          path: publication-receipt/crate.json
+          if-no-files-found: ignore
+          retention-days: 90

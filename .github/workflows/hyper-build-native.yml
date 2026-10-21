@@ -254,6 +254,10 @@ on:
         required: false
         type: boolean
         default: true
+      php_extension_schedule:
+        description: "Where to build release-mode ext-php-rs extensions: inline (legacy behavior) or parallel (separate unix jobs). PHP ext-ffi suites and floor checks always retain their current coverage."
+        type: string
+        default: inline
       php:
         description: "Run the PHP binding's suite (ext-ffi) on every leg and on Alpine, and, in release mode, build the ext-php-rs extension (the crate's `php` feature)"
         required: false
@@ -305,6 +309,18 @@ on:
         required: false
         type: string
         default: "6.4"
+      static_libs_artifact:
+        description: "Build and upload the full static-libs artifact here; false when the caller runs hyper-build-static.yml separately. Local per-leg static link tests remain controlled by static_libs."
+        type: boolean
+        default: true
+      swift_static_tests:
+        description: "Run the Swift static artifact suite here; false when the caller invokes hyper-test-swift-static.yml after its separate producer."
+        type: boolean
+        default: true
+      android_shared_artifact:
+        description: "Build Android shared artifacts here; false when the caller runs hyper-build-android.yml separately. Android static archives remain controlled by android."
+        type: boolean
+        default: true
       static_libs:
         description: >
           Three bindings link the core rather than load it, each from a no_std static library:
@@ -459,7 +475,32 @@ jobs:
             shard: swift-ruby
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Validate PHP extension schedule
+        shell: bash
+        env:
+          PHP_EXTENSION_SCHEDULE: ${{ inputs.php_extension_schedule }}
+        run: |
+          case "$PHP_EXTENSION_SCHEDULE" in
+            inline|parallel) ;;
+            *) echo "::error::php_extension_schedule must be inline or parallel"; exit 1 ;;
+          esac
+
       - uses: actions/checkout@v7
+
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -589,7 +630,7 @@ jobs:
       # What ships is the build-static-libs job's output, not this.
       - name: Build this leg's static libraries
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
-        uses: SkunkWerkx/.github/.github/actions/static-libs@master
+        uses: ./.hyperforge/.github/actions/static-libs
         with:
           crate: ${{ inputs.crate }}
           project: ${{ inputs.project }}
@@ -989,9 +1030,8 @@ jobs:
       #     Windows path gates on `#![feature(abi_vectorcall)]`, nightly-only, and every leg
       #     here builds on stable — confirmed by a real E0554 failure on win-x64, not assumed.
       #
-      # ext-php-rs used to be gated behind a `php_native_spike` input, defaulting true. The
-      # spike answered its question, so the flag is gone and the build is unconditional on the
-      # platforms that can do it — one less knob, and no caller was setting it.
+      # php_extension_schedule defaults to inline for existing callers. A caller may opt
+      # into parallel to build and load-check the same unix extensions in their own jobs.
       #
       # Ordering note, since it is load-bearing and invisible: `--features php` overwrites
       # rust/target/release/, so this section must stay AFTER everything that reads from
@@ -1057,7 +1097,7 @@ jobs:
       # unnoticed, and the weekly release-mode run is enough to notice.
 
       - name: Build PHP (ext-php-rs) extension
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.mode != 'pr' }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.php_extension_schedule == 'inline' && inputs.mode != 'pr' }}
         working-directory: rust
         run: cargo rustc --release --crate-type cdylib --features php
 
@@ -1073,7 +1113,7 @@ jobs:
       # because byte-identical native libraries across a caller's php/, go/ and swift/ trees
       # are what let one committed git blob serve three bindings under one attestation.
       - name: Stage PHP (ext-php-rs) extension
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.mode != 'pr' }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.php_extension_schedule == 'inline' && inputs.mode != 'pr' }}
         shell: bash
         run: |
           mkdir -p php-ext
@@ -1090,7 +1130,7 @@ jobs:
       # its own saying so. The module name ext-php-rs registers is CARGO_PKG_NAME, which is
       # what `crate` already is.
       - name: Load-check the PHP extension, and record the ABI it is pinned to
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.mode != 'pr' }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.php_extension_schedule == 'inline' && inputs.mode != 'pr' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1101,7 +1141,7 @@ jobs:
               -r 'exit(extension_loaded("${{ inputs.crate }}") ? 0 : 1);'
 
       - uses: actions/upload-artifact@v7
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.mode != 'pr' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.php_extension_schedule == 'inline' && inputs.mode != 'pr' }}
         with:
           name: php-native-${{ matrix.rid }}
           path: php-ext/${{ inputs.crate }}.so
@@ -1115,7 +1155,7 @@ jobs:
       # and the same fork-PR gate, since a fork's token cannot sign.
       - name: Attest PHP (ext-php-rs) extension provenance
         if: >-
-          matrix.shard != 'swift-ruby' && inputs.php && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' &&
+          matrix.shard != 'swift-ruby' && inputs.php && inputs.php_extension_schedule == 'inline' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' &&
           inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
@@ -1246,7 +1286,7 @@ jobs:
 
       - name: Ruby (Magnus) — compat ABI
         if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' && inputs.mode != 'pr' && inputs.ruby }}
-        uses: SkunkWerkx/.github/.github/actions/ruby-magnus@master
+        uses: ./.hyperforge/.github/actions/ruby-magnus
         with:
           ruby-version: ${{ inputs.ruby_compat_version }}
           crate: ${{ inputs.crate }}
@@ -1255,7 +1295,7 @@ jobs:
 
       - name: Ruby (Magnus) — primary ABI
         if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby }}
-        uses: SkunkWerkx/.github/.github/actions/ruby-magnus@master
+        uses: ./.hyperforge/.github/actions/ruby-magnus
         with:
           ruby-version: ${{ inputs.ruby_version }}
           crate: ${{ inputs.crate }}
@@ -1390,92 +1430,12 @@ jobs:
   # here but by build-static-libs, which needs no NDK.
   # ===========================================================================
   build-native-android:
-    if: inputs.android
-    runs-on: ubuntu-26.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - rid: android-arm64
-            target: aarch64-linux-android
-            linker_env: CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER
-            clang: aarch64-linux-android21-clang
-            machine: AArch64
-          - rid: android-x64
-            target: x86_64-linux-android
-            linker_env: CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER
-            clang: x86_64-linux-android21-clang
-            machine: X86-64
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Locate the NDK
-        run: |
-          set -euo pipefail
-          ndk="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"
-          [ -d "$ndk" ] || { echo "::error::no Android NDK on this runner (ANDROID_NDK_LATEST_HOME, ANDROID_NDK_HOME)"; exit 1; }
-          bin="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          [ -x "$bin/${{ matrix.clang }}" ] || { echo "::error::$bin/${{ matrix.clang }} not found"; exit 1; }
-          echo "NDK: $ndk ($(sed -n 's/^Pkg.Revision = //p' "$ndk/source.properties"))"
-          echo "ANDROID_NDK_BIN=$bin" >> "$GITHUB_ENV"
-          echo "${{ matrix.linker_env }}=$bin/${{ matrix.clang }}" >> "$GITHUB_ENV"
-
-      # The 16 KB flag explicitly: NDK r28 and later default to it, but the runner image
-      # decides which NDK this is.
-      - name: Build native core for ${{ matrix.rid }} (release)
-        working-directory: rust
-        run: cargo cdylib --target ${{ matrix.target }} -- -C link-arg=-Wl,-z,max-page-size=16384
-
-      - name: Check the library — architecture, 16 KB alignment, exports
-        run: |
-          set -euo pipefail
-          lib="rust/target/${{ matrix.target }}/release/lib${{ inputs.crate }}.so"
-          readelf="$ANDROID_NDK_BIN/llvm-readelf"
-          machine="$("$readelf" -h "$lib" | sed -n 's/^ *Machine: *//p')"
-          echo "machine: $machine"
-          case "$machine" in
-            *"${{ matrix.machine }}"*) ;;
-            *) echo "::error::expected ${{ matrix.machine }}, got $machine"; exit 1 ;;
-          esac
-          # Align is the last column; the flags before it can be one word or two (R, R E).
-          while read -r kind rest; do
-            [ "$kind" = LOAD ] || continue
-            align="${rest##* }"
-            echo "LOAD align $align"
-            [ $((align)) -ge 16384 ] \
-              || { echo "::error::a LOAD segment is aligned to $align, below 16 KB; the library will not load on a 16 KB-page device"; exit 1; }
-          done < <("$readelf" -lW "$lib")
-          "$readelf" -d "$lib" | grep NEEDED || true
-          exports="$("$readelf" --dyn-syms -W "$lib" | awk '$5 == "GLOBAL" && $7 != "UND" { print $8 }' | sort -u)"
-          printf '%s\n' "$exports"
-          printf '%s\n' "$exports" | grep -qx "${{ inputs.crate }}_version" \
-            || { echo "::error::${{ inputs.crate }}_version is not exported"; exit 1; }
-          count="$(printf '%s\n' "$exports" | grep -cvx "${{ inputs.crate }}_version" || true)"
-          echo "exports besides ${{ inputs.crate }}_version: $count"
-          [ "$count" -gt 0 ] || { echo "::error::no exports besides ${{ inputs.crate }}_version"; exit 1; }
-
-      - name: Collect native artifact
-        run: |
-          mkdir -p out
-          cp "rust/target/${{ matrix.target }}/release/lib${{ inputs.crate }}.so" "out/lib${{ inputs.crate }}.so"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: native-${{ matrix.rid }}
-          path: out/lib${{ inputs.crate }}.so
-
-      - name: Attest native build provenance
-        if: >-
-          inputs.attest_native && inputs.mode != 'pr' &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-path: out/lib${{ inputs.crate }}.so
+    if: inputs.android && inputs.android_shared_artifact
+    uses: ./.github/workflows/hyper-build-android.yml
+    with:
+      crate: ${{ inputs.crate }}
+      mode: ${{ inputs.mode }}
+      attest_native: ${{ inputs.attest_native }}
 
   # ===========================================================================
   # musl — linux-musl-x64 and linux-musl-arm64, built and tested inside Alpine.
@@ -1523,11 +1483,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
       # The crate's own suite runs inside the container as part of this step; see
       # build-musl.sh for the three linker facts it encodes.
       - name: Build, test, upload and attest the core
         id: native_lib
-        uses: SkunkWerkx/.github/.github/actions/musl-native@master
+        uses: ./.hyperforge/.github/actions/musl-native
         with:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
@@ -1544,7 +1519,7 @@ jobs:
 
       - name: Build this leg's static library
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
-        uses: SkunkWerkx/.github/.github/actions/static-libs@master
+        uses: ./.hyperforge/.github/actions/static-libs
         with:
           crate: ${{ inputs.crate }}
           project: ${{ inputs.project }}
@@ -1577,7 +1552,7 @@ jobs:
 
       - name: C# on Alpine (suite + Native AOT)
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_runtimes_dir != '' && inputs.csharp }}
-        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        uses: ./.hyperforge/.github/actions/musl-suite
         with:
           binding: csharp
           crate: ${{ inputs.crate }}
@@ -1589,7 +1564,7 @@ jobs:
 
       - name: Java on Alpine (FFM suite + smoke program)
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java }}
-        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        uses: ./.hyperforge/.github/actions/musl-suite
         with:
           binding: java
           crate: ${{ inputs.crate }}
@@ -1599,7 +1574,7 @@ jobs:
 
       - name: Go on Alpine (the core linked in, then with libgcc removed)
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
-        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        uses: ./.hyperforge/.github/actions/musl-suite
         with:
           binding: go
           crate: ${{ inputs.crate }}
@@ -1608,7 +1583,7 @@ jobs:
 
       - name: PHP on Alpine
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.php }}
-        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        uses: ./.hyperforge/.github/actions/musl-suite
         with:
           binding: php
           crate: ${{ inputs.crate }}
@@ -1617,7 +1592,7 @@ jobs:
 
       - name: PHP on Alpine — the declared floor
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.php_floor_version != '' && inputs.php_floor_version != inputs.php_version && inputs.php }}
-        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        uses: ./.hyperforge/.github/actions/musl-suite
         with:
           binding: php
           crate: ${{ inputs.crate }}
@@ -1628,7 +1603,7 @@ jobs:
       # Alpine image and runs the suite on a bare copy of it — see build-magnus-musl.sh.
       - name: Ruby (Magnus) on Alpine — compat ABI
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby_compat_version != '' && inputs.mode != 'pr' && inputs.ruby }}
-        uses: SkunkWerkx/.github/.github/actions/ruby-magnus-musl@master
+        uses: ./.hyperforge/.github/actions/ruby-magnus-musl
         with:
           ruby-version: ${{ inputs.ruby_compat_version }}
           crate: ${{ inputs.crate }}
@@ -1637,7 +1612,7 @@ jobs:
 
       - name: Ruby (Magnus) on Alpine — primary ABI
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.magnus && inputs.ruby }}
-        uses: SkunkWerkx/.github/.github/actions/ruby-magnus-musl@master
+        uses: ./.hyperforge/.github/actions/ruby-magnus-musl
         with:
           ruby-version: ${{ inputs.ruby_version }}
           crate: ${{ inputs.crate }}
@@ -1646,7 +1621,7 @@ jobs:
 
       - name: Ruby on Alpine (Fiddle)
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.ruby }}
-        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        uses: ./.hyperforge/.github/actions/musl-suite
         with:
           binding: ruby
           crate: ${{ inputs.crate }}
@@ -1655,7 +1630,7 @@ jobs:
 
       - name: Ruby on Alpine (Fiddle) — the declared floor
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.ruby_floor_version != '' && inputs.ruby_floor_version != inputs.ruby_version && inputs.ruby }}
-        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        uses: ./.hyperforge/.github/actions/musl-suite
         with:
           binding: ruby
           crate: ${{ inputs.crate }}
@@ -1666,7 +1641,7 @@ jobs:
       # with no compiler and no libgcc — see suite-musl.sh.
       - name: Python on Alpine (musllinux wheel on a bare image)
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.pyo3 }}
-        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        uses: ./.hyperforge/.github/actions/musl-suite
         with:
           binding: python
           crate: ${{ inputs.crate }}
@@ -1675,7 +1650,7 @@ jobs:
 
       - name: Python on Alpine — the declared floor
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.pyo3 && inputs.python_floor_version != '' && inputs.python_floor_version != inputs.python_version }}
-        uses: SkunkWerkx/.github/.github/actions/musl-suite@master
+        uses: ./.hyperforge/.github/actions/musl-suite
         with:
           binding: python
           crate: ${{ inputs.crate }}
@@ -1728,63 +1703,30 @@ jobs:
   # of the musl job builds its own target's archive first and links it in its own suite.
   # ===========================================================================
   build-static-libs:
-    if: inputs.static_libs
-    runs-on: ubuntu-26.04
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Build, upload and attest the static libraries
-        uses: SkunkWerkx/.github/.github/actions/static-libs@master
-        with:
-          crate: ${{ inputs.crate }}
-          project: ${{ inputs.project }}
-          apple_mobile: ${{ inputs.apple_mobile }}
-          android: ${{ inputs.android }}
-          upload: "true"
-          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: inputs.static_libs && inputs.static_libs_artifact
+    uses: ./.github/workflows/hyper-build-static.yml
+    with:
+      crate: ${{ inputs.crate }}
+      project: ${{ inputs.project }}
+      apple_mobile: ${{ inputs.apple_mobile }}
+      android: ${{ inputs.android }}
+      attest_native: ${{ inputs.attest_native }}
+      mode: ${{ inputs.mode }}
 
   test-swift-static:
     needs: build-static-libs
-    if: inputs.swift
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-26.04, ubuntu-26.04-arm]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
+    if: inputs.swift && inputs.swift_static_tests
+    uses: ./.github/workflows/hyper-test-swift-static.yml
+    with:
+      project: ${{ inputs.project }}
+      swift_version: ${{ inputs.swift_version }}
+      swift_floor_version: ${{ inputs.swift_floor_version }}
 
-      # Over the checkout: the artifact is laid out by repository path, so the Swift bundle's
-      # archives and info.json land in the bundle, beside the header and module map that are
-      # source.
-      - uses: actions/download-artifact@v8
-        with:
-          name: static-libs
-          path: .
-
-      # The two SDKs are 380 MB per Swift version. They are immutable once published, so the
-      # key is the versions and nothing else.
-      - uses: actions/cache@v6
-        with:
-          path: ~/.cache/hyper-swift-sdk
-          key: swift-sdk-${{ runner.arch }}-${{ inputs.swift_version }}-${{ inputs.swift_floor_version }}
-
-      # browser-wasm on x64 only, where the runner image's Chrome is the one the other
-      # browser checks (hyper-build-wasm.yml) already run on; the module is the same bytes
-      # on either architecture.
-      - name: Swift ${{ inputs.swift_version }} — glibc consumer, musl, WebAssembly and the browser
-        uses: SkunkWerkx/.github/.github/actions/swift-static-suite@master
-        with:
-          project: ${{ inputs.project }}
-          swift-version: ${{ inputs.swift_version }}
-          checks: smoke-glibc smoke-musl test-wasm smoke-wasm ${{ matrix.os == 'ubuntu-26.04' && 'browser-wasm' || '' }}
-
-      - name: Swift ${{ inputs.swift_floor_version }} — the declared floor, on glibc, musl and WebAssembly
-        if: ${{ !cancelled() && inputs.swift_floor_version != '' && inputs.swift_floor_version != inputs.swift_version }}
-        uses: SkunkWerkx/.github/.github/actions/swift-static-suite@master
-        with:
-          project: ${{ inputs.project }}
-          swift-version: ${{ inputs.swift_floor_version }}
-          checks: test smoke-glibc smoke-musl smoke-wasm
+  build-php-extension:
+    if: inputs.php && inputs.mode != 'pr' && inputs.php_extension_schedule == 'parallel'
+    uses: ./.github/workflows/hyper-build-php-extension.yml
+    with:
+      crate: ${{ inputs.crate }}
+      mode: ${{ inputs.mode }}
+      php_version: ${{ inputs.php_version }}
+      attest_native: ${{ inputs.attest_native }}
