@@ -1,0 +1,11 @@
+// The Central plugin uploads at end-of-build when its Central tasks execute.
+// A distinct file repository builds/signs the publication without registering
+// that upload. Never use the aggregate `publish` task for release preparation.
+allprojects {
+    plugins.withId('maven-publish') {
+        publishing.repositories.maven {
+            name = 'ReleaseBundle'
+            url = rootProject.layout.buildDirectory.dir('release-maven-repository').get().asFile.toURI()
+        }
+    }
+}

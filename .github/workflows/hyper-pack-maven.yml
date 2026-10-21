@@ -1,0 +1,89 @@
+name: HyperForge — prepare the signed Maven Central package
+
+# Package assembly on B reuses only verified native bytes from A. No registry
+# credentials or upload tasks are available to this job.
+on:
+  workflow_call:
+    inputs:
+      crate:
+        description: "Lowercase core name (lib{crate}.so / {crate}.dll — matches hyper-build-native.yml's own artifact naming)"
+        required: true
+        type: string
+      java_project_dir:
+        description: "Path to the Java project's own directory (the one with build.gradle.kts)"
+        required: false
+        type: string
+        default: "java"
+      java_resources_dir:
+        description: "Directory to stage native/{rid}/{filename} resources under before publishing (e.g. java/src/main/resources/native)"
+        required: true
+        type: string
+      wasip1_module:
+        description: "Also stage the wasm-wasip1-module artifact at {java_resources_dir}/wasm32-wasip1/ (the in-process GraalWasm backend's module)"
+        required: false
+        type: boolean
+        default: false
+      jdk_version:
+        description: "Temurin major version — matches hyper-build-native.yml's own pin, the Java bindings' floor"
+        required: false
+        type: string
+        default: "25"
+      musl:
+        description: "Also pack the linux-musl-x64 and linux-musl-arm64 libraries (hyper-build-native.yml's `musl` input, which must have been on for the source run)"
+        required: false
+        type: boolean
+        default: true
+      source_run_id:
+        description: "Exact successful source CI run A (validated by the caller)"
+        required: true
+        type: string
+      artifact_name:
+        required: false
+        type: string
+        default: "maven-central-package"
+    secrets:
+      MAVEN_SIGNING_KEY:
+        required: true
+      MAVEN_SIGNING_KEY_PASSWORD:
+        required: true
+
+jobs:
+  pack:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Require the exact executing Forge revision
+        env:
+          FORGE_SHA: ${{ job.workflow_sha }}
+          FORGE_REPOSITORY: ${{ job.workflow_repository }}
+        run: |
+          set -euo pipefail
+          [[ "$FORGE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Executing Forge SHA is missing or invalid"; exit 1; }
+          [ "$FORGE_REPOSITORY" = SkunkWerkx/.github ] || { echo "::error::Unexpected executing Forge repository"; exit 1; }
+
+      - name: Check out the exact executing Forge revision
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+
+      - name: Stage verified natives, then assemble, sign, attest and upload the bundle
+        uses: ./.hyperforge/.github/actions/prepare-maven-package
+        with:
+          crate: ${{ inputs.crate }}
+          java_project_dir: ${{ inputs.java_project_dir }}
+          java_resources_dir: ${{ inputs.java_resources_dir }}
+          wasip1_module: ${{ inputs.wasip1_module }}
+          jdk_version: ${{ inputs.jdk_version }}
+          musl: ${{ inputs.musl }}
+          source_run_id: ${{ inputs.source_run_id }}
+          artifact_name: ${{ inputs.artifact_name }}
+          signing_key: ${{ secrets.MAVEN_SIGNING_KEY }}
+          signing_key_password: ${{ secrets.MAVEN_SIGNING_KEY_PASSWORD }}

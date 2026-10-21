@@ -15,15 +15,22 @@ SHA = 'a' * 40
 
 
 def step(workflow, name, values):
-    text = (WORKFLOWS / workflow).read_text()
-    tail = text.split(f'      - name: {name}\n', 1)[1].split('        run: |\n', 1)[1]
+    """Extract a step's script from a workflow, or from a composite action under actions/."""
+    path = WORKFLOWS / workflow if '/' not in workflow else WORKFLOWS.parent / workflow
+    text = path.read_text()
+    tail = re.split(rf'^ *- name: {re.escape(name)}\n', text, maxsplit=1, flags=re.M)[1]
+    tail = re.split(r'^ *run: \|\n', tail, maxsplit=1, flags=re.M)[1]
+    indent = len(tail) - len(tail.lstrip(' '))
     lines = []
     for line in tail.splitlines():
-        if line and not line.startswith('          '):
+        if line and not line.startswith(' ' * indent):
             break
         lines.append(line)
     script = textwrap.dedent('\n'.join(lines))
     return re.sub(r'\$\{\{ ([^}]+) \}\}', lambda m: values[m[1]], script)
+
+
+MAVEN_ACTION = 'actions/prepare-maven-package/action.yml'
 
 
 class ProvenanceTests(unittest.TestCase):
@@ -60,9 +67,9 @@ with open('verified.log','a') as log: log.write(str(p)+'\\n')
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     def maven(self):
-        return step('hyper-publish-maven.yml', 'Stage native/{rid}/{filename} resources', {
-            'inputs.crate': 'hyperuuid', 'inputs.musl': 'true', 'inputs.wasip1_module': 'true',
-            'inputs.java_resources_dir': 'resources/native'})
+        self.env.update(CRATE='hyperuuid', MUSL='true', WASIP1_MODULE='true',
+                        RESOURCES_DIR='resources/native')
+        return step(MAVEN_ACTION, 'Stage native/{rid}/{filename} resources', {})
 
     def test_maven_verifies_every_native_and_wasi_before_publication(self):
         paths = []
@@ -104,7 +111,7 @@ with open('verified.log','a') as log: log.write(str(p)+'\\n')
             src.write_text('verified')
 
     def test_packers_derive_source_from_existing_run_input(self):
-        for workflow in ('hyper-pack-nuget.yml', 'hyper-publish-maven.yml'):
+        for workflow in ('hyper-pack-nuget.yml', MAVEN_ACTION):
             script = step(workflow, "Resolve the reused artifacts' source SHA", {})
             self.assertEqual(self.execute(script).returncode, 0)
             self.assertIn(f'sha={SHA}', (self.root / 'outputs').read_text())

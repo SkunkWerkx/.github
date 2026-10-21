@@ -1,0 +1,143 @@
+name: HyperForge — build and load-check PHP extensions
+
+# Matches the existing three unix native legs. The separate Intel macOS core-only job
+# has never produced a PHP extension. PHP ext-ffi suites and floor checks stay in native.
+on:
+  workflow_call:
+    inputs:
+      crate:
+        description: "Lowercase Rust core crate / PHP extension module name"
+        type: string
+        required: true
+      mode:
+        description: "Extensions run in release mode only"
+        type: string
+        default: release
+      php_version:
+        description: "Current PHP version; macOS uses Homebrew core's PHP"
+        type: string
+        default: "8.5"
+      attest_native:
+        description: "Sign build provenance (requires id-token and attestations write)"
+        type: boolean
+        default: true
+
+jobs:
+  build-php-extension:
+    if: inputs.mode != 'pr'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-x64
+          - os: ubuntu-26.04-arm
+            rid: linux-arm64
+          - os: macos-latest
+            rid: osx-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: shivammathur/setup-php@v2
+        if: runner.os == 'Linux'
+        with:
+          php-version: ${{ inputs.php_version }}
+          extensions: ffi
+          tools: composer
+
+      - name: PHP and Composer from Homebrew (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          WANT: ${{ inputs.php_version }}
+        run: |
+          set -euo pipefail
+          brew install php composer
+          php -v
+          php -r 'exit(extension_loaded("ffi") ? 0 : 1);' \
+            || { echo "::error::Homebrew's php has no ffi extension loaded"; exit 1; }
+          got=$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')
+          if [ "$got" != "$WANT" ]; then
+            echo "::notice::macOS is testing PHP $got (Homebrew core's newest); php_version is $WANT — bump the forge's default to match."
+          fi
+
+      - name: Point bindgen at one system LLVM, not at Swift's clang
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for prefix in $(ls -d /usr/lib/llvm-* 2>/dev/null | sort -t- -k2 -n -r); do
+            if [ -x "$prefix/bin/clang" ] && ls "$prefix"/lib/libclang*.so* >/dev/null 2>&1; then
+              echo "bindgen: clang and libclang from $prefix ($("$prefix/bin/clang" --version | head -1))"
+              echo "CLANG_PATH=$prefix/bin/clang" >> "$GITHUB_ENV"
+              echo "LIBCLANG_PATH=$prefix/lib" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "::warning::No /usr/lib/llvm-*/ carries both clang and libclang; bindgen is left to find its own, which is how the mismatch above happens."
+
+      - name: Build PHP (ext-php-rs) extension
+        working-directory: rust
+        run: cargo rustc --release --crate-type cdylib --features php
+
+      # This is a Zend extension, not another FFI cdylib: the `--features php` build exports
+      # `get_module`, so PHP loads it via `extension=` in php.ini rather than `FFI::cdef`.
+      # PHP names extension modules `.so` on macOS too, so the Darwin .dylib is copied to a
+      # .so name rather than kept as one.
+      #
+      # It is a strict superset of the plain cdylib rather than an alternative to it — the
+      # same build still exports every C symbol the ext-ffi backend calls (measured on
+      # HyperUuid when it had twelve: 12 of 12 present, at 689,448 bytes against the plain
+      # build's 431,840 on linux-x64). It still gets its own artifact instead of replacing `native-{rid}`,
+      # because byte-identical native libraries across a caller's php/, go/ and swift/ trees
+      # are what let one committed git blob serve three bindings under one attestation.
+      - name: Stage PHP (ext-php-rs) extension
+        shell: bash
+        run: |
+          mkdir -p php-ext
+          case "${{ runner.os }}" in
+            macOS) cp "rust/target/release/lib${{ inputs.crate }}.dylib" "php-ext/${{ inputs.crate }}.so" ;;
+            Linux) cp "rust/target/release/lib${{ inputs.crate }}.so"    "php-ext/${{ inputs.crate }}.so" ;;
+          esac
+
+      # The check that makes attesting this binary worth anything: a Zend extension that
+      # compiled can still be refused at load time. PHP matches a module's build ID exactly
+      # — `API<number>,<NTS|ZTS>` — and rejects every mismatch, so unlike the FFI library
+      # these bytes are pinned to one PHP ABI, not just one platform. This proves they load
+      # and records which ABI they are pinned to, since the artifact carries no metadata of
+      # its own saying so. The module name ext-php-rs registers is CARGO_PKG_NAME, which is
+      # what `crate` already is.
+      - name: Load-check the PHP extension, and record the ABI it is pinned to
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_id=$(php -i | sed -n 's/^PHP Extension Build => //p')
+          echo "\`php-native-${{ matrix.rid }}\` — PHP $(php -r 'echo PHP_VERSION;'), build ID \`${build_id}\`" \
+            >> "$GITHUB_STEP_SUMMARY"
+          php -d extension="$PWD/php-ext/${{ inputs.crate }}.so" \
+              -r 'exit(extension_loaded("${{ inputs.crate }}") ? 0 : 1);'
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: php-native-${{ matrix.rid }}
+          path: php-ext/${{ inputs.crate }}.so
+
+      # Attested on exactly the same footing as the native library and the Magnus extension:
+      # a compiled binary a consumer can neither read nor reproduce. Same verifying command,
+      # same reason it needs both halves of the identity:
+      #
+      #     gh attestation verify <file> --repo <owner>/<repo> --signer-repo SkunkWerkx/.github
+      #
+      # and the same fork-PR gate, since a fork's token cannot sign.
+      - name: Attest PHP (ext-php-rs) extension provenance
+        if: >-
+          inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: php-ext/${{ inputs.crate }}.so

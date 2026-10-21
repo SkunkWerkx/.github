@@ -364,6 +364,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-emscripten
@@ -408,7 +423,7 @@ jobs:
           fi
           ls -l "$RUNNER_TEMP/pyodide-deps"
 
-      - uses: SkunkWerkx/.github/.github/actions/pyodide-suite@master
+      - uses: ./.hyperforge/.github/actions/pyodide-suite
         with:
           crate: ${{ inputs.crate }}
           version: ${{ env.VERSION }}

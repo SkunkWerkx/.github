@@ -243,7 +243,9 @@ jobs:
       - name: Attest the packed .nupkg (pre-push bytes)
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: nupkg-org/*.nupkg
+          subject-path: |
+            nupkg-org/*.nupkg
+            nupkg-org/*.snupkg
 
       # Both files, not just *.nupkg: dotnet nuget push auto-detects and pushes a sibling
       # .snupkg from the same folder, but only if it actually made it this far — the
@@ -254,3 +256,5 @@ jobs:
           path: |
             nupkg-org/*.nupkg
             nupkg-org/*.snupkg
+          if-no-files-found: error
+          retention-days: 90
