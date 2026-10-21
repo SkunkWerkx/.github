@@ -4,6 +4,26 @@ Deploy Forge first, then adopt the same immutable Forge SHA in HyperUuid,
 HyperCast and HyperTabular. Keep the commit available; unavailable revisions fail.
 Do not run this new flow on the already published v0.9.0 tags.
 
+## Before the first release on this flow (v1.0.0)
+
+As of Forge `e07bcd9` (merged in #4), this flow has never run end to end: PR CI does
+not exercise `release.yml`, so the following are covered only by unit tests and
+actionlint:
+
+- the `prepare-crate-package` and `prepare-maven-package` actions, including
+  `cargo package`'s verify build;
+- receipt lookup across this run's earlier attempts and `publication_run_id`;
+- the recovery-rerun check that refuses a second crates.io or Central upload;
+- the Maven confirmation wait (up to an hour after Central reports PUBLISHED; a
+  guess, not a measurement);
+- the finalizer's `go/vX.Y.Z` tag and GitHub Release.
+
+Dry-run `release.yml` in one consumer against a test registry or staging namespace,
+then rerun its failed jobs once to exercise recovery. A Forge fix found this way
+means repinning all three consumers to the new SHA, and merging the Forge PR with a
+merge commit so that SHA stays on master. Delete this section once a release has
+gone through cleanly.
+
 ## Normal release
 
 1. Merge the intended source and version changes to master. Dispatch
