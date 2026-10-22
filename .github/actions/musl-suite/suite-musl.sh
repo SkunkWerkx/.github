@@ -63,7 +63,7 @@ case "$binding" in
   csharp)
     : "${CSHARP_TEST_PROJECT:?the C# suite needs CSHARP_TEST_PROJECT}" "${CSHARP_RUNTIMES_DIR:?the C# suite needs CSHARP_RUNTIMES_DIR}"
     extra_env=(-e TEST_PROJECT="$CSHARP_TEST_PROJECT" -e RUNTIMES_DIR="$CSHARP_RUNTIMES_DIR" -e AOT_PROJECT="${CSHARP_AOT_PROJECT:-}")
-    in_alpine "${SUITE_IMAGE:-mcr.microsoft.com/dotnet/sdk:10.0-alpine-aot}" '
+    in_alpine "${SUITE_IMAGE:-mcr.microsoft.com/dotnet/sdk:11.0-alpine-aot}" '
       (cd /src && tar --exclude=bin --exclude=obj --exclude=runtimes --exclude=TestResults \
           --exclude=BenchmarkDotNet.Artifacts -cf - csharp global.json LICENSE) | tar -C /work -xf -
       cd /work

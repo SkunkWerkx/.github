@@ -230,14 +230,12 @@ jobs:
   # cannot get here (its wasm toolchain has no cgo); TinyGo links with wasm-ld and its own
   # wasm_exec.js supplies the archive's one WASI import, random_get, from
   # crypto.getRandomValues. The page checks the core's version against rust/Cargo.toml, so a
-  # stale archive fails too. TinyGo is the release tarball, pinned by version and digest:
-  # one download, no container, and its wasm_exec.js is the one that matches the compiler.
+  # stale archive fails too. TinyGo is the newest 0.x release tarball, checked against the
+  # digest GitHub records for it: one download, no container, and its wasm_exec.js is the one
+  # that matches the compiler.
   test-go-tinygo:
     if: inputs.go_tinygo_smoke != ''
     runs-on: ubuntu-26.04
-    env:
-      TINYGO_VERSION: "0.42.0"
-      TINYGO_SHA256: b87688fa2e19cee7d813cad7fd7dadb71dff3198e47125aba66ba4af5e490438
     steps:
       - uses: actions/checkout@v7
 
@@ -265,19 +263,30 @@ jobs:
           project: ${{ inputs.project }}
           targets: wasm32-wasip1
 
-      # 0.42 is the first TinyGo that supports Go 1.27, so that is the Go it runs on.
+      # TinyGo supports Go 1.27 from 0.42, so that is the Go it runs on.
       - uses: actions/setup-go@v7
         with:
           go-version: "1.27"
           cache: false
 
-      - name: Install TinyGo ${{ env.TINYGO_VERSION }}
+      # The highest 0.x by version number, not the most recently published: a patch to an
+      # older minor can be published after a newer minor.
+      - name: Install the newest TinyGo 0.x
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          read -r version url digest < <(gh api 'repos/tinygo-org/tinygo/releases?per_page=100' --jq '
+            [.[] | select((.draft or .prerelease | not) and (.tag_name | test("^v0\\.[0-9]+\\.[0-9]+$")))]
+            | max_by(.tag_name | ltrimstr("v") | split(".") | map(tonumber))
+            | .tag_name as $tag
+            | .assets[] | select(.name == "tinygo\($tag | ltrimstr("v")).linux-amd64.tar.gz")
+            | "\($tag | ltrimstr("v")) \(.browser_download_url) \(.digest | ltrimstr("sha256:"))"') || true
+          [ -n "${digest:-}" ] || { echo "::error::no TinyGo 0.x release with a linux-amd64 tarball and digest"; exit 1; }
+          echo "TinyGo $version"
           tarball="$RUNNER_TEMP/tinygo.tar.gz"
-          curl -fsSL -o "$tarball" \
-            "https://github.com/tinygo-org/tinygo/releases/download/v$TINYGO_VERSION/tinygo$TINYGO_VERSION.linux-amd64.tar.gz"
-          echo "$TINYGO_SHA256  $tarball" | sha256sum -c -
+          curl -fsSL -o "$tarball" "$url"
+          echo "$digest  $tarball" | sha256sum -c -
           tar -xzf "$tarball" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/tinygo/bin" >> "$GITHUB_PATH"
 
@@ -318,12 +327,9 @@ jobs:
   # these exact bytes. Then the gem is packed here the way it ships, with only this minor's
   # archive and no Rust in reach, and that is what runs under Node and in headless Chrome.
   #
-  # rbwasm builds the interpreter itself (OpenSSL, zlib, libyaml, Ruby): 15-20 minutes cold,
-  # about 8 with build/ cached per minor. Every build passes --remake. Without it rbwasm
-  # returns rubies/<name>.tar.gz whenever that exists, and the name hashes only the gem names,
-  # so the second build here would hand back the first one's interpreter and the gem as
-  # shipped would never be linked; a cache hit would ship last run's crate. --remake rebuilds
-  # every extension and relinks Ruby, and reuses everything else.
+  # The stages are actions/ruby-wasm-suite/suite-ruby-wasm.sh, which also runs on a developer's
+  # machine; its header covers rbwasm's build times, why every build passes --remake, and
+  # what macOS needs. build/ is cached per minor.
   #
   # Release mode only: at 7-10 minutes per minor it was the longest job a PR ran after the
   # slowest native leg, for an artifact only a release packs. The weekly release-mode run
@@ -339,13 +345,23 @@ jobs:
       fail-fast: false
       matrix:
         abi: ${{ fromJSON(inputs.ruby_wasm_abis) }}
-    env:
-      SMOKE: ${{ inputs.ruby_wasm_smoke }}
-      GEM_NAME: ${{ inputs.crate }}-wasm
-      ARCHIVE: ${{ inputs.crate }}_native.a
-      ABI: ${{ matrix.abi }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -368,36 +384,15 @@ jobs:
           path: ${{ inputs.ruby_wasm_smoke }}/build
           key: ruby-wasm-${{ inputs.crate }}-${{ matrix.abi }}-${{ hashFiles(format('{0}/Gemfile', inputs.ruby_wasm_smoke)) }}
 
-      # Bundler reads a path gem's .gemspec, which a packed .gem does not contain, so each
-      # gem is unpacked with its spec written beside it.
-      - name: Gem unpacker
-        run: |
-          cat > "$RUNNER_TEMP/unpack.sh" <<'SH'
-          set -euo pipefail
-          gem="$1" dest="$2"
-          rm -rf "$dest"
-          gem unpack "$gem" --target "$dest" >&2
-          dir="$(ls -d "$dest"/*/)"
-          gem spec "$gem" --ruby > "$dir/$GEM_NAME.gemspec"
-          echo "$dir"
-          SH
-
       - name: Build the extension from source for Ruby ${{ matrix.abi }}
-        run: |
-          set -euo pipefail
-          upper="$(echo "${{ inputs.crate }}" | tr '[:lower:]' '[:upper:]')"
-          (cd ruby && bundle exec rake "wasm:gem[source]")
-          export WASM_GEM_NAME="$GEM_NAME"
-          WASM_GEM_DIR="$(bash "$RUNNER_TEMP/unpack.sh" ruby/pkg/"$GEM_NAME"-*.gem "$RUNNER_TEMP/gem-source")"
-          export WASM_GEM_DIR
-          export "${upper}_RUST_DIR=$GITHUB_WORKSPACE/${{ inputs.working_directory }}"
-          export "${upper}_WASM_OUT=$RUNNER_TEMP/archives"
-          cd "$SMOKE"
-          export BUNDLE_GEMFILE="$PWD/Gemfile"
-          rm -f Gemfile.lock
-          bundle install
-          bundle exec rbwasm build --ruby-version "$ABI" --target wasm32-unknown-wasip1 --remake -o source.wasm
-          ls -l "$RUNNER_TEMP/archives/$ABI/$ARCHIVE"
+        uses: ./.hyperforge/.github/actions/ruby-wasm-suite
+        with:
+          crate: ${{ inputs.crate }}
+          abi: ${{ matrix.abi }}
+          stages: archive
+          smoke: ${{ inputs.ruby_wasm_smoke }}
+          rust-dir: ${{ inputs.working_directory }}
+          out: ${{ runner.temp }}
 
       - uses: actions/attest-build-provenance@v3
         with:
@@ -409,41 +404,31 @@ jobs:
           path: ${{ runner.temp }}/archives/${{ matrix.abi }}/${{ inputs.crate }}_native.a
 
       - name: The gem as a consumer gets it, linked into Ruby ${{ matrix.abi }}
-        run: |
-          set -euo pipefail
-          ext="ruby/ext/${{ inputs.crate }}_native/$ABI"
-          mkdir -p "$ext"
-          cp "$RUNNER_TEMP/archives/$ABI/$ARCHIVE" "$ext/"
-          (cd ruby && rm -f pkg/"$GEM_NAME"-*.gem && bundle exec rake "wasm:gem[$ABI]")
-          export WASM_GEM_NAME="$GEM_NAME"
-          WASM_GEM_DIR="$(bash "$RUNNER_TEMP/unpack.sh" ruby/pkg/"$GEM_NAME"-*.gem "$RUNNER_TEMP/gem-prebuilt")"
-          export WASM_GEM_DIR
-          cd "$SMOKE"
-          export BUNDLE_GEMFILE="$PWD/Gemfile"
-          rm -f Gemfile.lock
-          bundle install
-          bundle exec rbwasm build --ruby-version "$ABI" --target wasm32-unknown-wasip1 --remake -o ruby.wasm
-          echo "ruby.wasm: $(wc -c < ruby.wasm) bytes"
+        uses: ./.hyperforge/.github/actions/ruby-wasm-suite
+        with:
+          crate: ${{ inputs.crate }}
+          abi: ${{ matrix.abi }}
+          stages: gem
+          smoke: ${{ inputs.ruby_wasm_smoke }}
+          rust-dir: ${{ inputs.working_directory }}
+          out: ${{ runner.temp }}
 
       - name: Under Node
-        working-directory: ${{ inputs.ruby_wasm_smoke }}
-        run: |
-          npm ci
-          node node-test.mjs ruby.wasm
+        uses: ./.hyperforge/.github/actions/ruby-wasm-suite
+        with:
+          crate: ${{ inputs.crate }}
+          abi: ${{ matrix.abi }}
+          stages: node
+          smoke: ${{ inputs.ruby_wasm_smoke }}
+          rust-dir: ${{ inputs.working_directory }}
+          out: ${{ runner.temp }}
 
       - name: In headless Chrome
-        working-directory: ${{ inputs.ruby_wasm_smoke }}
-        run: |
-          set -euo pipefail
-          site="$RUNNER_TEMP/ruby-wasm-site"
-          mkdir -p "$site"
-          cp index.html test.rb ruby.wasm node_modules/@ruby/wasm-wasi/dist/browser.umd.js "$site/"
-          (cd "$site" && exec python3 -m http.server 8091 --bind 127.0.0.1 >/dev/null 2>&1) &
-          sleep 1
-          google-chrome --headless=new --no-sandbox --disable-gpu --virtual-time-budget=60000 \
-            --dump-dom "http://127.0.0.1:8091/index.html" 2>/dev/null > "$site/dom.html"
-          sed -n '/<pre/,/<\/pre>/p' "$site/dom.html"
-          if grep -Eq '(^|>)FAIL' "$site/dom.html" || ! grep -Eq '(^|>)DONE(<|$)' "$site/dom.html"; then
-            echo "::error::The ruby.wasm smoke page did not print DONE with every check passing."
-            exit 1
-          fi
+        uses: ./.hyperforge/.github/actions/ruby-wasm-suite
+        with:
+          crate: ${{ inputs.crate }}
+          abi: ${{ matrix.abi }}
+          stages: browser
+          smoke: ${{ inputs.ruby_wasm_smoke }}
+          rust-dir: ${{ inputs.working_directory }}
+          out: ${{ runner.temp }}

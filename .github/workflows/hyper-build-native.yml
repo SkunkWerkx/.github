@@ -172,12 +172,12 @@ on:
         description: "setup-dotnet version spec"
         required: false
         type: string
-        default: "8.0.x"
+        default: "11.0.x"
       dotnet_quality:
         description: "setup-dotnet channel quality (preview until a pinned SDK GAs)"
         required: false
         type: string
-        default: "ga"
+        default: "preview"
       csharp_runtimes_dir:
         description: "If set, place the native lib at {dir}/{rid}/native/ before dotnet test (repos whose csproj stages from rust/target/release leave this empty)"
         required: false
@@ -1533,7 +1533,7 @@ jobs:
       # Every suite below carries `!cancelled()` for the same reason the matrix job's do:
       # one binding's failure must not mask the others, and a red step names its binding.
 
-      # 10.0.x -> 10.0-alpine-aot. The `-aot` variant carries the clang and linker Native AOT
+      # 11.0.x -> 11.0-alpine-aot. The `-aot` variant carries the clang and linker Native AOT
       # needs; a preview channel's rc and GA builds are both served under the bare
       # major.minor tag, which is what setup-dotnet's `dotnet-quality: preview` resolves to
       # on the matrix job.

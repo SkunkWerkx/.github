@@ -1,0 +1,43 @@
+name: Ruby — link the Magnus extension into ruby.wasm and run it
+description: >
+  One Ruby minor, the stages named: the {crate}-wasm gem from source linked into a ruby.wasm
+  interpreter, which builds the extension's wasm32-wasip1 archive (archive); that archive
+  packed into the gem as it ships and linked again (gem); and the result under Node (node)
+  and in headless Chrome (browser). hyper-build-wasm.yml calls this once per stage so the
+  archive can be attested and uploaded between the first two. See suite-ruby-wasm.sh, which
+  also runs on a developer's machine.
+
+inputs:
+  crate:
+    description: "Lowercase core name — the gem is {crate}-wasm and the archive {crate}_native.a"
+    required: true
+  abi:
+    description: "Ruby minor to build the interpreter for, e.g. 4.0"
+    required: true
+  stages:
+    description: "Space-separated stages: archive, gem, node, browser (see suite-ruby-wasm.sh)"
+    required: true
+  smoke:
+    description: "The smoke directory, whose Gemfile rbwasm builds"
+    required: true
+  rust-dir:
+    description: "The crate's directory"
+    required: true
+  out:
+    description: "Where the archive (archives/{abi}/{crate}_native.a), the unpacked gems and the browser page go"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Ruby ${{ inputs.abi }} — ${{ inputs.stages }}
+      shell: bash
+      env:
+        CRATE: ${{ inputs.crate }}
+        ABI: ${{ inputs.abi }}
+        STAGES: ${{ inputs.stages }}
+        SMOKE: ${{ inputs.smoke }}
+        RUST_DIR: ${{ inputs.rust-dir }}
+        OUT: ${{ inputs.out }}
+      # $STAGES unquoted on purpose: it is a list.
+      run: '"$GITHUB_ACTION_PATH/suite-ruby-wasm.sh" "$CRATE" "$ABI" $STAGES'
