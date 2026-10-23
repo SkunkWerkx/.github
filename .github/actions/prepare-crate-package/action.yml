@@ -19,7 +19,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: dtolnay/rust-toolchain@stable
+    - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
     # Keep cargo's verify build: it compiles the packaged sources on their own, the only
     # guard against an include/exclude that drops a file the crate needs. crates.io
@@ -42,11 +42,11 @@ runs:
         python3 "$FORGE_SCRIPTS/package_preparation.py" crate-prepare "${crates[0]}" crate-package
 
     - name: Attest the complete prepared crate request
-      uses: actions/attest-build-provenance@v3
+      uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
       with:
         subject-path: crate-package/*
 
-    - uses: actions/upload-artifact@v7
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: ${{ inputs.artifact_name }}
         path: crate-package

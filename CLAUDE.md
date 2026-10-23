@@ -51,6 +51,11 @@ osx-x64, native wheels, ruby.wasm, ext-php-rs). Release-only work gates on
   than assuming. The only exceptions, each commented where it is pinned: a real platform
   constraint, or a deliberate older floor shipped beside the primary and dropped at its EOL.
 - Floors follow upstream support and match across all three repos; raise them together.
+- Every third-party `uses:` is pinned to a commit SHA with its version as a trailing
+  comment (a test enforces it). Dependabot bumps them monthly in one grouped PR, after a
+  7-day cooldown; `dtolnay/rust-toolchain` is ignored there and refreshed by hand to the
+  head of its `stable` branch. A Dependabot PR only runs `validate.yml`, so like any Forge
+  change it proves nothing until the consumers repin to it.
 
 ## Writing docs here
 

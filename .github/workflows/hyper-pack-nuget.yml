@@ -90,7 +90,7 @@ jobs:
   pack:
     runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Resolve the reused artifacts' source SHA
         id: source
@@ -105,7 +105,7 @@ jobs:
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Source run has no valid head_sha"; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: native-*
           path: artifacts
@@ -142,7 +142,7 @@ jobs:
       # the package (the csproj packs staticlibs/**, and build/{PackageId}.targets hands the
       # one for the consumer's RID to the AOT linker). The artifact is laid out by repository
       # path and also carries the Swift and Go trees; only the C# one is taken here.
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: inputs.static_libs
         with:
           name: static-libs
@@ -162,7 +162,7 @@ jobs:
           cp -r "$src" "$dest"
           find "$dest" -type f | sort
 
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
           dotnet-quality: ${{ inputs.dotnet_quality }}
@@ -177,7 +177,7 @@ jobs:
       # pack` below already produces the only managed assembly a consumer needs — only the
       # native staticlib is genuinely RID-specific.
       - name: Download wasm32-unknown-emscripten staticlib
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.wasm_artifact_name }}
           path: wasm-artifact
@@ -248,7 +248,7 @@ jobs:
       # there. Two attestations over two digests, both valid, covering both verification
       # routes. (The push itself can't run from this forge at all — see the header.)
       - name: Attest the packed .nupkg (pre-push bytes)
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-path: |
             nupkg-org/*.nupkg
@@ -257,7 +257,7 @@ jobs:
       # Both files, not just *.nupkg: dotnet nuget push auto-detects and pushes a sibling
       # .snupkg from the same folder, but only if it actually made it this far — the
       # artifact hand-off is a real boundary, not just the push command's own glob.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ inputs.artifact_name }}
           path: |

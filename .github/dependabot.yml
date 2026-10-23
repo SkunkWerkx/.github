@@ -1,0 +1,22 @@
+version: 2
+updates:
+  # Every third-party action is pinned to a commit with its version in a trailing comment
+  # (test_forge_producers.py enforces it); Dependabot moves both together.
+  - package-ecosystem: github-actions
+    directories:
+      - "/"
+      - "/.github/actions/*"
+    schedule:
+      interval: monthly
+    # Skip releases younger than a week, so a bad or hijacked tag has time to be pulled.
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
+    ignore:
+      # Pinned to the head of its `stable` branch, whose action.yml defaults the toolchain
+      # to stable. The repo's only tag, v1, follows master, whose action.yml requires a
+      # toolchain input that no step here passes, so Dependabot's bump to it would break
+      # every Rust step. Refresh this pin by hand.
+      - dependency-name: dtolnay/rust-toolchain

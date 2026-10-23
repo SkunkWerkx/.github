@@ -113,7 +113,7 @@ runs:
     # fails: RI_DEVKIT is per-Ruby (C:\hostedtoolcache\windows\Ruby\<ver>\<arch>\msys64),
     # the second Ruby inherited the first one's, and fiddle's mkmf under it found no
     # pkg-config and no libffi. RubyInstaller's devkit belongs to its Ruby.
-    - uses: ruby/setup-ruby@v1
+    - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
       with:
         ruby-version: ${{ inputs.ruby-version }}
         bundler: default
@@ -141,7 +141,7 @@ runs:
     # uploaded. The ABI is in the artifact NAME rather than the filename: the caller's
     # release.yml copies each one into lib/{crate}/<minor>/ itself, and a stable inner
     # filename keeps that loop simple.
-    - uses: actions/upload-artifact@v7
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: ruby-native-${{ inputs.rid }}-${{ inputs.ruby-version }}
         path: ruby/lib/${{ inputs.crate }}_native.*
@@ -153,6 +153,6 @@ runs:
     # reusable workflow's, so verifying still needs --signer-repo SkunkWerkx/.github.
     - name: Attest Ruby (Magnus) extension provenance — Ruby ${{ inputs.ruby-version }}
       if: inputs.attest == 'true'
-      uses: actions/attest-build-provenance@v3
+      uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
       with:
         subject-path: ruby/lib/${{ inputs.crate }}_native.*

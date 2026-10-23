@@ -41,7 +41,7 @@ class ProducerContracts(unittest.TestCase):
         for value in ('cargo rustc --release --crate-type cdylib --features php',
                       'php -d extension=', 'extension_loaded(',
                       'name: php-native-${{ matrix.rid }}',
-                      'actions/attest-build-provenance@v3'):
+                      'actions/attest-build-provenance@'):
             self.assertIn(value, text)
         native = (WORKFLOWS / 'hyper-build-native.yml').read_text()
         self.assertRegex(native, r'      php_extension_schedule:\n(?:        .*\n)*?        default: inline')
@@ -66,6 +66,18 @@ class ProducerContracts(unittest.TestCase):
                 self.assertIn('path: .hyperforge', body)
                 self.assertLess(body.index('ref: ${{ job.workflow_sha }}'),
                                 body.index('uses: ./.hyperforge/.github/actions/'))
+
+    def test_every_third_party_action_is_pinned_to_a_commit(self):
+        # A tag can be moved after the fact; a commit cannot. The trailing comment is the
+        # version Dependabot reads and rewrites when it bumps the pin.
+        uses = re.compile(r'^\s*(?:- )?uses:\s*(\S+)(.*)$', re.M)
+        for path in sorted(WORKFLOWS.parent.glob('**/*.yml')):
+            for ref, comment in uses.findall(path.read_text()):
+                if ref.startswith('./'):
+                    continue
+                with self.subTest(path=path.name, ref=ref):
+                    self.assertRegex(ref, r'^[\w.-]+/[\w./-]+@[0-9a-f]{40}$')
+                    self.assertRegex(comment, r'^ # \S+$')
 
     def test_missing_or_mutable_forge_revision_fails_before_checkout(self):
         text = (WORKFLOWS / 'hyper-build-native.yml').read_text()
@@ -106,7 +118,7 @@ class ProducerContracts(unittest.TestCase):
         self.assertIn('upload: "true"', static.read_text())
         text = android.read_text()
         for value in ('android-arm64', 'android-x64', 'max-page-size=16384',
-                      'name: native-${{ matrix.rid }}', 'actions/attest-build-provenance@v3'):
+                      'name: native-${{ matrix.rid }}', 'actions/attest-build-provenance@'):
             self.assertIn(value, text)
 
 

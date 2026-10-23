@@ -485,7 +485,7 @@ jobs:
             *) echo "::error::php_extension_schedule must be inline or parallel"; exit 1 ;;
           esac
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Validate Forge workflow revision
         shell: bash
@@ -495,14 +495,14 @@ jobs:
           [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
 
       - name: Check out the executing Forge revision
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: .hyperforge
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: ${{ inputs.wasip1_module && 'wasm32-wasip1' || '' }}
 
@@ -570,13 +570,13 @@ jobs:
           mkdir -p out
           cp "rust/target/release/${{ matrix.lib_name }}" "out/${{ matrix.lib_name }}"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.shard != 'swift-ruby'
         with:
           name: native-${{ matrix.rid }}
           path: out/${{ matrix.lib_name }}
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: inputs.wasip1_module && matrix.rid == 'linux-x64'
         with:
           name: wasm-wasip1-module
@@ -589,7 +589,7 @@ jobs:
           inputs.wasip1_module && matrix.rid == 'linux-x64' && inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-path: rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm
 
@@ -619,7 +619,7 @@ jobs:
           matrix.shard != 'swift-ruby' && inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-path: out/${{ matrix.lib_name }}
 
@@ -638,7 +638,7 @@ jobs:
 
       # Python (PyO3 feature), every leg — the only Python backend, so it's proven here
       # rather than deferred to a release-time-only build.
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: inputs.pyo3 && matrix.shard != 'swift-ruby'
         with:
           python-version: ${{ inputs.python_version }}
@@ -673,7 +673,7 @@ jobs:
       # that), against the extension rebuilt for it: PYO3_PYTHON picks the interpreter, and
       # with abi3t-py3XX enabled a free-threaded one builds abi3t. Then the GIL must still be
       # off after the import. Off PATH, so every later step keeps the interpreter above.
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         id: ft-python
         if: inputs.pyo3 && matrix.shard != 'swift-ruby' && inputs.python_freethreaded_version != ''
         with:
@@ -738,7 +738,7 @@ jobs:
       # ---------------------------------------------------------------------------
 
       # C#: the real [LibraryImport] resolution/marshalling path per OS.
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp }}
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
@@ -810,13 +810,13 @@ jobs:
 
       - name: Upload the AOT report
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' && inputs.csharp }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: aot-report-${{ matrix.rid }}
           path: aot-publish.log
 
       # Java: the real FFM downcall path per OS.
-      - uses: actions/setup-java@v6
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java }}
         with:
           distribution: ${{ matrix.jdk_distribution }}
@@ -875,7 +875,7 @@ jobs:
       # targets ARM64 Windows, so llvm-mingw is fetched for it. CGO_ENABLED=1 is explicit so
       # a leg whose compiler went missing fails here, on the binding's own "needs cgo" error,
       # rather than somewhere less legible.
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
         with:
           go-version-file: go/go.mod
@@ -917,13 +917,13 @@ jobs:
       - name: Restore the installed Swift toolchain (Windows)
         id: swift_toolcache
         if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'Windows' && inputs.swift }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.tool_cache }}/swift-*
           key: swift-toolcache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.swift_version }}-
           restore-keys: swift-toolcache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.swift_version }}-
 
-      - uses: SwiftyLab/setup-swift@v1.14.1
+      - uses: SwiftyLab/setup-swift@9014d4136569075c696d4151c7810ecde8712907 # v1.14.1
         if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.swift }}
         with:
           swift-version: ${{ inputs.swift_version }}
@@ -953,7 +953,7 @@ jobs:
 
       - name: Save the installed Swift toolchain (Windows)
         if: ${{ !cancelled() && steps.swift_toolcache_key.outcome == 'success' && steps.swift_toolcache.outputs.cache-matched-key != steps.swift_toolcache_key.outputs.key }}
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.tool_cache }}/swift-*
           key: ${{ steps.swift_toolcache_key.outputs.key }}
@@ -1040,7 +1040,7 @@ jobs:
       # is what makes it safe for this to sit down here with the suites rather than up beside
       # the other feature builds.
       # =========================================================================
-      - uses: shivammathur/setup-php@v2
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && runner.os != 'macOS' && inputs.php }}
         with:
           php-version: ${{ inputs.php_version }}
@@ -1140,7 +1140,7 @@ jobs:
           php -d extension="$PWD/php-ext/${{ inputs.crate }}.so" \
               -r 'exit(extension_loaded("${{ inputs.crate }}") ? 0 : 1);'
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.php_extension_schedule == 'inline' && inputs.mode != 'pr' }}
         with:
           name: php-native-${{ matrix.rid }}
@@ -1159,7 +1159,7 @@ jobs:
           inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-path: php-ext/${{ inputs.crate }}.so
 
@@ -1308,7 +1308,7 @@ jobs:
       # a Magnus extension exists there. The primary-ABI call above leaves its Ruby active,
       # so this inherits it and needs no setup-ruby of its own — the step below exists only
       # for `magnus: false`, where nothing has installed a Ruby yet.
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && !inputs.magnus && inputs.ruby }}
         with:
           ruby-version: ${{ inputs.ruby_version }}
@@ -1358,9 +1358,9 @@ jobs:
     if: inputs.osx_x64 && inputs.mode != 'pr'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: x86_64-apple-darwin
 
@@ -1396,7 +1396,7 @@ jobs:
           mkdir -p out
           cp "rust/target/x86_64-apple-darwin/release/lib${{ inputs.crate }}.dylib" "out/lib${{ inputs.crate }}.dylib"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-osx-x64
           path: out/lib${{ inputs.crate }}.dylib
@@ -1407,7 +1407,7 @@ jobs:
           inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-path: out/lib${{ inputs.crate }}.dylib
 
@@ -1481,7 +1481,7 @@ jobs:
             static_target: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Validate Forge workflow revision
         shell: bash
@@ -1491,7 +1491,7 @@ jobs:
           [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
 
       - name: Check out the executing Forge revision
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -1512,7 +1512,7 @@ jobs:
       # static library, for the two suites that link the core in (Go under cgo, and the C#
       # Native AOT publish). Both built on the runner, not in a
       # container: neither is linked here, so each is the same bytes wherever it is compiled.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && (inputs.wasip1_module || inputs.static_libs) }}
         with:
           targets: ${{ inputs.wasip1_module && 'wasm32-wasip1' || '' }}

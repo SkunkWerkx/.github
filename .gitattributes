@@ -1,0 +1,3 @@
+# Linguist treats .github/ as vendored, which hides the Forge's own Python, shell and
+# JavaScript from the language stats, and so from CodeQL's default setup.
+.github/** linguist-vendored=false

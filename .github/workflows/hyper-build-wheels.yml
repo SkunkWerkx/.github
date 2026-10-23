@@ -139,9 +139,9 @@ jobs:
       FT_PYTHON: ${{ inputs.python_freethreaded_version }}
       ABI3T_PYTHON: ${{ inputs.python_abi3t_version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: ${{ matrix.rid == 'osx-x64' && 'x86_64-apple-darwin' || '' }}
 
@@ -160,7 +160,7 @@ jobs:
       # containers. `architecture` is empty on every row but osx-x64, which setup-python
       # reads as the runner's own. Only the last one, the GIL CPython, goes on PATH; the
       # others are reached by the paths they report.
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         id: ft-python
         if: inputs.python_freethreaded_version != '' && !startsWith(matrix.rid, 'linux-musl-')
         with:
@@ -168,7 +168,7 @@ jobs:
           architecture: ${{ matrix.python_arch }}
           update-environment: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         id: abi3t-python
         if: ${{ !startsWith(matrix.rid, 'linux-musl-') }}
         with:
@@ -176,7 +176,7 @@ jobs:
           architecture: ${{ matrix.python_arch }}
           update-environment: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         id: abi3t-ft-python
         if: ${{ !startsWith(matrix.rid, 'linux-musl-') }}
         with:
@@ -184,7 +184,7 @@ jobs:
           architecture: ${{ matrix.python_arch }}
           update-environment: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         id: gil-python
         with:
           python-version: ${{ inputs.python_version }}
@@ -216,7 +216,7 @@ jobs:
           echo "rest=$rest" >> "$GITHUB_OUTPUT"
 
       - name: Build the abi3 wheel
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           working-directory: python
           target: ${{ matrix.target }}
@@ -224,7 +224,7 @@ jobs:
           args: --release --out dist -i ${{ steps.interpreters.outputs.abi3 }}
 
       - name: Build the free-threaded and abi3t wheels
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           working-directory: python
           target: ${{ matrix.target }}
@@ -328,11 +328,11 @@ jobs:
           inputs.attest && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-path: python/dist/*.whl
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pypi-wheels-${{ matrix.rid }}
           path: python/dist/*.whl
@@ -362,7 +362,7 @@ jobs:
       CRATE: ${{ inputs.crate }}
       PYODIDE_VERSION: "314.0.7"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Validate Forge workflow revision
         shell: bash
@@ -372,18 +372,18 @@ jobs:
           [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
 
       - name: Check out the executing Forge revision
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: .hyperforge
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-emscripten
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
 
@@ -435,11 +435,11 @@ jobs:
           inputs.attest && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-path: python/dist/*.whl
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pypi-wheels-pyodide
           path: python/dist/*.whl

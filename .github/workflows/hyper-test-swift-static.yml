@@ -24,7 +24,7 @@ jobs:
         os: [ubuntu-26.04, ubuntu-26.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Validate Forge workflow revision
         shell: bash
@@ -34,7 +34,7 @@ jobs:
           [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
 
       - name: Check out the executing Forge revision
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -44,14 +44,14 @@ jobs:
       # Over the checkout: the artifact is laid out by repository path, so the Swift bundle's
       # archives and info.json land in the bundle, beside the header and module map that are
       # source.
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: static-libs
           path: .
 
       # The two SDKs are 380 MB per Swift version. They are immutable once published, so the
       # key is the versions and nothing else.
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/hyper-swift-sdk
           key: swift-sdk-${{ runner.arch }}-${{ inputs.swift_version }}-${{ inputs.swift_floor_version }}

@@ -37,11 +37,11 @@ jobs:
             rid: osx-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
-      - uses: shivammathur/setup-php@v2
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         if: runner.os == 'Linux'
         with:
           php-version: ${{ inputs.php_version }}
@@ -121,7 +121,7 @@ jobs:
           php -d extension="$PWD/php-ext/${{ inputs.crate }}.so" \
               -r 'exit(extension_loaded("${{ inputs.crate }}") ? 0 : 1);'
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: php-native-${{ matrix.rid }}
           path: php-ext/${{ inputs.crate }}.so
@@ -138,6 +138,6 @@ jobs:
           inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-path: php-ext/${{ inputs.crate }}.so
