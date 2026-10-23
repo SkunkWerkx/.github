@@ -589,7 +589,7 @@ jobs:
           inputs.wasip1_module && matrix.rid == 'linux-x64' && inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm
 
@@ -619,7 +619,7 @@ jobs:
           matrix.shard != 'swift-ruby' && inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: out/${{ matrix.lib_name }}
 
@@ -923,7 +923,7 @@ jobs:
           key: swift-toolcache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.swift_version }}-
           restore-keys: swift-toolcache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.swift_version }}-
 
-      - uses: SwiftyLab/setup-swift@9014d4136569075c696d4151c7810ecde8712907 # v1.14.1
+      - uses: SwiftyLab/setup-swift@d60245579ea3836a3f2fa65ebbe1e8891d577c76 # v1.14.2
         if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.swift }}
         with:
           swift-version: ${{ inputs.swift_version }}
@@ -1159,7 +1159,7 @@ jobs:
           inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: php-ext/${{ inputs.crate }}.so
 
@@ -1407,7 +1407,7 @@ jobs:
           inputs.attest_native && inputs.mode != 'pr' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: out/lib${{ inputs.crate }}.dylib
 
