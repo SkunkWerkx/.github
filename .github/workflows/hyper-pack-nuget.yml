@@ -41,16 +41,6 @@ on:
         description: "Directory to arrange runtimes/{rid}/native/ under before packing (e.g. csharp/HyperUuid/runtimes)"
         required: true
         type: string
-      dotnet_version:
-        description: "setup-dotnet version spec"
-        required: false
-        type: string
-        default: "11.0.x"
-      dotnet_quality:
-        description: "setup-dotnet channel quality (preview until a pinned SDK GAs)"
-        required: false
-        type: string
-        default: "preview"
       musl:
         description: "Also pack the linux-musl-x64 and linux-musl-arm64 libraries (hyper-build-native.yml's `musl` input, which must have been on for the source run)"
         required: false
@@ -164,8 +154,7 @@ jobs:
 
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: ${{ inputs.dotnet_version }}
-          dotnet-quality: ${{ inputs.dotnet_quality }}
+          global-json-file: global.json
 
       # Stages runtimes/browser-wasm/nativeassets/net11.0/ before packing, so NuGet's own
       # RID-based asset selection picks the wasm staticlib up automatically for any consumer
