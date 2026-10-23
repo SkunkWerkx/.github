@@ -6,16 +6,32 @@ workflow. This file holds what the code alone won't tell you.
 
 ## Blast radius
 
-- Everything here ships to HyperUuid, HyperCast and HyperTabular. Each pins every Forge
-  `uses:`, `release.yml`'s `FORGE_SHA` and `.hyperforge` checkout ref, and `RELEASING.md`'s
-  runbook link to one exact Forge commit. A Forge change does nothing until all three are
-  repinned together; prove it on their PR CI before merging here.
-- Merge Forge PRs with a merge commit, never squash or rebase. The consumers pin the PR
-  branch's commit, and the branch is deleted on merge.
+- Everything here ships to HyperUuid, HyperCast and HyperTabular, which call it at `@master`:
+  a Forge merge reaches every consumer's next run at once, and breakage it causes is fixed
+  forward. Each release run resolves master to one commit (`referenced_workflows`), checks
+  the Forge out at it as `.hyperforge` and records it in the inventory as `forge_sha`;
+  recovery needs master unchanged since the packaging run, so never merge here while a
+  release is in flight anywhere.
+- A change must keep the consumers' current workflows working until they move, or merge in
+  lockstep with their PRs; prove it on a consumer's PR CI before merging here.
 - Reusable workflows check out their own revision (`job.workflow_sha`) into `.hyperforge`
   and call local actions as `./.hyperforge/.github/actions/...`; actions find the Forge's
   scripts through `github.action_path`. A bare `./.github/...` resolves to the caller's
   repo, not this one.
+- Identity rule: a *reusable workflow* runs under the Forge's OIDC identity (its
+  attestations verify with `--signer-repo SkunkWerkx/.github`; nuget.org, PyPI and RubyGems
+  Trusted Publishing reject it). A *composite action* runs in the caller's job and keeps the
+  caller's identity. Anything that publishes, or that a consumer must verify with `--repo`
+  alone (the gems, the inventory, the release attestation), is a composite action in the
+  consumer's `release.yml`; anything that only builds, commits or checks can be a reusable
+  workflow.
+- Each consumer describes itself in `.github/hyper.json` (`hyper_config.py` is the schema
+  and the derived defaults: library names per RID, the Swift bundle, the Go and Swift target
+  sets, the Ruby ABIs and platform gems, the version files, the export rule and the ABI
+  probe). Every action, reusable workflow and script reads names from it; nothing else may
+  hard-code a consumer's name. Inside a composite action `secrets` and `vars` do not exist
+  and `inputs.*` means the action's inputs, so they arrive as inputs and every `run` names
+  its `shell`.
 
 ## Names that are load-bearing
 
@@ -36,6 +52,16 @@ workflow. This file holds what the code alone won't tell you.
   before upload, upload only the attested bytes, never repack at publish time, never retry
   an HTTP mutation blindly, and write the receipt before the request (the
   `package_preparation.py` header).
+- The release is two deliberate acts: the tag push packs, attests (build provenance and the
+  release attestation, `docs/predicates/release-v1.md`), preserves and proves every
+  Trusted Publisher exchange without uploading; `gh workflow run release.yml --ref vX.Y.Z
+  -f prepared_run_id=<tag run>` publishes from the preserved bytes through the recovery
+  path, so every release exercises recovery. `publish` inputs and the `inputs.publish ==
+  'true'` gates are what keep the tag run from uploading; the contract tests hold every
+  mutation step to them.
+- The finalizer writes the GitHub Release from the CHANGELOG's `## [X.Y.Z]` section
+  (`release_notes.py`); `release_guard.py record` refuses a tag whose CHANGELOG lacks it, so
+  the failure comes before anything publishes.
 - Release and recovery steps: `docs/release-runbook.md`. Its "Before the first release on
   this flow" section stays until a release has gone through cleanly.
 
@@ -52,10 +78,12 @@ osx-x64, native wheels, ruby.wasm, ext-php-rs). Release-only work gates on
   constraint, or a deliberate older floor shipped beside the primary and dropped at its EOL.
 - Floors follow upstream support and match across all three repos; raise them together.
 - Every third-party `uses:` is pinned to a commit SHA with its version as a trailing
-  comment (a test enforces it). Dependabot bumps them monthly in one grouped PR, after a
-  7-day cooldown; `dtolnay/rust-toolchain` is ignored there and refreshed by hand to the
-  head of its `stable` branch. A Dependabot PR only runs `validate.yml`, so like any Forge
-  change it proves nothing until the consumers repin to it.
+  comment (a test enforces it, in workflows and in `action.yml` files alike). Dependabot
+  bumps them monthly in one grouped PR, after a 7-day cooldown; `dtolnay/rust-toolchain` is
+  ignored there and refreshed by hand to the head of its `stable` branch. A Dependabot PR
+  only runs `validate.yml`; the consumers' next runs are where it proves itself.
+- Every binding's tool pin (ruff, revive, SwiftLint, PHP, Ruby, JDK, actionlint) lives in
+  `hyper-check-core.yml`, once.
 
 ## Writing docs here
 
@@ -63,14 +91,16 @@ osx-x64, native wheels, ruby.wasm, ext-php-rs). Release-only work gates on
   that pays for it.
 - Byte counts, run IDs, dates and benchmark figures are point-in-time receipts. Don't
   refresh them without re-measuring. `docs/superpowers/` is a historical record.
-- Don't paste real commit SHAs into prose or examples (the README uses `<forge-sha>`).
+- Don't paste real commit SHAs into prose or examples (write `<A>`, `<B>` or `<forge-sha>`).
 
 ## Validating
 
 `validate.yml` runs `python3 -m unittest discover -s .github/scripts -p 'test_*.py'` and
 actionlint (pinned version, flags in the workflow). It only triggers on `.github/**`
-changes. Nothing here builds a platform: real behaviour shows up only in the consumers'
-release-mode CI and in a real release.
+changes. actionlint never reads an `action.yml`; `test_forge_actions.py` is their lint
+(a shell on every `run`, pinned `uses:`, the publish gates). Nothing here builds a
+platform: real behaviour shows up only in the consumers' release-mode CI and in a real
+release.
 
 ## Working with the owner
 
@@ -106,11 +136,10 @@ release-mode CI and in a real release.
 - Remove agent worktrees and their branches once the work is in the main checkout;
   `.claude/` is untracked and `git add` picks it up.
 
-## Open follow-ups (as of 2026-10-21)
+## Open follow-ups (as of 2026-10-23)
 
-- Confirm the Blazor emscripten archive packed into each `.nupkg` is attested by
-  `hyper-build-wasm.yml` the way the native libraries are, and that
-  `hyper-pack-nuget.yml`'s verify step covers it; when 0.8.0 shipped it was the one input
-  with no provenance.
-- The consumers' `EmccExportedFunction` lists may be dead weight on .NET 11 (the forge's
-  export checks don't depend on them); see each consumer's follow-ups.
+- The consumers' `EmccExportedFunction` lists are being re-verified on .NET SDK 11.0.100-rc.2
+  in all three repos (the Forge's export checks never depended on them); see each consumer's
+  follow-ups for the outcome.
+- After the first release on the two-step flow: remove the schema 1 paths from
+  `release_inventory.py` and the "Before the first release" runbook section.

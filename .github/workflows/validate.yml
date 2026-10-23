@@ -18,6 +18,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
+      # llvm-nm, clang and lld-link: the release guard's cross-format symbol and staging
+      # fixtures (test_release_guard.py) skip without them.
+      - name: Install the object-format readers the release guard tests need
+        run: sudo apt-get update && sudo apt-get install -y llvm clang lld
       - name: Exercise provenance, exact package bytes and recovery contracts
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

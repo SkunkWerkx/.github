@@ -1,0 +1,161 @@
+name: Publication gate
+description: >
+  The one place every registry input and every committed native meets: builds the schema 2
+  release inventory (release_inventory.py create), attests the inventory, derives the
+  release attestation's subjects from it and attests them all in one statement whose
+  predicate is the inventory (actions/attest, predicate type
+  https://github.com/SkunkWerkx/.github/predicates/release/v1), re-verifies everything, and
+  preserves release-packages for 90 days. On a recovery run it downloads the preserved
+  packages instead and verifies both attestations without re-attesting. Runs in the
+  consumer's checkout at B, in release.yml, so the attestations carry the consumer's own
+  identity and a consumer verifies with --repo and --source-ref alone.
+
+inputs:
+  version:
+    description: "The release version (the tag without its v)"
+    required: true
+  source_sha:
+    description: "Preparation source A"
+    required: true
+  ci_run_id:
+    description: "The release-mode ci.yml run at A"
+    required: true
+  forge_sha:
+    description: "The Forge commit this run resolved and checked out as .hyperforge"
+    required: true
+  prepared_run_id:
+    description: "Exact prior release.yml run at this tag/B holding release-packages; empty packs fresh"
+    required: false
+    default: ""
+  token:
+    description: "github.token"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.hyperforge/.github/actions/release-identity
+      with:
+        version: ${{ inputs.version }}
+        source_sha: ${{ inputs.source_sha }}
+        ci_run_id: ${{ inputs.ci_run_id }}
+        forge_sha: ${{ inputs.forge_sha }}
+        token: ${{ inputs.token }}
+
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: inputs.prepared_run_id == ''
+      with:
+        name: nuget-org-package
+        path: release-packages/nuget
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: inputs.prepared_run_id == ''
+      with:
+        name: ruby-packages
+        path: release-packages/ruby
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: inputs.prepared_run_id == ''
+      with:
+        name: pypi-packages
+        path: release-packages/pypi
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: inputs.prepared_run_id == ''
+      with:
+        name: crate-package
+        path: release-packages/crate
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: inputs.prepared_run_id == ''
+      with:
+        name: maven-central-package
+        path: release-packages/maven
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: inputs.prepared_run_id != ''
+      with:
+        name: release-packages
+        path: release-packages
+        run-id: ${{ inputs.prepared_run_id }}
+        github-token: ${{ inputs.token }}
+
+    # Every registry file is verified against its build provenance, and the natives committed
+    # at B are hashed into the inventory as schema 2 entries built at A (release_guard.py
+    # paths lists them from hyper.json). The checksums file is written beside, never inside,
+    # release-packages: an extra file there is an unexpected payload.
+    - name: Verify every final package and create the source/run inventory
+      if: inputs.prepared_run_id == ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$FORGE_SCRIPTS/release_guard.py" paths > "$RUNNER_TEMP/natives.txt"
+        python3 "$FORGE_SCRIPTS/release_inventory.py" create --natives "$RUNNER_TEMP/natives.txt" --workspace .
+        python3 "$FORGE_SCRIPTS/release_inventory.py" checksums --output release-checksums.txt
+
+    - name: Attest the complete package inventory
+      if: inputs.prepared_run_id == ''
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      with:
+        subject-path: release-packages/inventory.json
+
+    # One statement for the whole release: every file in the inventory is a subject (equal
+    # bytes under two paths stay two subjects; verification matches by digest), the inventory
+    # is the predicate, and the signer is this repository's release.yml at the tag. That is
+    # what makes `gh attestation verify <file> --repo <owner>/<repo> --source-ref refs/tags/vX.Y.Z
+    # --predicate-type <type>` true for a wheel, a Go archive or a gem alike (issue #35).
+    - name: Attest every release file from the tag
+      if: inputs.prepared_run_id == ''
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+      with:
+        subject-checksums: release-checksums.txt
+        predicate-type: https://github.com/SkunkWerkx/.github/predicates/release/v1
+        predicate-path: release-packages/inventory.json
+
+    # Fresh files were individually verified by create above, so a fresh run rechecks the
+    # signed inventory, every hash and the release attestation; a recovery run rechecks every
+    # file's build provenance as well. Neither re-attests.
+    - name: Revalidate complete preserved bytes and every provenance source
+      shell: bash
+      env:
+        INVENTORY_ONLY: ${{ inputs.prepared_run_id == '' && '--inventory-only' || '' }}
+      run: python3 "$FORGE_SCRIPTS/release_inventory.py" verify --workspace . $INVENTORY_ONLY
+
+    - name: Summarize the release
+      shell: bash
+      run: |
+        set -euo pipefail
+        {
+          echo "### Release v$VERSION at $STAGING_SHA (built from $SOURCE_SHA, ci.yml run $CI_RUN_ID, Forge $FORGE_SHA)"
+          echo
+          echo "Every file below verifies with:"
+          echo
+          echo '```sh'
+          echo "gh attestation verify <file> --repo $REPOSITORY --source-ref refs/tags/v$VERSION \\"
+          echo "  --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1"
+          echo '```'
+          echo
+          echo '```'
+          cat release-checksums.txt
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Preserve the complete verified release inputs
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: release-packages
+        path: release-packages
+        if-no-files-found: error
+        retention-days: 90
+        overwrite: true
+
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: verified-crate-package
+        path: release-packages/crate
+        if-no-files-found: error
+        retention-days: 90
+        overwrite: true
+
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: verified-maven-central-package
+        path: release-packages/maven
+        if-no-files-found: error
+        retention-days: 90
+        overwrite: true

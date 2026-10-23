@@ -1,0 +1,182 @@
+name: Pack the gems
+description: >
+  Downloads the preparation run's FFI libraries, Magnus extensions and ruby.wasm archives,
+  verifies the build provenance of every one, builds the universal gem, one platform gem per
+  RID that has an extension and the -wasm companion gem with the repository's own Rakefile,
+  attests the gems in the caller's identity and uploads them as ruby-packages. Names, ABIs
+  and platforms come from .github/hyper.json. Runs in the consumer's checkout at B.
+
+inputs:
+  run_id:
+    description: "The release-mode ci.yml run at A"
+    required: true
+  source_sha:
+    description: "Preparation source A"
+    required: true
+  token:
+    description: "github.token"
+    required: true
+  ruby_version:
+    description: "The Ruby that runs rake (the newest ABI the gems carry)"
+    required: false
+    default: "4.0"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        pattern: native-*
+        path: artifacts/native
+        merge-multiple: false
+        run-id: ${{ inputs.run_id }}
+        github-token: ${{ inputs.token }}
+
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        pattern: ruby-native-*
+        path: artifacts/ruby-native
+        merge-multiple: false
+        run-id: ${{ inputs.run_id }}
+        github-token: ${{ inputs.token }}
+
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        pattern: ruby-wasm-*
+        path: artifacts/ruby-wasm
+        merge-multiple: false
+        run-id: ${{ inputs.run_id }}
+        github-token: ${{ inputs.token }}
+
+    # Nothing downloaded above is inspectable, and nothing here gets rebuilt: the plain FFI
+    # libraries go verbatim into the universal gem, each Magnus extension into its platform
+    # gem and the wasm32-wasip1 archives into the -wasm gem, so `gem push` is the last moment
+    # these bytes can still be rejected, and it is irreversible. ci.yml attested every one at
+    # build time; this is the gate that spends those attestations.
+    #
+    # --signer-repo is not optional: `--repo X` alone asserts that the signing workflow lives
+    # in X, and the attest steps live in the Forge's build workflows. Omit it and every one
+    # fails with a bare `verifying with issuer "sigstore.dev"`.
+    - name: Verify build provenance of every binary about to be packed
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        SOURCE_SHA: ${{ inputs.source_sha }}
+      run: |
+        set -euo pipefail
+        for f in artifacts/native/native-*/* artifacts/ruby-native/ruby-native-*/* \
+                 artifacts/ruby-wasm/ruby-wasm-*/*; do
+          echo "::group::verify $f"
+          if ! gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" --signer-repo SkunkWerkx/.github \
+               --source-digest "$SOURCE_SHA"; then
+            echo "::error::No valid build provenance for $f — refusing to publish a gem containing it."
+            exit 1
+          fi
+          echo "::endgroup::"
+        done
+
+    - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
+      with:
+        ruby-version: ${{ inputs.ruby_version }}
+        bundler-cache: true
+        working-directory: ruby
+
+    - name: Build the universal "ruby" platform gem (pure Fiddle, every native library bundled)
+      shell: bash
+      working-directory: ruby
+      env:
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell --root ..)"
+        for rid in "${!LIB_NAMES[@]}"; do
+          dest="lib/$CRATE/native/$rid"
+          mkdir -p "$dest"
+          cp "../artifacts/native/native-$rid/${LIB_NAMES[$rid]}" "$dest/"
+        done
+        bundle exec rake build
+
+    # One gem per RID in hyper.json's ruby.platforms (every RID but osx-x64: an Intel Mac
+    # installs the universal gem and runs on Fiddle), each "fat" across hyper.json's ruby.abis
+    # because a Magnus extension is bound to one Ruby minor. A missing ruby-native-<rid>-<abi>
+    # artifact fails at the cp, which is the intended failure: a missing extension stops the
+    # release rather than shipping a gem that claims a platform it has no code for. The glibc
+    # gems name their libc (-linux-gnu): RubyGems before 4.0 matches a plain x86_64-linux gem
+    # on Alpine ahead of x86_64-linux-musl, which would be a gem that cannot load. Both
+    # Windows RIDs map to RubyInstaller's platform strings, and mingw Ruby's DLEXT is `so`.
+    - name: Build precompiled platform gems (Magnus)
+      shell: bash
+      working-directory: ruby
+      env:
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell --root ..)"
+        for rid in "${!RUBY_PLATFORMS[@]}"; do
+          ext=so
+          [[ "$rid" == osx-* ]] && ext=bundle
+          for abi in "${RUBY_ABIS[@]}"; do
+            mkdir -p "lib/$CRATE/$abi"
+            cp "../artifacts/ruby-native/ruby-native-$rid-$abi/$NATIVE_EXTENSION.$ext" \
+               "lib/$CRATE/$abi/$NATIVE_EXTENSION.$ext"
+          done
+          bundle exec rake "native:gem[${RUBY_PLATFORMS[$rid]}]"
+          for abi in "${RUBY_ABIS[@]}"; do rm -rf "lib/$CRATE/$abi"; done
+        done
+
+        # Each platform gem carries its extensions and no Fiddle library; the universal gem
+        # carries every library and no extension. A drift in the Rakefile or the gemspec glob
+        # fails the release here instead of shipping the wrong contents.
+        platform_gems=(pkg/*-*-*.gem)
+        [ "${#platform_gems[@]}" -eq "${#RUBY_PLATFORMS[@]}" ] \
+          || { echo "::error::expected ${#RUBY_PLATFORMS[@]} platform gems in pkg/, found: $(ls pkg)"; exit 1; }
+        for gem in pkg/*.gem; do
+          files=$(tar -xOf "$gem" data.tar.gz | tar -tzf -)
+          natives=$(grep -c "^lib/$CRATE/native/" <<<"$files" || true)
+          exts=$(grep -c "/$NATIVE_EXTENSION\." <<<"$files" || true)
+          echo "$gem: $natives Fiddle libraries, $exts Magnus extensions"
+          want="0 ${#RUBY_ABIS[@]}"
+          [[ "$(basename "$gem" .gem)" == *-*-* ]] || want="${#LIB_NAMES[@]} 0"
+          [ "$natives $exts" = "$want" ] \
+            || { echo "::error::$gem carries $natives Fiddle libraries and $exts extensions; expected $want"; exit 1; }
+        done
+
+    # The ruby.wasm companion gem: the same lib/ with no Fiddle, the extconf rbwasm runs, and
+    # one wasm32-wasip1 archive per Ruby ABI, gzipped. Packed last so the platform gems' count
+    # above never sees it.
+    - name: Build the ruby.wasm companion gem
+      shell: bash
+      working-directory: ruby
+      env:
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell --root ..)"
+        for abi in "${RUBY_ABIS[@]}"; do
+          mkdir -p "ext/$NATIVE_EXTENSION/$abi"
+          cp "../artifacts/ruby-wasm/ruby-wasm-$abi/$NATIVE_EXTENSION.a" "ext/$NATIVE_EXTENSION/$abi/"
+        done
+        bundle exec rake wasm:gem
+        gem=(pkg/"$CRATE"-wasm-*.gem)
+        files=$(tar -xOf "${gem[0]}" data.tar.gz | tar -tzf -)
+        echo "$files"
+        archives=$(grep -c "^ext/$NATIVE_EXTENSION/[0-9.]*/$NATIVE_EXTENSION\.a\.gz$" <<<"$files" || true)
+        natives=$(grep -c "^lib/$CRATE/native/" <<<"$files" || true)
+        [ "$archives $natives" = "${#RUBY_ABIS[@]} 0" ] && grep -qx "ext/$NATIVE_EXTENSION/extconf.rb" <<<"$files" \
+          || { echo "::error::${gem[0]} carries $archives archives and $natives Fiddle libraries; expected ${#RUBY_ABIS[@]} and 0, plus the extconf"; exit 1; }
+
+    # Attested BEFORE the push, over ruby/pkg/*.gem: these exact files are what `gem push`
+    # uploads, with no repack in between. This action runs in the consumer's release.yml, so
+    # Fulcio records one identity for source and signer alike and a consumer verifies with
+    # `--repo <owner>/<repo>` alone.
+    - name: Attest the built gems
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      with:
+        subject-path: ruby/pkg/*.gem
+
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ruby-packages
+        path: ruby/pkg/*.gem
+        if-no-files-found: error
+        retention-days: 90

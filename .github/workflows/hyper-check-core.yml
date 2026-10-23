@@ -1,0 +1,601 @@
+name: HyperForge — check the core and lint every binding
+
+# The static checks every Hyper* ci.yml ran inline, in one place: the no_std and no-panic
+# proofs, the export list held against every binding and against the built shared library on
+# every RID, the corpus oracle, rustfmt and clippy, the MSRV, the SemVer check against the
+# last crates.io release, each binding's doc linter and formatter, and actionlint over the
+# caller's own workflows. None of it depends on build-native; every job here is static
+# analysis or a single-platform build. Every tool pin lives here, so the three repositories
+# cannot drift one version at a time. Names come from the caller's .github/hyper.json.
+#
+# Each job has a toggle so a repository can say, in its ci.yml and with a reason, why a
+# check does not apply to it; the default is everything on.
+
+on:
+  workflow_call:
+    inputs:
+      no_std:
+        description: "cargo check for a bare-metal target, a default-features = false consumer on the host and wasm32-unknown-unknown, and no `extern crate alloc` in the core"
+        required: false
+        type: boolean
+        default: true
+      no_std_rustflags:
+        description: "RUSTFLAGS the no_std builds need (HyperUuid: --cfg getrandom_backend=\"custom\"); empty for none"
+        required: false
+        type: string
+        default: ""
+      no_panic:
+        description: "Prove no panic path survives in a release build of every export (no_panic_command)"
+        required: false
+        type: boolean
+        default: true
+      no_panic_command:
+        description: "The command, run in rust/, whose link fails on a surviving panic path"
+        required: false
+        type: string
+        default: "cargo build --release --example no_panic --features no-panic"
+      no_panic_runners:
+        description: "JSON list of runners for no_panic_command; the GNU-ld-only `cargo no-panic` alias keeps to Linux"
+        required: false
+        type: string
+        default: '["ubuntu-26.04", "windows-latest"]'
+      core_script:
+        description: "A repository-owned core check script, run in rust/ on x64 and arm64 with rustfmt, clippy and llvm-tools installed (HyperTabular's check-core.sh); empty for none"
+        required: false
+        type: string
+        default: ""
+      extra_features:
+        description: "A feature set the core also builds, tests, lints and checks on the MSRV with (HyperTabular: async); empty for none"
+        required: false
+        type: string
+        default: ""
+      exports:
+        description: "Run .github/scripts/check_exports.py: every binding declares exactly the C ABI the core exports"
+        required: false
+        type: boolean
+        default: true
+      release_checks:
+        description: "Run the repository's release-guard tests (.github/scripts/tests) with llvm, clang and lld installed"
+        required: false
+        type: boolean
+        default: true
+      corpus_oracle:
+        description: "The oracle that re-derives the conformance corpus, run with python -I; empty for none"
+        required: false
+        type: string
+        default: "corpus/oracle.py"
+      cdylib:
+        description: "Build the no_std shared library on every RID, hold its exports to the core's C ABI and, when hyper.json names a cdylib_smoke script, load it and call every export"
+        required: false
+        type: boolean
+        default: true
+      lint_rust:
+        description: "rustfmt and clippy over the core and the companion crates present (rust/fuzz, rust/browser-test)"
+        required: false
+        type: boolean
+        default: true
+      clippy_targets:
+        description: "Extra targets clippy runs the core for, comma-separated (HyperUuid: aarch64-linux-android); empty for none"
+        required: false
+        type: string
+        default: ""
+      msrv:
+        description: "cargo check the library and the cdylib feature on rust-version from rust/Cargo.toml"
+        required: false
+        type: boolean
+        default: true
+      semver:
+        description: "cargo-semver-checks against the latest crates.io release, default features"
+        required: false
+        type: boolean
+        default: true
+      lint_go:
+        required: false
+        type: boolean
+        default: true
+      lint_python:
+        required: false
+        type: boolean
+        default: true
+      lint_php:
+        required: false
+        type: boolean
+        default: true
+      lint_ruby:
+        required: false
+        type: boolean
+        default: true
+      lint_swift:
+        required: false
+        type: boolean
+        default: true
+      format_csharp:
+        required: false
+        type: boolean
+        default: true
+      format_java:
+        required: false
+        type: boolean
+        default: true
+      format_swift:
+        required: false
+        type: boolean
+        default: true
+      actionlint:
+        description: "actionlint over the caller's .github/workflows with the Forge's pinned version and flags"
+        required: false
+        type: boolean
+        default: true
+      python_version:
+        required: false
+        type: string
+        default: "3.14"
+      swift_version:
+        description: "The swift image tag whose swift-format is the formatter (the matrix's swift_version)"
+        required: false
+        type: string
+        default: "6.4"
+
+jobs:
+  check-no-std:
+    if: inputs.no_std
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: thumbv7em-none-eabi,wasm32-unknown-unknown
+      - name: cargo check (no_std, bare metal)
+        working-directory: rust
+        env:
+          RUSTFLAGS: ${{ inputs.no_std_rustflags }}
+        run: cargo check --no-default-features --target thumbv7em-none-eabi
+
+      # The check above only ever passes because a bare-metal target cannot produce a cdylib.
+      # A manifest that lists one makes a `default-features = false` consumer fail on every
+      # target that can produce one, which is the developer's own machine and the browser.
+      # This builds a consumer the way one would actually depend on the crate, on both. The
+      # host needs no RUSTFLAGS; wasm32-unknown-unknown has no OS and gets the same flags the
+      # bare-metal check names.
+      - name: A default-features = false consumer builds on the host and for wasm32-unknown-unknown
+        env:
+          NO_STD_RUSTFLAGS: ${{ inputs.no_std_rustflags }}
+        run: |
+          set -euo pipefail
+          crate=$(python3 -c 'import json; print(json.load(open(".github/hyper.json"))["crate"])')
+          consumer="$RUNNER_TEMP/no-std-consumer"
+          mkdir -p "$consumer/src"
+          printf '%s\n' '[package]' 'name = "no-std-consumer"' 'version = "0.0.0"' 'edition = "2024"' '' \
+            '[dependencies]' "$crate = { path = \"$GITHUB_WORKSPACE/rust\", default-features = false }" \
+            > "$consumer/Cargo.toml"
+          printf '%s\n' '#![no_std]' "pub use $crate as core_under_test;" > "$consumer/src/lib.rs"
+          cargo build --manifest-path "$consumer/Cargo.toml"
+          RUSTFLAGS="$NO_STD_RUSTFLAGS" cargo build --manifest-path "$consumer/Cargo.toml" --target wasm32-unknown-unknown
+
+      # The stronger half of the no_std claim: a bare-metal consumer supplies an entropy
+      # backend and a panic handler and no `#[global_allocator]`. `cargo check` never links,
+      # so a missing allocator never surfaces for an rlib; the regression to guard is the
+      # declaration itself. Anchored to a line start: the core's lib.rs explains in a comment
+      # that there is no `extern crate alloc`, and an unanchored grep reads that sentence as
+      # the thing it forbids. The extension modules sit behind features that pull in std.
+      - name: assert the core links no allocator
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          if grep -rnE '^[[:space:]]*extern crate alloc' src \
+               --exclude=python_ext.rs --exclude=ruby_ext.rs --exclude=php_ext.rs; then
+            echo '::error::The core declared "extern crate alloc"; it documents that a bare-metal consumer needs no global allocator (rust/README.md, no_std). Drop the allocation or update that claim.' >&2
+            exit 1
+          fi
+          echo "no allocator dependency in the core"
+
+  # Any panic path the optimizer leaves in a `#[no_panic]` function becomes an undefined
+  # symbol, so the link fails naming the function. A panic that crossed the C ABI would abort
+  # the host process, or trap the wasm instance, rather than surface as an error code.
+  check-no-panic:
+    if: inputs.no_panic
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.no_panic_runners) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: the public API and the C exports link with no panic path
+        working-directory: rust
+        shell: bash
+        run: ${{ inputs.no_panic_command }}
+
+  check-core:
+    if: inputs.core_script != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-26.04, ubuntu-26.04-arm]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy, llvm-tools
+          targets: thumbv7em-none-eabi, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, wasm32-unknown-unknown
+      - name: The repository's own core checks
+        run: ../${{ inputs.core_script }}
+      - name: cargo test with the extra feature set
+        if: inputs.extra_features != ''
+        run: cargo test --features "${{ inputs.extra_features }}"
+
+  # Every binding declares the core's C ABI by hand. check_exports.py holds each of them to
+  # the export list in the Rust source, so an export added to the core and missed in one
+  # binding fails here, in seconds, not on the one leg whose suite happens to call it. The
+  # release-guard tests follow in the same job: they need the same toolchain.
+  check-exports:
+    if: inputs.exports || inputs.release_checks
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python_version }}
+      - name: Every binding declares exactly the core's C ABI
+        if: inputs.exports
+        run: python .github/scripts/check_exports.py
+      - name: Install release-check toolchain
+        if: inputs.release_checks
+        run: sudo apt-get update && sudo apt-get install -y llvm clang lld
+      - name: Check release preparation and artifact rejection paths
+        if: inputs.release_checks
+        run: python -m unittest discover -s .github/scripts/tests -v
+
+  # The conformance corpus re-derived from an oracle that shares no code with the core: a
+  # hand edit to a vector fails here even if someone "fixed" a replay to match it.
+  check-corpus:
+    if: inputs.corpus_oracle != ''
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python_version }}
+      - run: python -I ${{ inputs.corpus_oracle }}
+
+  # The shared library every binding loads is built without std (`cargo cdylib`), which leaves
+  # it carrying what std used to bring by itself: the C runtime it links and a hidden
+  # `rust_eh_personality`. Both are per-platform, and a gap in either is a library that links
+  # but will not load, so every RID the Forge ships is built and loaded here rather than
+  # assumed. Each leg holds the export surface to exactly the C ABI the Rust source declares
+  # (hyper.json's exports rule, through hyper_config.py) where the platform's nm can list it,
+  # then, when hyper.json names a cdylib_smoke script, dlopens it through Python's ctypes and
+  # calls every export as a host would. The musl legs build in Alpine and also hold the
+  # library to a single NEEDED entry: musl's libc.
+  check-cdylib:
+    if: inputs.cdylib
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-26.04, rid: linux-x64 }
+          - { os: ubuntu-26.04-arm, rid: linux-arm64 }
+          - { os: macos-latest, rid: osx-arm64 }
+          - { os: windows-latest, rid: win-x64 }
+          - { os: windows-11-arm, rid: win-arm64 }
+          - { os: ubuntu-26.04, rid: linux-musl-x64, musl: true }
+          - { os: ubuntu-26.04-arm, rid: linux-musl-arm64, musl: true }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out the exact executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: ${{ !matrix.musl }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+
+      - name: Name this RID's library and the smoke script
+        id: names
+        shell: bash
+        env:
+          RID: ${{ matrix.rid }}
+        run: |
+          set -euo pipefail
+          python3 - "$RID" >> "$GITHUB_OUTPUT" <<'PY'
+          import sys
+          sys.path.insert(0, '.hyperforge/.github/scripts')
+          import hyper_config
+          cfg = hyper_config.load('.')
+          print(f'lib={cfg.lib_name(sys.argv[1])}')
+          print(f'smoke={cfg.cdylib_smoke or ""}')
+          print('exports=' + ' '.join(sorted(cfg.core_exports())))
+          PY
+
+      - name: Build the no_std shared library
+        if: ${{ !matrix.musl }}
+        working-directory: rust
+        run: cargo cdylib
+
+      - name: Exports are the C ABI symbols the source declares, and nothing else
+        if: ${{ !matrix.musl && runner.os != 'Windows' }}
+        working-directory: rust
+        env:
+          LIB: ${{ steps.names.outputs.lib }}
+          WANT: ${{ steps.names.outputs.exports }}
+        run: |
+          set -euo pipefail
+          lib="target/release/$LIB"
+          if [ "$RUNNER_OS" = macOS ]; then
+            exports=$(nm -gU "$lib" | awk '$2 == "T" {print $3}' | sed 's/^_//' | sort)
+          else
+            exports=$(nm -D --defined-only "$lib" | awk '$2 == "T" {print $3}' | sort)
+          fi
+          echo "$exports"
+          want=$(tr ' ' '\n' <<<"$WANT" | sort)
+          if [ "$exports" != "$want" ]; then
+            echo "::error::exports differ from the source's C ABI: $(diff <(echo "$want") <(echo "$exports") | grep '^[<>]' | tr '\n' ' ')"
+            exit 1
+          fi
+
+      - name: Load it and call every export
+        if: ${{ !matrix.musl && steps.names.outputs.smoke != '' }}
+        shell: bash
+        env:
+          LIB: ${{ steps.names.outputs.lib }}
+          SMOKE: ${{ steps.names.outputs.smoke }}
+        run: python -I "$SMOKE" "rust/target/release/$LIB" rust/Cargo.toml
+
+      - name: Build, check, load and call it in Alpine
+        if: ${{ matrix.musl }}
+        env:
+          LIB: ${{ steps.names.outputs.lib }}
+          SMOKE: ${{ steps.names.outputs.smoke }}
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$GITHUB_WORKSPACE:/src:ro" -e LIB -e SMOKE python:3-alpine sh -euc '
+            apk add --no-cache build-base curl >/dev/null
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null 2>&1
+            . "$HOME/.cargo/env"
+            mkdir /work
+            (cd /src && tar cf - --exclude=./rust/target ./rust ./.github) | tar xf - -C /work
+            cd /work/rust
+            cargo cdylib
+            lib="target/release/$LIB"
+            needed=$(readelf -d "$lib" | sed -n "s/.*(NEEDED).*\[\(.*\)\]/\1/p" | tr "\n" " ")
+            echo "NEEDED: $needed"
+            case "$needed" in
+              "libc.musl-"*".so.1 ") ;;
+              *) echo "::error::$lib must depend on musl libc and nothing else, found: $needed"; exit 1 ;;
+            esac
+            apk del build-base >/dev/null
+            if [ -n "$SMOKE" ]; then python -I "/work/$SMOKE" "$lib" Cargo.toml; fi
+          '
+
+  lint-rust:
+    if: inputs.lint_rust
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy
+          targets: thumbv7em-none-eabi,wasm32-unknown-unknown${{ inputs.clippy_targets != '' && format(',{0}', inputs.clippy_targets) || '' }}
+      - name: cargo fmt --check
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+          for companion in fuzz browser-test; do
+            [ -f "$companion/Cargo.toml" ] && cargo fmt --check --manifest-path "$companion/Cargo.toml"
+          done
+      - name: cargo clippy
+        working-directory: rust
+        env:
+          NO_STD_RUSTFLAGS: ${{ inputs.no_std_rustflags }}
+          EXTRA_FEATURES: ${{ inputs.extra_features }}
+          CLIPPY_TARGETS: ${{ inputs.clippy_targets }}
+        run: |
+          set -euo pipefail
+          cargo clippy --all-targets -- -D warnings
+          if [ -n "$EXTRA_FEATURES" ]; then cargo clippy --all-targets --features "$EXTRA_FEATURES" -- -D warnings; fi
+          RUSTFLAGS="$NO_STD_RUSTFLAGS" cargo clippy --no-default-features --target thumbv7em-none-eabi -- -D warnings
+          cargo clippy --no-default-features --features cdylib -- -D warnings
+          cargo clippy --features python -- -D warnings
+          for target in ${CLIPPY_TARGETS//,/ }; do cargo clippy --target "$target" -- -D warnings; done
+          [ -f fuzz/Cargo.toml ] && cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+          [ -f browser-test/Cargo.toml ] && cargo clippy --manifest-path browser-test/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings
+          true
+
+  # rust-version in rust/Cargo.toml is a promise to every crates.io consumer, and nothing else
+  # would notice it going stale: the library and the no_std shared library are built on
+  # exactly that toolchain, read from the manifest so the two cannot drift apart.
+  check-msrv:
+    if: inputs.msrv
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read rust-version
+        id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' rust/Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - name: cargo check on rust-version
+        working-directory: rust
+        env:
+          EXTRA_FEATURES: ${{ inputs.extra_features }}
+        run: |
+          set -euo pipefail
+          cargo check --lib
+          if [ -n "$EXTRA_FEATURES" ]; then cargo check --lib --features "$EXTRA_FEATURES"; fi
+          cargo check --lib --no-default-features --features cdylib
+
+  # The crate's public API against the latest release on crates.io: a breaking change with a
+  # version that does not say so fails here, naming the item. Default features only: the
+  # extension features are each repository's own plumbing and need interpreter headers.
+  check-semver:
+    if: inputs.semver
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2.9
+        with:
+          manifest-path: rust/Cargo.toml
+          feature-group: default-features
+
+  # Doc-comment coverage on every real public API surface, the same bar C#, Java and Rust get
+  # from a compiler flag, with each language's closest equivalent, and each language's
+  # formatter over every file: library, tests, benchmarks and smoke tests.
+  lint-go:
+    if: inputs.lint_go
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go/go.mod
+          # go-version-file only says where the Go version is read from; the module cache needs
+          # cache-dependency-path pointed at go.sum or setup-go searches the repository root.
+          cache-dependency-path: go/go.sum
+      - run: go install github.com/mgechev/revive@v1.16.0
+      - working-directory: go
+        run: revive -config revive.toml ./...
+      # Which archive each platform's build links; the script has why this needs a table.
+      - name: Every Go build selects its own platform's archive
+        run: .github/scripts/check_go_archives.sh
+      - name: gofmt
+        working-directory: go
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::not gofmt-formatted (run gofmt -w .): $unformatted"
+            exit 1
+          fi
+
+  lint-python:
+    if: inputs.lint_python
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python_version }}
+      - run: pip install ruff==0.16.5
+      - working-directory: python
+        run: ruff check .
+      - working-directory: python
+        run: ruff format --check .
+
+  lint-php:
+    if: inputs.lint_php
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: "8.5"
+          extensions: ffi
+      - working-directory: php
+        run: composer install --no-progress --prefer-dist
+      - working-directory: php
+        run: vendor/bin/phpcs
+
+  lint-ruby:
+    if: inputs.lint_ruby
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
+        with:
+          ruby-version: "4.0"
+          bundler-cache: true
+          working-directory: ruby
+      - working-directory: ruby
+        run: bundle exec rake docs:check
+      - working-directory: ruby
+        run: bundle exec rubocop
+
+  lint-swift:
+    if: inputs.lint_swift
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # `swiftlint-static`, not `swiftlint`: the dynamic binary links libxml2.so.2, which Ubuntu
+      # 26.04 no longer ships, and wants a Swift toolchain's libsourcekitdInProc.so. The static
+      # one needs neither. It cannot run SourceKit-backed rules and does not have to:
+      # `missing_docs`, the only rule the repositories enable, is syntax-only.
+      - name: Install SwiftLint
+        run: |
+          set -euo pipefail
+          curl -sSfL -o swiftlint.zip \
+            https://github.com/realm/SwiftLint/releases/download/0.65.1/swiftlint_linux_amd64.zip
+          mkdir swiftlint_bin
+          unzip -q swiftlint.zip -d swiftlint_bin
+      - name: Lint
+        working-directory: swift
+        run: ../swiftlint_bin/swiftlint-static lint --strict Sources
+
+  format-csharp:
+    if: inputs.format_csharp
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      # csharp/.editorconfig: tabs, LF, a final newline.
+      - working-directory: csharp
+        run: |
+          set -euo pipefail
+          project=$(python3 -c 'import json; print(json.load(open("../.github/hyper.json"))["project"])')
+          dotnet format whitespace "$project.slnx" --verify-no-changes
+
+  format-java:
+    if: inputs.format_java
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "25"
+      # Spotless with palantir-java-format (java/build.gradle.kts).
+      - working-directory: java
+        run: ./gradlew --no-daemon spotlessCheck
+
+  format-swift:
+    if: inputs.format_swift
+    runs-on: ubuntu-26.04
+    # swift-format ships in the toolchain, so the formatter is the Swift the matrix builds with.
+    container: swift:${{ inputs.swift_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # .swift-format: 4-space indent, 120 columns, every lint rule off, layout only.
+      - working-directory: swift
+        run: >-
+          swift format lint --strict --recursive
+          Package.swift Sources Tests
+          StaticSmokeTest/Package.swift StaticSmokeTest/Sources
+          Benchmarks/Package.swift Benchmarks/Benchmarks
+
+  # The caller's own workflows, with the version and flags validate.yml uses on the Forge.
+  lint-workflows:
+    if: inputs.actionlint
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.x"
+          cache: false
+      - name: Install the pinned workflow validator
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Validate workflow syntax, interfaces and dependency graph
+        run: actionlint -shellcheck= -ignore 'property "workflow_(sha|repository)" is not defined'

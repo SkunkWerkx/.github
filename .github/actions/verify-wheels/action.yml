@@ -1,0 +1,70 @@
+name: Verify the wheels
+description: >
+  Downloads the preparation run's wheels and holds them to three things, each a way a
+  release could otherwise go out wrong with every job green: every wheel hyper.json
+  expects is here (a missing one would publish a release with a platform silently absent),
+  every one is named for the version being released, and every one carries build provenance
+  from that ci.yml run. Uploads them as pypi-packages. Runs in the consumer's checkout at B.
+
+inputs:
+  run_id:
+    description: "The release-mode ci.yml run at A"
+    required: true
+  source_sha:
+    description: "Preparation source A"
+    required: true
+  token:
+    description: "github.token"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        pattern: pypi-wheels-*
+        path: dist
+        merge-multiple: true
+        run-id: ${{ inputs.run_id }}
+        github-token: ${{ inputs.token }}
+
+    # --signer-repo for the same reason as the gems: the attest step is in
+    # hyper-build-wheels.yml, in the Forge, and that is what Fulcio records as the signer.
+    - name: Verify the wheels about to be published
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        SOURCE_SHA: ${{ inputs.source_sha }}
+        RUN_ID: ${{ inputs.run_id }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
+        want=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)
+        ls -l dist
+        shopt -s nullglob
+        wheels=(dist/*.whl)
+        if [ "${#wheels[@]}" -ne "$WHEELS" ]; then
+          echo "::error::Expected $WHEELS wheels from ci.yml run $RUN_ID, found ${#wheels[@]}."
+          exit 1
+        fi
+        for wheel in "${wheels[@]}"; do
+          case "$(basename "$wheel")" in
+            "$CRATE"-"$want"-*) ;;
+            *) echo "::error::$wheel is not a $CRATE $want wheel — refusing to publish it."; exit 1 ;;
+          esac
+          echo "::group::verify $wheel"
+          if ! gh attestation verify "$wheel" --repo "$GITHUB_REPOSITORY" --signer-repo SkunkWerkx/.github \
+               --source-digest "$SOURCE_SHA"; then
+            echo "::error::No valid build provenance for $wheel — refusing to publish it."
+            exit 1
+          fi
+          echo "::endgroup::"
+        done
+
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: pypi-packages
+        path: dist/*.whl
+        if-no-files-found: error
+        retention-days: 90

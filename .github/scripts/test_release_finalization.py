@@ -68,9 +68,20 @@ if args[:2]==['release','download']:
     def git(self,cwd,*args):
         return subprocess.check_output(['git',*args],cwd=cwd,text=True,stderr=subprocess.DEVNULL).strip()
 
-    def finalize(self):
+    def finalize(self, notes=None):
         with contextlib.chdir(self.repo):
-            self.m.finalize('SkunkWerkx/HyperCast','0.10.0',self.subject,self.inventory)
+            self.m.finalize('SkunkWerkx/HyperCast','0.10.0',self.subject,self.inventory,notes)
+
+    def test_release_body_comes_from_the_notes_file_when_given(self):
+        notes=self.repo/'notes.md'
+        notes.write_text('body')
+        self.finalize(notes)
+        calls=[json.loads(line) for line in (self.root/'calls').read_text().splitlines()]
+        create=next(call for call in calls if call[:2]==['release','create'])
+        self.assertIn('--notes-file',create)
+        self.assertEqual(create[create.index('--notes-file')+1],str(notes))
+        self.assertNotIn('--generate-notes',create)
+        self.assertEqual(create[-1],str(self.inventory))
 
     def test_creates_go_tag_at_b_and_idempotently_creates_release(self):
         self.finalize()
@@ -80,6 +91,7 @@ if args[:2]==['release','download']:
         self.finalize()
         calls=[json.loads(line) for line in (self.root/'calls').read_text().splitlines()]
         self.assertEqual(sum(call[:2]==['release','create'] for call in calls),1)
+        self.assertIn('--generate-notes',next(call for call in calls if call[:2]==['release','create']))
 
     def test_rejects_existing_go_tag_with_another_subject(self):
         (self.repo/'file').write_text('unrelated')

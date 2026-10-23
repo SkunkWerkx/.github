@@ -1,0 +1,70 @@
+name: Publish to PyPI
+description: >
+  Rechecks the preserved inventory, reconciles the wheels PyPI already serves by exact bytes,
+  publishes only the missing ones with Trusted Publishing (pypa/gh-action-pypi-publish, which
+  also files a PEP 740 publish attestation per wheel on PyPI), then waits until every public
+  wheel matches the prepared bytes. The action cannot separate the OIDC exchange from the
+  upload, so a tag run skips it. Must run in the consumer's release.yml: Trusted Publishing
+  rejects the Forge's identity. Runs in the consumer's checkout at B.
+
+inputs:
+  version:
+    description: "The release version (the tag without its v)"
+    required: true
+  source_sha:
+    description: "Preparation source A"
+    required: true
+  ci_run_id:
+    description: "The release-mode ci.yml run at A"
+    required: true
+  forge_sha:
+    description: "The Forge commit this run resolved and checked out as .hyperforge"
+    required: true
+  token:
+    description: "github.token"
+    required: true
+  publication_run_id:
+    description: "Prior publication attempt holding registry receipts; the prepared run on a publish dispatch"
+    required: false
+    default: ""
+  publish:
+    description: "\"true\" uploads; \"false\" stops after the registry reconciliation and the OIDC exchange (the tag run of the two-step release)"
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.hyperforge/.github/actions/release-identity
+      with:
+        version: ${{ inputs.version }}
+        source_sha: ${{ inputs.source_sha }}
+        ci_run_id: ${{ inputs.ci_run_id }}
+        forge_sha: ${{ inputs.forge_sha }}
+        token: ${{ inputs.token }}
+        publication_run_id: ${{ inputs.publication_run_id }}
+
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: release-packages
+        path: release-packages
+
+    - name: Recheck the immutable inventory before authentication
+      shell: bash
+      run: python3 "$FORGE_SCRIPTS/release_inventory.py" verify --registry pypi --workspace .
+
+    - name: Reconcile existing wheels by exact public bytes
+      id: pending
+      shell: bash
+      run: python3 "$FORGE_SCRIPTS/release_inventory.py" registry-plan --registry pypi --output pending-pypi
+
+    - name: Publish only missing preserved wheels (Trusted Publishing)
+      if: steps.pending.outputs.pending == 'true' && inputs.publish == 'true'
+      uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+      with:
+        packages-dir: pending-pypi
+
+    - name: Verify every public wheel matches the prepared bytes
+      if: inputs.publish == 'true'
+      shell: bash
+      run: python3 "$FORGE_SCRIPTS/release_inventory.py" registry-confirm --registry pypi

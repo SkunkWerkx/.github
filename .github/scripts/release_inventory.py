@@ -2,6 +2,18 @@
 
 The inventory is itself attested by the consumer. File attestations independently
 bind reused wheels to A and assembled packages to B. No native compilation occurs.
+
+Schema 2 (written by `create --natives`) also lists the native payloads committed at B and
+names the release tag, and is the predicate of the release attestation: one `actions/attest`
+statement, signed by the consumer's release.yml at the tag, whose subjects are every file in
+the inventory (`checksums` prints them in shasum form) and whose predicate type is
+PREDICATE_TYPE (documented in docs/predicates/release-v1.md). `verify` checks it for every
+file in scope with the bundle downloaded once, so a consumer's one-line command,
+
+    gh attestation verify <file> --repo <owner>/<repo> --source-ref refs/tags/vX.Y.Z \
+        --predicate-type <PREDICATE_TYPE>
+
+is exactly what the release ran before publishing. Schema 1 inventories still verify.
 """
 import argparse
 import hashlib
@@ -20,6 +32,9 @@ import zipfile
 from release_package_metadata import validate_package_metadata
 
 FORGE = 'SkunkWerkx/.github'
+PREDICATE_TYPE = 'https://github.com/SkunkWerkx/.github/predicates/release/v1'
+SCHEMA = 2
+REGISTRIES = ('nuget', 'ruby', 'pypi', 'crate', 'maven')
 IDENTITY = ('repository', 'crate', 'version', 'source_sha', 'staging_sha',
             'ci_run_id', 'package_run_id', 'forge_sha')
 PLATFORMS = ('x86_64-linux-gnu', 'aarch64-linux-gnu', 'x86_64-linux-musl',
@@ -89,7 +104,30 @@ def validate_layout(paths, crate, version):
         raise ValueError('Maven signed bundle missing')
 
 
-def build_inventory(root, identity):
+def native_files(workspace, natives):
+    """The committed native payloads, as repository-relative paths under the checkout at B."""
+    if workspace is None:
+        raise ValueError('a schema 2 inventory needs --workspace, the checkout at B')
+    if len(natives) != len(set(natives)) or not natives:
+        raise ValueError('native payload list must be non-empty and unique')
+    for relative in natives:
+        if relative.split('/')[0] in REGISTRIES or relative == 'inventory.json':
+            raise ValueError(f'native payload path collides with a package path: {relative}')
+        path = Path(workspace) / relative
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f'native payload must be a committed regular file: {relative}')
+    return list(natives)
+
+
+def entry_path(root, workspace, entry):
+    if entry.get('location') == 'source':
+        if workspace is None:
+            raise ValueError('a schema 2 inventory needs --workspace, the checkout at B')
+        return Path(workspace) / entry['path']
+    return root / entry['path']
+
+
+def build_inventory(root, identity, natives=None, workspace=None):
     validate_identity(identity)
     paths = payload_files(root)
     validate_layout([p.relative_to(root).as_posix() for p in paths], identity['crate'], identity['version'])
@@ -100,13 +138,60 @@ def build_inventory(root, identity):
         files.append(dict(path=name, size=path.stat().st_size, sha256=sha256(path),
                           source_sha=identity['source_sha' if name.startswith('pypi/') else 'staging_sha'],
                           signer_repo=identity['repository'] if name.startswith('ruby/') else FORGE))
-    return dict(schema=1, **identity, files=files)
+    if natives is None:
+        return dict(schema=1, **identity, files=files)
+    for entry in files:
+        entry['location'] = 'packages'
+    for relative in native_files(workspace, natives):
+        path = Path(workspace) / relative
+        # Committed at B, built and attested by the Forge at A, like the wheels.
+        files.append(dict(path=relative, size=path.stat().st_size, sha256=sha256(path),
+                          source_sha=identity['source_sha'], signer_repo=FORGE, location='source'))
+    return dict(schema=SCHEMA, **identity, tag=f"v{identity['version']}", files=files)
 
 
-def validate_inventory(root, saved, identity):
-    current = build_inventory(root, identity)
+def validate_inventory(root, saved, identity, workspace=None):
+    if saved.get('schema', 1) >= 2:
+        natives = [e['path'] for e in saved['files'] if e.get('location') == 'source']
+        current = build_inventory(root, identity, natives, workspace)
+    else:
+        current = build_inventory(root, identity)
     if saved != current:
         raise ValueError('preserved inventory identity, file set, provenance or bytes differ')
+
+
+def checksums(inventory):
+    """Every inventory file in shasum form: the subjects of the release attestation."""
+    return ''.join(f"{entry['sha256']}  {entry['path']}\n" for entry in inventory['files'])
+
+
+def in_scope(entry, registry):
+    return not registry or entry['path'].startswith(registry + '/')
+
+
+def verify_release_attestation(root, inventory, registry=None, workspace=None, cwd=None):
+    """Every file in scope is a subject of a release attestation whose predicate is this
+    inventory, signed in the consumer's own repository at B. One bundle download, then
+    offline verification per file: the bundle names every subject."""
+    entries = [e for e in inventory['files'] if in_scope(e, registry)]
+    if not entries:
+        raise ValueError('no inventory files in scope')
+    repo, staging = inventory['repository'], inventory['staging_sha']
+    with tempfile.TemporaryDirectory(dir=cwd) as directory:
+        subprocess.run(['gh', 'attestation', 'download', str(entry_path(root, workspace, entries[0])),
+                        '--repo', repo, '--predicate-type', PREDICATE_TYPE], check=True, cwd=directory)
+        bundles = list(Path(directory).glob('*.jsonl'))
+        if len(bundles) != 1:
+            raise ValueError('expected one release attestation bundle')
+        for entry in entries:
+            output = subprocess.check_output(['gh', 'attestation', 'verify', str(entry_path(root, workspace, entry)),
+                                              '--repo', repo, '--bundle', str(bundles[0]),
+                                              '--source-digest', staging, '--predicate-type', PREDICATE_TYPE,
+                                              '--format', 'json'], text=True)
+            statements = [r['verificationResult']['statement'] for r in json.loads(output)]
+            if not any(s.get('predicateType') == PREDICATE_TYPE and s.get('predicate') == inventory
+                       for s in statements):
+                raise ValueError(f"release attestation predicate is not this inventory: {entry['path']}")
 
 
 def validate_package_run(run, identity, current_run_id=''):
@@ -123,11 +208,11 @@ def validate_package_run(run, identity, current_run_id=''):
         raise ValueError('prior package run must have finished before recovery')
 
 
-def attest_files(root, inventory, registry=None):
+def attest_files(root, inventory, registry=None, workspace=None):
     for entry in inventory['files']:
-        if registry and not entry['path'].startswith(registry+'/'):
+        if not in_scope(entry, registry):
             continue
-        subprocess.run(['gh','attestation','verify',str(root/entry['path']),
+        subprocess.run(['gh','attestation','verify',str(entry_path(root, workspace, entry)),
                         '--repo', inventory['repository'], '--signer-repo', entry['signer_repo'],
                         '--source-digest',entry['source_sha']], check=True)
 
@@ -259,8 +344,11 @@ def nuget_finalized(root):
     confirm_registry(check,attempts=60,pause=lambda:time.sleep(20))
 
 
-def finalize(repo, version, subject, inventory):
-    """Create only missing Go tag/Release; reject an existing different subject."""
+def finalize(repo, version, subject, inventory, notes=None):
+    """Create only missing Go tag/Release; reject an existing different subject.
+
+    `notes` is the release body release_notes.py wrote from the CHANGELOG; without it the
+    Release gets GitHub's generated notes."""
     def remote_ref(tag):
         output = subprocess.check_output(['git','ls-remote','origin',f'refs/tags/{tag}',f'refs/tags/{tag}^{{}}'],text=True)
         records = dict(line.split()[::-1] for line in output.splitlines())
@@ -282,8 +370,9 @@ def finalize(repo, version, subject, inventory):
         check = subprocess.run(['gh','api','--include',f'repos/{repo}/releases/tags/v{version}'],capture_output=True,text=True)
         if 'HTTP 404' not in check.stdout and 'HTTP 404' not in check.stderr:
             raise ValueError('could not establish whether the GitHub Release exists')
+        body = ['--notes-file', str(notes)] if notes else ['--generate-notes']
         subprocess.run(['gh','release','create',f'v{version}','--repo',repo,'--verify-tag',
-                        '--title',f'v{version}','--generate-notes',str(inventory)],check=True)
+                        '--title',f'v{version}',*body,str(inventory)],check=True)
     else:
         release = json.loads(result.stdout)
         if release['isDraft']:
@@ -300,12 +389,17 @@ def finalize(repo, version, subject, inventory):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('command',choices=['create','verify','run','registry-plan','registry-confirm','nuget-finalized','nuget-receipt','finalize'])
+    parser.add_argument('command',choices=['create','verify','run','registry-plan','registry-confirm','nuget-finalized','nuget-receipt','finalize','checksums'])
     parser.add_argument('--root',type=Path,default=Path('release-packages'))
-    parser.add_argument('--registry',choices=['nuget','ruby','pypi','crate','maven'])
+    parser.add_argument('--registry',choices=list(REGISTRIES))
     parser.add_argument('--inventory-only',action='store_true',
                         help='Verify the signed inventory and every hash after individual package verification')
     parser.add_argument('--output',type=Path,default=Path('pending'))
+    parser.add_argument('--natives',type=Path,
+                        help='create: file listing the committed native payloads (release_guard.py paths); writes schema 2')
+    parser.add_argument('--workspace',type=Path,
+                        help='the checkout at B holding the committed natives; required for schema 2')
+    parser.add_argument('--notes',type=Path,help='finalize: the release body written by release_notes.py')
     args = parser.parse_args()
     identity = {key:os.environ.get(key.upper(),'') for key in IDENTITY}
     if args.command == 'run':
@@ -315,20 +409,31 @@ def main():
         validate_package_run(run,{**identity,'package_run_id':selected})
     elif args.command in ('create','verify'):
         if args.command == 'create':
-            inventory = build_inventory(args.root,identity)
+            natives = args.natives.read_text().split() if args.natives else None
+            inventory = build_inventory(args.root,identity,natives,args.workspace)
             (args.root/'inventory.json').write_text(json.dumps(inventory,indent=2)+'\n')
         else:
             inventory = json.loads((args.root/'inventory.json').read_text())
             # Recovery may originate in an earlier package run but must have the same
             # repository, A, B, source run and pinned Forge implementation.
             identity['package_run_id'] = str(inventory['package_run_id'])
-            validate_inventory(args.root,inventory,identity)
+            validate_inventory(args.root,inventory,identity,args.workspace)
             subprocess.run(['gh','attestation','verify',str(args.root/'inventory.json'),
                             '--repo',identity['repository'],'--source-digest',identity['staging_sha']],check=True)
         run = api(f"repos/{identity['repository']}/actions/runs/{identity['package_run_id']}")
         validate_package_run(run,identity,os.environ.get('GITHUB_RUN_ID',''))
         if not args.inventory_only:
-            attest_files(args.root,inventory,args.registry)
+            attest_files(args.root,inventory,args.registry,args.workspace)
+        if args.command == 'verify' and inventory.get('schema',1) >= 2:
+            # The release attestation is new at the gate, so even --inventory-only checks it.
+            verify_release_attestation(args.root,inventory,args.registry,args.workspace)
+    elif args.command == 'checksums':
+        inventory = json.loads((args.root/'inventory.json').read_text())
+        if inventory.get('schema',1) < 2:
+            raise ValueError('release attestation subjects need a schema 2 inventory')
+        if args.output.resolve().is_relative_to(args.root.resolve()):
+            raise ValueError('the checksums file must not be written inside the package root')
+        args.output.write_text(checksums(inventory))
     elif args.command == 'registry-plan':
         registry_plan(args.root,args.registry,args.output)
     elif args.command == 'registry-confirm':
@@ -345,7 +450,7 @@ def main():
         receipt = dict(staging_sha=saved['staging_sha'], packages={p.name:sha256(p) for p in paths},symbols_accepted=True)
         (args.output/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
     else:
-        finalize(identity['repository'],identity['version'],identity['staging_sha'],args.root/'inventory.json')
+        finalize(identity['repository'],identity['version'],identity['staging_sha'],args.root/'inventory.json',args.notes)
 
 
 if __name__ == '__main__':

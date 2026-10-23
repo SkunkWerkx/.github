@@ -47,6 +47,11 @@ on:
         required: false
         type: string
         default: ""
+      publish:
+        description: "Upload to the registry. false stops after the reconciliation and, for crates.io, the Trusted Publishing exchange: the tag run of the two-step release prepares and proves, a dispatch publishes"
+        required: false
+        type: boolean
+        default: true
       publication_run_id:
         description: "Prior publication run whose Central receipt must be recovered"
         required: false
@@ -187,7 +192,7 @@ jobs:
         run: python3 .hyperforge/.github/scripts/package_preparation.py maven-check maven-package publication-receipt/maven.json >> "$GITHUB_OUTPUT"
 
       - name: Publish the preserved Central bundle
-        if: steps.registry.outputs.published != 'true'
+        if: inputs.publish == true && steps.registry.outputs.published != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
@@ -198,6 +203,7 @@ jobs:
         run: python3 .hyperforge/.github/scripts/package_preparation.py maven-publish maven-package publication-receipt/maven.json
 
       - name: Verify every public Maven byte against the preserved signed bundle
+        if: inputs.publish == true
         run: python3 .hyperforge/.github/scripts/package_preparation.py maven-confirm maven-package publication-receipt/maven.json
 
       - name: Preserve the Central receipt even after a lost response

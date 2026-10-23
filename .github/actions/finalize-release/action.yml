@@ -1,0 +1,56 @@
+name: Finalize the release
+description: >
+  After every publisher succeeded: verifies the preserved inventory one last time, writes the
+  GitHub Release body from the CHANGELOG's section for this version plus a generated
+  Verifying section (release_notes.py), creates the go/vX.Y.Z tag at B if missing and the
+  GitHub Release with inventory.json attached, or validates the ones that exist. Runs in the
+  consumer's checkout at B (fetch-depth 2, contents: write).
+
+inputs:
+  version:
+    description: "The release version (the tag without its v)"
+    required: true
+  source_sha:
+    description: "Preparation source A"
+    required: true
+  ci_run_id:
+    description: "The release-mode ci.yml run at A"
+    required: true
+  forge_sha:
+    description: "The Forge commit this run resolved and checked out as .hyperforge"
+    required: true
+  token:
+    description: "github.token"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.hyperforge/.github/actions/release-identity
+      with:
+        version: ${{ inputs.version }}
+        source_sha: ${{ inputs.source_sha }}
+        ci_run_id: ${{ inputs.ci_run_id }}
+        forge_sha: ${{ inputs.forge_sha }}
+        token: ${{ inputs.token }}
+
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: release-packages
+        path: release-packages
+
+    - name: Verify the final release inventory
+      shell: bash
+      run: python3 "$FORGE_SCRIPTS/release_inventory.py" verify --inventory-only --workspace .
+
+    - name: Write the release notes from the CHANGELOG
+      shell: bash
+      run: python3 "$FORGE_SCRIPTS/release_notes.py" --output "$RUNNER_TEMP/notes.md"
+
+    - name: Create or validate the Go tag and GitHub Release at B
+      shell: bash
+      run: |
+        set -euo pipefail
+        git config user.name github-actions[bot]
+        git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+        python3 "$FORGE_SCRIPTS/release_inventory.py" finalize --notes "$RUNNER_TEMP/notes.md"

@@ -4,9 +4,12 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+import unittest.mock
 import zipfile
 
 from test_package_inventory_metadata import create_packages
@@ -115,6 +118,150 @@ class InventoryTests(unittest.TestCase):
         self.m.confirm_registry(lambda:next(attempts), attempts=3, pause=lambda:None)
         with self.assertRaisesRegex(ValueError, 'visible'):
             self.m.confirm_registry(lambda:['missing'], attempts=2, pause=lambda:None)
+
+    def natives(self):
+        """A checkout at B with three committed native payloads, and their path list."""
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        workspace = Path(outside.name) / 'checkout'
+        self.natives_list = Path(outside.name) / 'natives.txt'
+        natives = ['php/src/native/linux-x64/libhypercast.so', 'go/staticlib/linux_amd64/libhypercast.a',
+                   'swift/HyperCastCore.artifactbundle/x86_64-unknown-linux-gnu/libhypercast.a']
+        for index, relative in enumerate(natives):
+            path = workspace / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'native bytes' if index else b'first native')
+        self.natives_list.write_text('\n'.join(natives) + '\n')
+        return workspace, natives
+
+    def test_schema_two_lists_committed_natives_at_a_and_names_the_tag(self):
+        workspace, natives = self.natives()
+        result = self.m.build_inventory(self.root, self.identity, natives, workspace)
+        self.assertEqual((result['schema'], result['tag']), (2, 'v0.10.0'))
+        self.assertEqual(len(result['files']), len(self.files) + 3)
+        source = [e for e in result['files'] if e['location'] == 'source']
+        self.assertEqual([e['path'] for e in source], natives)
+        for entry in source:
+            self.assertEqual((entry['source_sha'], entry['signer_repo']), ('a' * 40, self.m.FORGE))
+        self.assertTrue(all(e['location'] == 'packages' for e in result['files'] if e['path'].split('/')[0] in self.m.REGISTRIES))
+        self.m.validate_inventory(self.root, result, self.identity, workspace)
+        # Equal bytes under two paths stay two subjects; `gh attestation verify` matches by digest.
+        digests = [e['sha256'] for e in source[1:]]
+        self.assertEqual(digests[0], digests[1])
+        lines = self.m.checksums(result).splitlines()
+        self.assertEqual(len(lines), len(result['files']))
+        self.assertEqual(lines[-1], f"{source[-1]['sha256']}  {natives[-1]}")
+        self.assertTrue(all(len(line.split('  ')[0]) == 64 for line in lines))
+        # A schema 1 inventory still verifies unchanged, and never carries locations.
+        legacy = self.m.build_inventory(self.root, self.identity)
+        self.assertEqual(legacy['schema'], 1)
+        self.assertNotIn('location', legacy['files'][0])
+        self.m.validate_inventory(self.root, legacy, self.identity)
+
+    def test_schema_two_rejects_tampered_missing_or_colliding_natives(self):
+        workspace, natives = self.natives()
+        saved = self.m.build_inventory(self.root, self.identity, natives, workspace)
+        (workspace / natives[1]).write_bytes(b'rebuilt elsewhere')
+        with self.assertRaises(ValueError):
+            self.m.validate_inventory(self.root, saved, self.identity, workspace)
+        (workspace / natives[1]).unlink()
+        with self.assertRaisesRegex(ValueError, 'regular file'):
+            self.m.validate_inventory(self.root, saved, self.identity, workspace)
+        with self.assertRaisesRegex(ValueError, 'workspace'):
+            self.m.validate_inventory(self.root, saved, self.identity)
+        for bad in (['nuget/x.nupkg'], ['inventory.json'], natives[:1] * 2, []):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.m.build_inventory(self.root, self.identity, bad, workspace)
+        (self.root / 'inventory.json').write_text(json.dumps(self.m.build_inventory(self.root, self.identity)))
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name('release_inventory.py')), 'checksums',
+                                 '--root', str(self.root), '--output', str(workspace / 'sums.txt')],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('schema 2', result.stderr)
+
+    def test_release_attestation_is_checked_per_file_against_one_downloaded_bundle(self):
+        workspace, natives = self.natives()
+        inventory = self.m.build_inventory(self.root, self.identity, natives, workspace)
+        calls = []
+        def fake_run(args, check=True, cwd=None, **kwargs):
+            calls.append(args)
+            self.assertEqual(args[:3], ['gh', 'attestation', 'download'])
+            self.assertEqual(args[args.index('--predicate-type') + 1], self.m.PREDICATE_TYPE)
+            (Path(cwd) / 'sha256:abc.jsonl').write_text('{}')
+        def fake_output(args, text=True, **kwargs):
+            calls.append(args)
+            self.assertEqual(args[:3], ['gh', 'attestation', 'verify'])
+            self.assertTrue(Path(args[3]).is_file(), args[3])
+            self.assertIn('--bundle', args)
+            self.assertEqual(args[args.index('--source-digest') + 1], 'b' * 40)
+            predicate = dict(inventory) if not os.environ.get('WRONG_PREDICATE') else {**inventory, 'version': '0.9.0'}
+            return json.dumps([{'verificationResult': {'statement': {
+                'predicateType': self.m.PREDICATE_TYPE, 'predicate': predicate}}}])
+        with unittest.mock.patch.object(self.m.subprocess, 'run', fake_run), \
+             unittest.mock.patch.object(self.m.subprocess, 'check_output', fake_output):
+            self.m.verify_release_attestation(self.root, inventory, None, workspace)
+            self.assertEqual(sum(c[2] == 'download' for c in calls), 1)
+            self.assertEqual(sum(c[2] == 'verify' for c in calls), len(inventory['files']))
+            calls.clear()
+            self.m.verify_release_attestation(self.root, inventory, 'ruby', workspace)
+            self.assertEqual(sum(c[2] == 'verify' for c in calls), 9)
+            with unittest.mock.patch.dict(os.environ, {'WRONG_PREDICATE': '1'}), \
+                 self.assertRaisesRegex(ValueError, 'predicate is not this inventory'):
+                self.m.verify_release_attestation(self.root, inventory, 'crate', workspace)
+
+    def test_cli_creates_schema_two_writes_checksums_outside_the_root_and_recovers(self):
+        workspace, natives = self.natives()
+        helper = tempfile.TemporaryDirectory()
+        self.addCleanup(helper.cleanup)
+        gh = Path(helper.name) / 'gh'
+        gh.write_text('''#!/usr/bin/env python3
+import json,os,pathlib,sys
+args=sys.argv[1:]
+if args[0]=='api':
+ print(json.dumps(dict(id=34,head_sha='b'*40,path='.github/workflows/release.yml',event='push',status='completed',conclusion='failure',repository=dict(full_name='SkunkWerkx/HyperCast'))))
+ sys.exit(0)
+if args[1]=='download':
+ pathlib.Path('sha256:deadbeef.jsonl').write_text('{}')
+ sys.exit(0)
+path=pathlib.Path(args[2])
+if '--predicate-type' in args:
+ inventory=json.loads(pathlib.Path(os.environ['INVENTORY']).read_text())
+ if os.environ.get('WRONG_PREDICATE'): inventory['version']='0.9.0'
+ print(json.dumps([{'verificationResult':{'statement':{'predicateType':args[args.index('--predicate-type')+1],'predicate':inventory}}}]))
+ sys.exit(0)
+source='a'*40 if path.parent.name=='pypi' or 'release-packages' not in path.parts else 'b'*40
+sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
+''')
+        gh.chmod(0o755)
+        root = self.root / 'release-packages'
+        shutil.move(str(self.root / 'nuget'), root / 'nuget')
+        for group in ('ruby', 'pypi', 'crate', 'maven'):
+            shutil.move(str(self.root / group), root / group)
+        env = {**os.environ, **{key.upper(): value for key, value in self.identity.items()},
+               'PATH': str(gh.parent) + os.pathsep + os.environ['PATH'], 'GITHUB_RUN_ID': '34',
+               'INVENTORY': str(root / 'inventory.json')}
+        command = [sys.executable, str(Path(__file__).with_name('release_inventory.py'))]
+        subprocess.run([*command, 'create', '--root', str(root), '--natives', str(self.natives_list),
+                        '--workspace', str(workspace)], env=env, check=True, cwd=self.root)
+        inventory = json.loads((root / 'inventory.json').read_text())
+        self.assertEqual(inventory['schema'], 2)
+        sums = self.root / 'release-checksums.txt'
+        subprocess.run([*command, 'checksums', '--root', str(root), '--output', str(sums)], env=env, check=True)
+        self.assertEqual(len(sums.read_text().splitlines()), len(inventory['files']))
+        result = subprocess.run([*command, 'checksums', '--root', str(root), '--output', str(root / 'sums.txt')],
+                                env=env, capture_output=True)
+        self.assertNotEqual(result.returncode, 0, 'checksums inside the package root would become an unexpected payload')
+        env.update(GITHUB_RUN_ID='56', PACKAGE_RUN_ID='56')
+        subprocess.run([*command, 'verify', '--root', str(root), '--workspace', str(workspace)], env=env, check=True, cwd=self.root)
+        subprocess.run([*command, 'verify', '--inventory-only', '--root', str(root), '--workspace', str(workspace)], env=env, check=True, cwd=self.root)
+        for broken in ({'WRONG_PREDICATE': '1'}, {}):
+            if not broken:
+                (workspace / natives[0]).write_bytes(b'rebuilt')
+            result = subprocess.run([*command, 'verify', '--root', str(root), '--workspace', str(workspace)],
+                                    env={**env, **broken}, capture_output=True, cwd=self.root)
+            self.assertNotEqual(result.returncode, 0, broken)
+        result = subprocess.run([*command, 'verify', '--root', str(root)], env=env, capture_output=True, cwd=self.root)
+        self.assertNotEqual(result.returncode, 0, 'schema 2 needs the checkout at B')
 
     def test_cli_recovers_verified_bytes_without_native_artifacts_and_rejects_wrong_provenance(self):
         helper=tempfile.TemporaryDirectory()
