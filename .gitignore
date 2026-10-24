@@ -1,2 +1,5 @@
 __pycache__/
 *.py[cod]
+
+# What Finder writes into any folder it opens.
+.DS_Store
