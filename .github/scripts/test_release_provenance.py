@@ -67,31 +67,27 @@ with open('verified.log','a') as log: log.write(str(p)+'\\n')
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     def maven(self):
-        self.env.update(CRATE='hyperuuid', MUSL='true', WASIP1_MODULE='true',
-                        RESOURCES_DIR='resources/native')
+        self.env.update(CRATE='hyperuuid', MUSL='true', RESOURCES_DIR='resources/native')
         return step(MAVEN_ACTION, 'Stage native/{rid}/{filename} resources', {})
 
-    def test_maven_verifies_every_native_and_wasi_before_publication(self):
+    def test_maven_verifies_every_native_before_publication(self):
         paths = []
         for rid in ('linux-x64', 'linux-arm64', 'linux-musl-x64', 'linux-musl-arm64',
                     'osx-x64', 'osx-arm64', 'win-x64', 'win-arm64'):
             lib = 'hyperuuid.dll' if rid.startswith('win') else 'libhyperuuid.dylib' if rid.startswith('osx') else 'libhyperuuid.so'
             paths.append(self.write(f'artifacts/native-{rid}/{lib}'))
-        wasi = self.write('artifacts/wasm-wasip1-module/hyperuuid.wasm')
-        paths.append(wasi)
         script = self.maven() + '\ntouch published'
         self.assertEqual(self.execute(script).returncode, 0)
-        self.assertEqual(len((self.root / 'verified.log').read_text().splitlines()), 9)
+        self.assertEqual(len((self.root / 'verified.log').read_text().splitlines()), 8)
         for src in paths:
-            rid = src.parent.name.removeprefix('native-').replace('wasm-wasip1-module', 'wasm32-wasip1')
+            rid = src.parent.name.removeprefix('native-')
             self.assertEqual((self.root / f'resources/native/{rid}/{src.name}').read_bytes(), src.read_bytes())
-        for src in (paths[0], wasi):
-            (self.root / 'published').unlink(missing_ok=True)
-            src.write_text('wrong source')
-            self.assertNotEqual(self.execute(script).returncode, 0)
-            self.assertFalse((self.root / 'published').exists())
-            src.write_text('verified')
-        wasi.unlink()
+        (self.root / 'published').unlink(missing_ok=True)
+        paths[0].write_text('wrong source')
+        self.assertNotEqual(self.execute(script).returncode, 0)
+        self.assertFalse((self.root / 'published').exists())
+        paths[0].write_text('verified')
+        paths[0].unlink()
         self.assertNotEqual(self.execute(script).returncode, 0)
         self.assertFalse((self.root / 'published').exists())
 

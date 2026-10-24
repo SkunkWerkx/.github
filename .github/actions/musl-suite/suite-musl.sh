@@ -125,13 +125,9 @@ case "$binding" in
     '
     ;;
 
-  # The FFM suite, then the smoke program on a plain JVM. The wasm module rides along when
-  # the checkout has one (WASM_MODULE names it), because the jar always carries both and two
-  # backend-selection tests skip without it — but only the musl library is on the classpath
-  # as a native build, so `backend: native` in the smoke program's output, and the test
-  # that asserts the backend follows the property, mean the musl library is what loaded.
+  # The FFM suite, then the smoke program on a plain JVM. Only the musl library is on the
+  # classpath, so a suite that passes means the musl library is what loaded.
   java)
-    extra_env=(-e WASM_MODULE="${WASM_MODULE:-}")
     in_alpine "${SUITE_IMAGE:-eclipse-temurin:25-jdk-alpine}" '
       cp -r /src/java /work/java
       cp /src/LICENSE /work/
@@ -139,10 +135,6 @@ case "$binding" in
       rm -rf build .gradle aot-smoke-test/build benchmarks/build src/main/resources/native
       mkdir -p "src/main/resources/native/$RID"
       cp "/musl/lib$CRATE.so" "src/main/resources/native/$RID/"
-      if [ -n "$WASM_MODULE" ] && [ -f "/src/$WASM_MODULE" ]; then
-        mkdir -p src/main/resources/native/wasm32-wasip1
-        cp "/src/$WASM_MODULE" src/main/resources/native/wasm32-wasip1/
-      fi
       chmod +x gradlew
       ./gradlew test :aot-smoke-test:run --console=plain
     '

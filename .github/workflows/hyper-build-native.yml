@@ -153,17 +153,6 @@ on:
         description: "Env var that forces the zero-compile fallback backend (e.g. HYPERCAST_PURE)"
         required: true
         type: string
-      wasip1_module:
-        description: >
-          Also build the core as a wasm32-wasip1 module ({crate}.wasm, the cdylib target with
-          the crate's own .cargo/config.toml export flags) on every leg, stage it beside the
-          Java binding's native library, and run the Java suite a second time against its
-          in-process GraalWasm backend (`./gradlew testWasm`). The module is uploaded once,
-          from the linux-x64 leg, as `wasm-wasip1-module`, and attested like the native
-          library.
-        required: false
-        type: boolean
-        default: false
       csharp_test_project:
         description: "Path to the C# test csproj"
         required: true
@@ -493,8 +482,6 @@ jobs:
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          targets: ${{ inputs.wasip1_module && 'wasm32-wasip1' || '' }}
 
       # `cargo rustc --crate-type cdylib`, not `cargo build`: a Hyper* core's manifest lists
       # only the rlib. Cargo builds every crate type a dependency declares, and a cdylib is a
@@ -508,8 +495,8 @@ jobs:
       # that spelling, because how it is built is the crate's call: HyperUuid's alias is
       # exactly `rustc --release --crate-type cdylib`, while HyperCast's builds the library
       # without std (its own feature and abort-on-panic setting, output still in
-      # target/release/). The extension, wasm32-wasip1 and test builds stay spelled out —
-      # each has one shape for every crate. A Hyper* crate is expected to define the alias
+      # target/release/). The extension and test builds stay spelled out — each has one
+      # shape for every crate. A Hyper* crate is expected to define the alias
       # in rust/.cargo/config.toml, as both do.
       - name: Build native core (release)
         working-directory: rust
@@ -534,18 +521,6 @@ jobs:
             exit 1
           fi
 
-      # The same crate, the same exports, for a host that cannot dlopen anything: a
-      # wasm32-wasip1 module GraalWasm runs inside the JVM process. Built on every leg so
-      # each leg's second Java suite run tests a module built by the same toolchain that
-      # built its native library; only one copy needs to leave the job, since
-      # a wasm module is the same bytes wherever it was linked. Inside rust/ deliberately:
-      # cargo only reads the crate's .cargo/config.toml (the --export=malloc/free link flags
-      # the hosts depend on) from the crate directory.
-      - name: Build wasm32-wasip1 module
-        if: inputs.wasip1_module && matrix.shard != 'swift-ruby'
-        working-directory: rust
-        run: cargo rustc --release --crate-type cdylib --target wasm32-wasip1
-
       # Unit tests, each repo's shared conformance corpus, and its counting-allocator
       # allocation proof, per leg.
       - name: Run Rust test suite
@@ -565,23 +540,6 @@ jobs:
         with:
           name: native-${{ matrix.rid }}
           path: out/${{ matrix.lib_name }}
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: inputs.wasip1_module && matrix.rid == 'linux-x64'
-        with:
-          name: wasm-wasip1-module
-          path: rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm
-
-      # One artifact, one attestation: the module a caller's release packs into the jar is
-      # this linux-x64 copy, so this is the copy whose provenance gets recorded.
-      - name: Attest wasm32-wasip1 module provenance
-        if: >-
-          inputs.wasip1_module && matrix.rid == 'linux-x64' && inputs.attest_native && inputs.mode != 'pr' &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm
 
       # Provenance for an artifact a consumer can't reproduce. The Rust build is
       # deterministic on a fixed toolchain, but it is NOT bit-reproducible across machines —
@@ -818,13 +776,6 @@ jobs:
           mkdir -p "${{ inputs.java_resources_dir }}/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "${{ inputs.java_resources_dir }}/${{ matrix.rid }}/"
 
-      - name: Place wasm32-wasip1 module for Java in-repo testing
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java_resources_dir != '' && inputs.wasip1_module && inputs.java }}
-        shell: bash
-        run: |
-          mkdir -p "${{ inputs.java_resources_dir }}/wasm32-wasip1"
-          cp "rust/target/wasm32-wasip1/release/${{ inputs.crate }}.wasm" "${{ inputs.java_resources_dir }}/wasm32-wasip1/"
-
       # `javadoc` alongside `test`, and it is not documentation housekeeping — it is this
       # binding's doc gate finally running where the others already do. A caller's
       # build.gradle.kts sets `javadoc -Xwerror`, which promotes a missing @param/@return to a
@@ -847,15 +798,6 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew test javadoc --console=plain
-
-      # The same suite through GraalWasm: the caller's build.gradle.kts defines `testWasm` as
-      # the `test` task with the backend-selecting system property set and GraalWasm on the
-      # test runtime classpath only, so the published POM never carries it.
-      - name: Test Java bindings (wasm backend)
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module && inputs.java }}
-        working-directory: java
-        shell: bash
-        run: ./gradlew testWasm --console=plain
 
       # Go links the core in on every leg: cgo names this leg's archive, which "Build this
       # leg's static libraries" has just written over the committed one, so the suite runs
@@ -1497,14 +1439,11 @@ jobs:
           rid: ${{ matrix.rid }}
           attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
-      # The wasm module, for the Java suite's in-process GraalWasm backend, and the musl
-      # static library, for the two suites that link the core in (Go under cgo, and the C#
-      # Native AOT publish). Both built on the runner, not in a
-      # container: neither is linked here, so each is the same bytes wherever it is compiled.
+      # The musl static library, for the two suites that link the core in (Go under cgo, and
+      # the C# Native AOT publish). Built on the runner, not in a container: it is not linked
+      # here, so it is the same bytes wherever it is compiled.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && (inputs.wasip1_module || inputs.static_libs) }}
-        with:
-          targets: ${{ inputs.wasip1_module && 'wasm32-wasip1' || '' }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
 
       - name: Build this leg's static library
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
@@ -1513,11 +1452,6 @@ jobs:
           crate: ${{ inputs.crate }}
           project: ${{ inputs.project }}
           targets: ${{ matrix.static_target }}
-
-      - name: Build wasm32-wasip1 module
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.wasip1_module }}
-        working-directory: rust
-        run: cargo rustc --release --crate-type cdylib --target wasm32-wasip1
 
       # Every suite below carries `!cancelled()` for the same reason the matrix job's do:
       # one binding's failure must not mask the others, and a red step names its binding.
@@ -1558,7 +1492,6 @@ jobs:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
           image: eclipse-temurin:${{ inputs.jdk_version }}-jdk-alpine
-          wasm_module: ${{ inputs.wasip1_module && format('rust/target/wasm32-wasip1/release/{0}.wasm', inputs.crate) || '' }}
 
       - name: Go on Alpine (the core linked in, then with libgcc removed)
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}

@@ -18,11 +18,6 @@ on:
         description: "Directory to stage native/{rid}/{filename} resources under before publishing (e.g. java/src/main/resources/native)"
         required: true
         type: string
-      wasip1_module:
-        description: "Also stage the wasm-wasip1-module artifact at {java_resources_dir}/wasm32-wasip1/ (the in-process GraalWasm backend's module)"
-        required: false
-        type: boolean
-        default: false
       jdk_version:
         description: "Temurin major version — matches hyper-build-native.yml's own pin, the Java bindings' floor"
         required: false
@@ -109,7 +104,6 @@ jobs:
           crate: ${{ inputs.crate }}
           java_project_dir: ${{ inputs.java_project_dir }}
           java_resources_dir: ${{ inputs.java_resources_dir }}
-          wasip1_module: ${{ inputs.wasip1_module }}
           jdk_version: ${{ inputs.jdk_version }}
           musl: ${{ inputs.musl }}
           source_run_id: ${{ inputs.source_run_id }}

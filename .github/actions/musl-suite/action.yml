@@ -19,10 +19,6 @@ inputs:
     description: "Container image to run in, overriding the binding's default — how the same suite runs again on the binding's floor version"
     required: false
     default: ""
-  wasm_module:
-    description: "java only: repo-relative path to the wasm32-wasip1 module, staged beside the musl library so the in-process GraalWasm backend's tests run too; empty skips them"
-    required: false
-    default: ""
   csharp_test_project:
     description: "csharp only: path to the test csproj"
     required: false
@@ -46,7 +42,6 @@ runs:
         CRATE: ${{ inputs.crate }}
         RID: ${{ inputs.rid }}
         SUITE_IMAGE: ${{ inputs.image }}
-        WASM_MODULE: ${{ inputs.wasm_module }}
         CSHARP_TEST_PROJECT: ${{ inputs.csharp_test_project }}
         CSHARP_AOT_PROJECT: ${{ inputs.csharp_aot_project }}
         CSHARP_RUNTIMES_DIR: ${{ inputs.csharp_runtimes_dir }}
