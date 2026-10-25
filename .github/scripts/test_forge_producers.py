@@ -44,11 +44,31 @@ class ProducerContracts(unittest.TestCase):
                       'actions/attest-build-provenance@'):
             self.assertIn(value, text)
         native = (WORKFLOWS / 'hyper-build-native.yml').read_text()
-        self.assertRegex(native, r'      php_extension_schedule:\n(?:        .*\n)*?        default: inline')
-        self.assertIn("inputs.php_extension_schedule == 'parallel'", native)
-        # Every inline extension step must be disabled when its parallel producer owns it.
-        section = native.split('- name: Build PHP (ext-php-rs) extension', 1)[1].split('\n      # RUBY', 1)[0]
-        self.assertEqual(section.count("inputs.php_extension_schedule == 'inline'"), 5)
+        # The extension is built only by its own job: the matrix builds none, so it can never
+        # be built twice or by two recipes that drift apart, and there is no schedule to pick.
+        self.assertNotIn('php_extension_schedule', native)
+        self.assertNotIn('- name: Validate PHP extension schedule', native)
+        self.assertIn("  build-php-extension:\n    if: inputs.php && inputs.mode != 'pr'\n", native)
+        for gone in ('--features php', 'php-native-${{ matrix.rid }}'):
+            self.assertNotIn(gone, native)
+
+    def test_wasi_suite_runs_under_a_pinned_checksummed_wasmtime_with_the_repository_mounted(self):
+        import yaml_lite
+        workflow = yaml_lite.load((WORKFLOWS / 'hyper-check-core.yml').read_text())
+        self.assertIs(workflow['on']['workflow_call']['inputs']['wasi_tests']['default'], True)
+        job = workflow['jobs']['test-wasi']
+        self.assertEqual(job['if'], 'inputs.wasi_tests')
+        steps = {step.get('name'): step for step in job['steps']}
+        install = next(step for name, step in steps.items() if name and name.startswith('Install wasmtime '))
+        version = install['env']['WASMTIME_VERSION']
+        self.assertRegex(version, r'^\d+\.\d+\.\d+$')
+        self.assertEqual(install['name'], f'Install wasmtime {version}')
+        self.assertRegex(install['env']['WASMTIME_SHA256'], r'^[0-9a-f]{64}$')
+        self.assertIn('sha256sum -c -', install['run'])
+        self.assertIn('releases/download/v$WASMTIME_VERSION/', install['run'])
+        run = steps['cargo test for wasm32-wasip1 under wasmtime']['run']
+        self.assertIn('--dir $GITHUB_WORKSPACE --dir $target', run)
+        self.assertIn('cargo test --target wasm32-wasip1', run)
 
     def test_every_composite_job_checks_out_the_executing_forge_revision(self):
         for name in ('hyper-build-native.yml', 'hyper-build-wasm.yml',
@@ -96,19 +116,26 @@ class ProducerContracts(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, wanted, (sha, result.stderr))
 
-    def test_native_defaults_keep_legacy_producers_and_local_link_coverage(self):
+    def test_native_leaves_the_static_android_and_swift_static_producers_to_the_caller(self):
+        import yaml_lite
         text = (WORKFLOWS / 'hyper-build-native.yml').read_text()
-        for gate in ('static_libs_artifact', 'swift_static_tests', 'android_shared_artifact'):
-            self.assertRegex(text, rf'      {gate}:\n(?:        .*\n)*?        default: true')
-        self.assertIn('if: inputs.static_libs && inputs.static_libs_artifact', text)
-        self.assertIn('if: inputs.android && inputs.android_shared_artifact', text)
-        self.assertIn("uses: ./.github/workflows/hyper-build-static.yml", text)
-        self.assertIn("uses: ./.github/workflows/hyper-build-android.yml", text)
-        self.assertIn("uses: ./.github/workflows/hyper-test-swift-static.yml", text)
-        # Local suites must still build their own fresh archives when producers are external.
+        workflow = yaml_lite.load(text)
+        inputs = workflow['on']['workflow_call']['inputs']
+        # Every caller runs these producers as top-level jobs of its own, so that Apple and
+        # Android tests start when their artifacts exist; a nested copy here has no user.
+        for gone in ('static_libs_artifact', 'swift_static_tests', 'android_shared_artifact',
+                     'apple_mobile', 'android', 'swift_floor_version'):
+            self.assertNotIn(gone, inputs)
+            self.assertNotIn(f'inputs.{gone}', text)
+        self.assertEqual(set(workflow['jobs']),
+                         {'build-native', 'build-native-osx-x64', 'build-native-musl',
+                          'build-php-extension'})
+        for producer in ('hyper-build-static.yml', 'hyper-build-android.yml',
+                         'hyper-test-swift-static.yml'):
+            self.assertNotIn(f'uses: ./.github/workflows/{producer}', text)
+        # Local suites still build their own fresh archives.
         local = text.split('- name: Build this leg\'s static libraries', 1)[1].split('\n      #', 1)[0]
         self.assertIn('inputs.static_libs', local)
-        self.assertNotIn('inputs.static_libs_artifact', local)
 
     def test_extracted_producers_keep_packaging_artifact_contracts(self):
         static = WORKFLOWS / 'hyper-build-static.yml'

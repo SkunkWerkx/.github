@@ -28,6 +28,17 @@ are covered only by unit tests, actionlint and the attestation probe branch:
 The tag run is the dry run: it stops with nothing uploaded. Inspect it, then dispatch the
 publish. Delete this section once a release has gone through cleanly.
 
+## A new crate
+
+crates.io is the one registry whose first version is published by hand: it can register a
+Trusted Publisher only for a crate that already exists. Before a new Hyper\* crate's first
+release, run [`crate-placeholder/reserve-crate.sh`](../crate-placeholder/) with a short-lived
+token (it pushes and yanks `0.0.1`), register the publisher on the crate's settings page
+against the repository and the workflow `release.yml` (the token's `workflow_ref` names the
+top-level caller, not `hyper-publish-crate.yml`), and revoke the token. Every version after
+that publishes through Trusted Publishing. PyPI and RubyGems take pending publishers, and a
+nuget.org policy belongs to the account, so none of them needs a first publish by hand.
+
 ## Normal release
 
 1. Rename the CHANGELOG's `[Unreleased]` to `[X.Y.Z] - <date>` and add the bullet for every
@@ -60,8 +71,8 @@ publish. Delete this section once a release has gone through cleanly.
 
 There is one native build matrix, in A's CI. Static production and Android shared
 production are separate producers; Apple and Android consumer tests start when their own
-artifacts are ready. All three consumers set `php_extension_schedule: parallel`, which builds the release-mode
-ext-php-rs extensions in jobs of their own; the input's default is still `inline`.
+artifacts are ready. The release-mode ext-php-rs extensions are built in jobs of their own
+(`hyper-build-php-extension.yml`), never inside the native matrix.
 
 ## After publication
 

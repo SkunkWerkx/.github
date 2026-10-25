@@ -42,6 +42,19 @@ def request(method, url, data=None, headers=None):
         return response.read()
 
 
+def not_served(error):
+    """Whether an HTTP error means the registry does not hold the file: a 404, or the 403
+    AccessDenied an S3 bucket that refuses listing answers for a key it does not hold. Both
+    static.crates.io and rubygems.org/downloads are such buckets (measured 2026-10-25: a
+    version never published answers 403 with an S3 request ID and that body). Any other
+    error, a bare 403 included, is not an absence."""
+    if error.code == 404:
+        return True
+    if error.code != 403 or not (error.headers or {}).get('x-amz-request-id'):
+        return False
+    return b'<Code>AccessDenied</Code>' in (error.read(4096) or b'')
+
+
 def github_json(endpoint):
     return json.loads(subprocess.check_output(['gh', 'api', endpoint], text=True))
 
@@ -218,7 +231,7 @@ def publish_crate(directory, receipt, token, sleep=time.sleep, prior_check=None)
     try:
         served = request('GET', url)
     except urllib.error.HTTPError as error:
-        if error.code != 404:
+        if not not_served(error):
             raise
     else:
         if digest(served) != expected:
@@ -231,9 +244,15 @@ def publish_crate(directory, receipt, token, sleep=time.sleep, prior_check=None)
         prior_check()
     state = {'state': 'upload-in-flight', 'crate_sha256': expected, 'name': name, 'version': version}
     save(receipt, state)
-    response = json.loads(request('PUT', 'https://crates.io/api/v1/crates/new', data=body,
-                                  headers={'Authorization': token, 'Content-Type': 'application/octet-stream',
-                                           'Accept': 'application/json'}))
+    try:
+        response = json.loads(request('PUT', 'https://crates.io/api/v1/crates/new', data=body,
+                                      headers={'Authorization': token, 'Content-Type': 'application/octet-stream',
+                                               'Accept': 'application/json'}))
+    except urllib.error.HTTPError as error:
+        # crates.io answers a refusal with an error status and its reason in the body, which
+        # urllib would otherwise drop. The receipt stays upload-in-flight: reconcile first.
+        detail = error.read(4096).decode(errors='replace')
+        raise ValueError(f'crates.io refused the upload (HTTP {error.code}): {detail}') from None
     if response.get('errors'):
         raise ValueError(f'crates.io rejected upload: {response["errors"]}')
     state['state'] = 'uploaded'
@@ -242,7 +261,7 @@ def publish_crate(directory, receipt, token, sleep=time.sleep, prior_check=None)
         try:
             served = request('GET', url)
         except urllib.error.HTTPError as error:
-            if error.code != 404:
+            if not not_served(error):
                 raise
         else:
             if digest(served) != expected:

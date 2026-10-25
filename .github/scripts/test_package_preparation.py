@@ -136,6 +136,48 @@ class Packages(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'different digest'):
                 self.p.publish_crate(dest, self.root / 'receipt.json', 'secret')
 
+    def test_crate_upload_reads_the_s3_denial_for_a_missing_crate_as_absent(self):
+        # static.crates.io is an S3 bucket that refuses listing, so a crate it does not hold
+        # answers 403 AccessDenied, not 404 (measured 2026-10-25). Any other 403 fails closed.
+        dest = self.root / 'prepared'
+        crate = self.crate()
+        self.p.prepare_crate(crate, dest)
+        def denied(amz=True):
+            body = b'<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>'
+            error = urllib.error.HTTPError('https://static.crates.io/crates/x.crate', 403, 'Forbidden',
+                                           {'x-amz-request-id': 'R'} if amz else {}, io.BytesIO(body))
+            self.addCleanup(error.close)
+            return error
+        served = iter([denied(), denied(), crate.read_bytes()])
+        def remote(method, url, **kwargs):
+            if method == 'PUT':
+                return b'{}'
+            value = next(served)
+            if isinstance(value, Exception):
+                raise value
+            return value
+        receipt = self.root / 'receipt.json'
+        with patch.object(self.p, 'request', side_effect=remote):
+            self.p.publish_crate(dest, receipt, 'secret', sleep=lambda _: None)
+        self.assertEqual(json.loads(receipt.read_text())['state'], 'published')
+        with patch.object(self.p, 'request', side_effect=denied(amz=False)), \
+             self.assertRaises(urllib.error.HTTPError):
+            self.p.publish_crate(dest, self.root / 'other.json', 'secret')
+
+    def test_crate_refusal_names_the_registry_reason_and_keeps_the_receipt_in_flight(self):
+        dest = self.root / 'prepared'
+        self.p.prepare_crate(self.crate(), dest)
+        absent = urllib.error.HTTPError('url', 404, 'absent', {}, io.BytesIO())
+        refused = urllib.error.HTTPError('https://crates.io/api/v1/crates/new', 403, 'Forbidden', {},
+                                         io.BytesIO(b'{"errors":[{"detail":"no trusted publisher"}]}'))
+        self.addCleanup(absent.close)
+        self.addCleanup(refused.close)
+        receipt = self.root / 'receipt.json'
+        with patch.object(self.p, 'request', side_effect=[absent, refused]), \
+             self.assertRaisesRegex(ValueError, 'HTTP 403.*no trusted publisher'):
+            self.p.publish_crate(dest, receipt, 'secret')
+        self.assertEqual(json.loads(receipt.read_text())['state'], 'upload-in-flight')
+
     def test_crate_ambiguous_upload_is_not_retried_while_registry_is_not_visible(self):
         dest = self.root / 'prepared'
         crate = self.crate()

@@ -1,5 +1,23 @@
 name: HyperForge — test Swift static libraries
 
+# Downloads the `static-libs` artifact (hyper-build-static.yml) on each architecture and runs the
+# Swift binding against it in Swift's own containers — containers, because the runner
+# image has a Swift toolchain for neither the SDKs nor the floor version:
+#
+#  * on swift_version: the smoke executable on glibc and through the static Linux SDK,
+#    then the whole suite and the smoke executable for WebAssembly, and that same wasm
+#    executable again in headless Chrome through a WASI shim. (The matrix job's
+#    `swift test` covers glibc too, but only builds the package itself; the smoke
+#    executable depends on its product the way a consumer does, the path Swift 6.3's
+#    Swift Build broke — swiftlang/swift-build#1295.)
+#  * on swift_floor_version: the whole suite and the smoke executable on glibc, and the
+#    smoke executable on musl and WebAssembly. Not `swift test` for WebAssembly there:
+#    6.2's XCTest traps inside Foundation's Bundle.main before any test runs
+#    (`Trap: unreachable` in XCTMain, measured on 6.2.4), so the suite cannot start.
+#
+# musl is always the smoke executable, never `swift test`: the static Linux SDK ships no
+# XCTest. See the swift-static-suite action's suite-swift-static.sh.
+
 on:
   workflow_call:
     inputs:

@@ -1,6 +1,7 @@
 """Functional tests for the immutable package hand-off and registry recovery."""
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
+import urllib.error
 import zipfile
 
 from test_package_inventory_metadata import create_packages
@@ -100,6 +102,21 @@ class InventoryTests(unittest.TestCase):
         remote[files[0].name] = b'conflict'
         with self.assertRaisesRegex(ValueError, 'conflict'):
             self.m.select_missing(files, lambda path: remote.get(path.name))
+
+    def test_fetch_reads_the_s3_denial_for_a_missing_gem_as_absent(self):
+        # rubygems.org/downloads is served from S3, which answers 403 AccessDenied for a gem
+        # it does not hold (measured 2026-10-25); any other 403 is an error.
+        def denied(headers, body=b'<Error><Code>AccessDenied</Code></Error>'):
+            error = urllib.error.HTTPError('https://rubygems.org/downloads/x.gem', 403, 'Forbidden', headers, io.BytesIO(body))
+            self.addCleanup(error.close)
+            return error
+        with unittest.mock.patch.object(self.m.urllib.request, 'urlopen', side_effect=denied({'x-amz-request-id': 'R'})):
+            self.assertIsNone(self.m.fetch('https://rubygems.org/downloads/x.gem'))
+        for headers, body in (({}, b'<Error><Code>AccessDenied</Code></Error>'), ({'x-amz-request-id': 'R'}, b'rate limited')):
+            with self.subTest(headers=headers, body=body), \
+                 unittest.mock.patch.object(self.m.urllib.request, 'urlopen', side_effect=denied(headers, body)), \
+                 self.assertRaises(urllib.error.HTTPError):
+                self.m.fetch('https://rubygems.org/downloads/x.gem')
 
     def test_nuget_rewriting_can_only_add_repository_signature(self):
         packed, served = self.root/'packed.zip', self.root/'served.zip'
@@ -262,6 +279,50 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
             self.assertNotEqual(result.returncode, 0, broken)
         result = subprocess.run([*command, 'verify', '--root', str(root)], env=env, capture_output=True, cwd=self.root)
         self.assertNotEqual(result.returncode, 0, 'schema 2 needs the checkout at B')
+
+    def test_cli_verifies_from_the_checkout_with_the_relative_paths_the_actions_pass(self):
+        # The actions run every command from the checkout at B with the default --root
+        # (release-packages) and --workspace ., so every path is relative. `gh attestation
+        # download` runs in a temporary directory and opens the file it is given, which a
+        # relative path no longer names there; this gh does exactly that.
+        workspace, natives = self.natives()
+        helper = tempfile.TemporaryDirectory()
+        self.addCleanup(helper.cleanup)
+        gh = Path(helper.name) / 'gh'
+        gh.write_text('''#!/usr/bin/env python3
+import json,os,pathlib,sys
+args=sys.argv[1:]
+if args[0]=='api':
+ print(json.dumps(dict(id=34,head_sha='b'*40,path='.github/workflows/release.yml',event='push',status='completed',conclusion='success',repository=dict(full_name='SkunkWerkx/HyperCast'))))
+ sys.exit(0)
+if not pathlib.Path(args[2]).is_file():
+ sys.exit(f'failed to open local artifact: open {args[2]}: no such file or directory')
+if args[1]=='download':
+ pathlib.Path('sha256:deadbeef.jsonl').write_text('{}')
+ sys.exit(0)
+if '--predicate-type' in args:
+ inventory=json.loads(pathlib.Path('release-packages/inventory.json' if pathlib.Path('release-packages').is_dir() else os.environ['INVENTORY']).read_text())
+ print(json.dumps([{'verificationResult':{'statement':{'predicateType':args[args.index('--predicate-type')+1],'predicate':inventory}}}]))
+ sys.exit(0)
+source='a'*40 if pathlib.Path(args[2]).parent.name=='pypi' or 'release-packages' not in pathlib.Path(args[2]).parts else 'b'*40
+sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
+''')
+        gh.chmod(0o755)
+        root = workspace / 'release-packages'
+        root.mkdir()
+        for group in self.m.REGISTRIES:
+            shutil.move(str(self.root / group), root / group)
+        env = {**os.environ, **{key.upper(): value for key, value in self.identity.items()},
+               'PATH': str(gh.parent) + os.pathsep + os.environ['PATH'], 'GITHUB_RUN_ID': '34',
+               'INVENTORY': str(root / 'inventory.json')}
+        command = [sys.executable, str(Path(__file__).with_name('release_inventory.py'))]
+        subprocess.run([*command, 'create', '--natives', str(self.natives_list), '--workspace', '.'],
+                       env=env, check=True, cwd=workspace)
+        for extra in ([], ['--inventory-only'], ['--registry', 'ruby']):
+            with self.subTest(extra=extra):
+                result = subprocess.run([*command, 'verify', '--workspace', '.', *extra],
+                                        env=env, capture_output=True, text=True, cwd=workspace)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_cli_recovers_verified_bytes_without_native_artifacts_and_rejects_wrong_provenance(self):
         helper=tempfile.TemporaryDirectory()

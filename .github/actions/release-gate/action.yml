@@ -116,6 +116,14 @@ runs:
         INVENTORY_ONLY: ${{ inputs.prepared_run_id == '' && '--inventory-only' || '' }}
       run: python3 "$FORGE_SCRIPTS/release_inventory.py" verify --workspace . $INVENTORY_ONLY
 
+    # A recovery run downloads release-packages alone, and the checksums file was written beside
+    # it, never inside, so it is derived again here from the inventory just revalidated: the
+    # same subjects the tag run attested, for the summary below.
+    - name: List the release attestation subjects from the preserved inventory
+      if: inputs.prepared_run_id != ''
+      shell: bash
+      run: python3 "$FORGE_SCRIPTS/release_inventory.py" checksums --output release-checksums.txt
+
     - name: Summarize the release
       shell: bash
       run: |

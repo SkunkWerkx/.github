@@ -7,18 +7,18 @@ name: HyperForge — build native core, test every binding
 # "Two shards on Windows" below. A second, smaller job, `build-native-musl`, does the same
 # for the two musl RIDs inside real Alpine containers — see it for why that is a separate
 # job rather than two more rows of this matrix. A third, `build-native-osx-x64`, cross-builds
-# the one RID that no longer has a leg of its own: Intel macOS, in its sunset — see it for
+# the one RID with no leg of its own: Intel macOS, in its sunset — see it for
 # what is still built and tested there and what is not.
 #
-# It was two phases until 2026-09 — build-native, then six matrixed per-binding jobs
-# (test-csharp/java/go/swift/ruby-fiddle/php) each re-downloading the artifact. That shape
-# put 48 jobs on the board, 14 of them macOS, against GitHub's 5-concurrent-macOS cap. The
-# parallelism it bought was theoretical: on SkunkWerkx/HyperUuid run 33518617482 the macOS
+# It is one phase, not build-native followed by matrixed per-binding jobs
+# (test-csharp/java/go/swift/ruby-fiddle/php) each re-downloading the artifact: that shape
+# puts 48 jobs on the board, 14 of them macOS, against GitHub's 5-concurrent-macOS cap, and
+# the parallelism it buys is theoretical (on SkunkWerkx/HyperUuid run 33518617482 the macOS
 # legs ran in waves and one job sat queued 20+ minutes after the others had finished and
-# slots had freed. Collapsed, it is 6 jobs — 2 per OS family, under every cap, nothing
-# queues. Measured overhead it also removes: ~50s per leg of repeated checkout +
-# download-artifact + job setup, plus a duplicate Ruby and PHP toolchain install (setup-php
-# alone was 56s on macOS) that the Magnus/ext-php-rs sections had already paid for.
+# slots had freed). One phase is 6 jobs — 2 per OS family, under every cap, nothing
+# queues — and saves ~50s per leg of repeated checkout + download-artifact + job setup,
+# plus a duplicate Ruby and PHP toolchain install (setup-php alone was 56s on macOS) that
+# the Magnus/ext-php-rs sections have already paid for.
 #
 # Two shards on Windows (2026-10): after `pr` mode the board's wall clock was win-x64 alone,
 # 13.1 minutes on HyperUuid run 37710502986, against 8.5 for macOS — Swift 4.9 of it (3.1 just
@@ -70,26 +70,25 @@ name: HyperForge — build native core, test every binding
 #     forced static or the extension picks up a libunwind.dll dependency no gem consumer
 #     would have. bindgen needs a --target redirect just like x64 does, and for a sharper
 #     reason: clang rejects the gnullvm triple outright. See build-magnus.sh.
-#     Both PHP backends now live in ONE section down with the suites — see it for the two
-#     platform rules and for why its position is load-bearing.
-#   - php (ext-php-rs): darwin + linux, in `release` mode (a `pr`-mode run skips it). Not wired into the shipped Composer
-#     package (that's ext-ffi, tested in the same section) — built so it can't silently
-#     bit-rot, then load-checked, uploaded and attested like any other shippable binary;
-#     still no phpunit run against it. It began as a benchmark spike behind a
+#     The PHP ext-ffi suite lives in ONE section down with the suites — see it for the
+#     platform rules.
+#   - php (ext-php-rs): linux-x64, linux-arm64 and osx-arm64, in `release` mode (a `pr`-mode
+#     run skips it), in the build-php-extension job (hyper-build-php-extension.yml), not in
+#     this matrix. Not wired into the shipped Composer package (that's ext-ffi) — built so it
+#     can't silently bit-rot, then load-checked, uploaded and attested like any other
+#     shippable binary; still no phpunit run against it. It began as a benchmark spike behind a
 #     `php_native_spike` input; the spike answered its question, so the flag is gone and the
 #     build is simply part of the pipeline. All Windows legs skipped: ext-php-rs gates its
 #     Windows path on a nightly-only Rust feature, incompatible with the stable toolchain
 #     every leg here builds on (confirmed by a real E0554 failure, not assumed).
 #
-# An earlier version of this file had a `paths` job (dorny/paths-filter) skipping the
-# per-binding jobs per PR when nothing relevant changed. Abandoned then because splitting
-# build-native out seemed to deliver the wall-clock win on its own; still not wanted now,
-# for a better reason — with a job per leg (two on Windows) there is nothing granular left to skip, and
+# There is no `paths` job (dorny/paths-filter) skipping work per PR when nothing relevant
+# changed: with a job per leg (two on Windows) there is nothing granular left to skip, and
 # every binding's suite runs against a freshly built core anyway.
 #
 # The archaeology this file banks, so no Hyper* repo re-learns it (each lesson also
 # commented at the step that pays it):
-#   - Runner labels: there is no Intel macOS leg any more. macos-26-intel (the label after
+#   - Runner labels: there is no Intel macOS leg. macos-26-intel (the label after
 #     macos-13 retired in Dec 2025) took 37 minutes against 8 on Apple silicon, for hardware
 #     Apple stopped selling in 2023 and runners GitHub winds down by Fall 2027; osx-x64 is
 #     cross-built on macos-latest instead (build-native-osx-x64). windows-11-arm is GA and
@@ -176,7 +175,7 @@ on:
         description: >
           Emit a signed SLSA build-provenance attestation binding each shippable compiled
           artifact — the plain FFI native library on every leg, plus the ext-php-rs extension
-          on the unix legs, and the Magnus extension on every leg when `magnus` is on —
+          on linux-x64, linux-arm64 and osx-arm64 (its own job), and the Magnus extension on every leg when `magnus` is on —
           to this workflow run and commit, verifiable by a consumer with
           `gh attestation verify`.
           On by default: every artifact this forge produces should be verifiable, and an
@@ -233,10 +232,6 @@ on:
         required: false
         type: boolean
         default: true
-      php_extension_schedule:
-        description: "Where to build release-mode ext-php-rs extensions: inline (legacy behavior) or parallel (separate unix jobs). PHP ext-ffi suites and floor checks always retain their current coverage."
-        type: string
-        default: inline
       php:
         description: "Run the PHP binding's suite (ext-ffi) on every leg and on Alpine, and, in release mode, build the ext-php-rs extension (the crate's `php` feature)"
         required: false
@@ -288,64 +283,18 @@ on:
         required: false
         type: string
         default: "6.4"
-      static_libs_artifact:
-        description: "Build and upload the full static-libs artifact here; false when the caller runs hyper-build-static.yml separately. Local per-leg static link tests remain controlled by static_libs."
-        type: boolean
-        default: true
-      swift_static_tests:
-        description: "Run the Swift static artifact suite here; false when the caller invokes hyper-test-swift-static.yml after its separate producer."
-        type: boolean
-        default: true
-      android_shared_artifact:
-        description: "Build Android shared artifacts here; false when the caller runs hyper-build-android.yml separately. Android static archives remain controlled by android."
-        type: boolean
-        default: true
       static_libs:
         description: >
           Three bindings link the core rather than load it, each from a no_std static library:
           Swift on every RID and WebAssembly (swift/{project}Core.artifactbundle), Go under cgo on
           Linux, macOS and Windows (go/staticlib), and a C# Native AOT publish on every RID
           (csharp/{project}/staticlibs). With this on, each leg builds its own targets'
-          archives before the suites that link them; a separate job builds all nine, uploads
-          and attests them as `static-libs`; and the Swift binding is run against them in
-          Swift's own containers, on swift_version and again on swift_floor_version.
+          archives before the suites that link them. The nine shipped archives, the
+          `static-libs` artifact, and the Swift static suite are the caller's own jobs,
+          hyper-build-static.yml and hyper-test-swift-static.yml.
         required: false
         type: boolean
         default: true
-      apple_mobile:
-        description: >
-          With static_libs: also build the core for iOS, the iOS simulator (Apple silicon) and
-          Mac Catalyst (both architectures), four more archives in the `static-libs` artifact.
-          The C# package links them into a .NET iOS or Mac Catalyst app from
-          csharp/{project}/staticlibs/{rid}/; Swift links them from
-          swift/{project}CoreApple.xcframework; Go's cgo links them from go/staticlib/. Off by
-          default, so a caller whose bindings do not link them yet ships none. The apps that
-          prove them are the caller's own job (it needs a Mac, an Xcode and the .NET workloads,
-          which this workflow's legs do not carry).
-        required: false
-        type: boolean
-        default: false
-      android:
-        description: >
-          Also build the core for Android, arm64 and x86_64. The shared library, for the C#
-          binding on .NET for Android (MAUI), is built with the runner's NDK, its LOAD segments
-          aligned to 16 KB (Android 15's page size, which Google Play requires of every new
-          app), uploaded and attested as `native-android-arm64` and `native-android-x64` for
-          hyper-pack-nuget.yml's runtimes/{rid}/native/; that is what an app on CoreCLR loads out
-          of its APK. With static_libs, the static-libs artifact also carries the two archives
-          for everything that links the core in: csharp/{project}/staticlibs/android-* (a
-          Native AOT publish), go/staticlib/android_* (cgo under GOOS=android) and the Swift
-          bundle's *-unknown-linux-android variants (the Swift SDK for Android).
-          No binding's suite runs here: the caller proves the libraries in an emulator, as it
-          proves the Apple mobile archives on a Mac. Off by default.
-        required: false
-        type: boolean
-        default: false
-      swift_floor_version:
-        description: "Oldest Swift the binding declares (swift-tools-version) — the test-swift-static job runs glibc, musl and WebAssembly on it as well as on swift_version. Empty skips the floor run."
-        required: false
-        type: string
-        default: "6.2"
       musl:
         description: >
           Also build the core for linux-musl-x64 and linux-musl-arm64 inside Alpine
@@ -454,16 +403,6 @@ jobs:
             shard: swift-ruby
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Validate PHP extension schedule
-        shell: bash
-        env:
-          PHP_EXTENSION_SCHEDULE: ${{ inputs.php_extension_schedule }}
-        run: |
-          case "$PHP_EXTENSION_SCHEDULE" in
-            inline|parallel) ;;
-            *) echo "::error::php_extension_schedule must be inline or parallel"; exit 1 ;;
-          esac
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Validate Forge workflow revision
@@ -492,12 +431,12 @@ jobs:
       # spelled the same way. The spelling also builds a manifest that still lists cdylib.
       #
       # The plain core is built through the crate's own `cargo cdylib` alias rather than
-      # that spelling, because how it is built is the crate's call: HyperUuid's alias is
-      # exactly `rustc --release --crate-type cdylib`, while HyperCast's builds the library
-      # without std (its own feature and abort-on-panic setting, output still in
-      # target/release/). The extension and test builds stay spelled out — each has one
-      # shape for every crate. A Hyper* crate is expected to define the alias
-      # in rust/.cargo/config.toml, as both do.
+      # that spelling, because how it is built is the crate's call. Every Hyper* alias today
+      # builds the library without std: `rustc --release --crate-type cdylib
+      # --no-default-features --features cdylib` with abort-on-panic set for that one
+      # invocation (HyperTabular's adds `--lib`), output still in target/release/. The
+      # extension and test builds stay spelled out — each has one shape for every crate. A
+      # Hyper* crate is expected to define the alias in rust/.cargo/config.toml, as all three do.
       - name: Build native core (release)
         working-directory: rust
         run: cargo cdylib
@@ -575,7 +514,7 @@ jobs:
       # cgo backend, Swift — built from this commit before any of them runs. The
       # archives committed in the tree (Swift's, Go's) are whatever was staged last, and C#'s
       # are not committed at all; without this a leg would link the previous core, or none.
-      # What ships is the build-static-libs job's output, not this.
+      # What ships is the caller's hyper-build-static.yml output, not this.
       - name: Build this leg's static libraries
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
         uses: ./.hyperforge/.github/actions/static-libs
@@ -679,8 +618,8 @@ jobs:
       #    `fail-fast: false`; in one job it has to be asked for. A red step still names the
       #    binding, so the diagnosis is as fast as it was before — it is the *parallelism*
       #    that is given up here, not the reporting.
-      #  * The Ruby/PHP toolchains are NOT re-installed when the Magnus and ext-php-rs
-      #    sections above already installed them. shivammathur/setup-php alone measured 56s
+      #  * The Ruby and PHP toolchains are each installed once, never re-installed by a
+      #    later section that needs them again. shivammathur/setup-php alone measured 56s
       #    on macOS, so blindly re-running it would have handed back most of the savings.
       #    The conditions below are exact rather than convenient, which is why they are ugly.
       # ---------------------------------------------------------------------------
@@ -960,16 +899,7 @@ jobs:
       #   * ext-php-rs additionally skips ALL Windows, which leaves darwin + linux. Its
       #     Windows path gates on `#![feature(abi_vectorcall)]`, nightly-only, and every leg
       #     here builds on stable — confirmed by a real E0554 failure on win-x64, not assumed.
-      #
-      # php_extension_schedule defaults to inline for existing callers. A caller may opt
-      # into parallel to build and load-check the same unix extensions in their own jobs.
-      #
-      # Ordering note, since it is load-bearing and invisible: `--features php` overwrites
-      # rust/target/release/, so this section must stay AFTER everything that reads from
-      # there. Only the Python staging does (every other binding stages from out/, the
-      # pristine copy taken by `Collect native artifact`), and Python runs much earlier. That
-      # is what makes it safe for this to sit down here with the suites rather than up beside
-      # the other feature builds.
+      #     That extension is built by the build-php-extension job, not in this section.
       # =========================================================================
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && runner.os != 'macOS' && inputs.php }}
@@ -1022,84 +952,15 @@ jobs:
         # legs' default pwsh can't execute.
         run: php vendor/bin/phpunit
 
-      # --- ext-php-rs: built, load-checked, uploaded and attested; still no phpunit ---
-      #
-      # Release mode only. No package ships this extension; it is built so it cannot rot
-      # unnoticed, and the weekly release-mode run is enough to notice.
-
-      - name: Build PHP (ext-php-rs) extension
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.php_extension_schedule == 'inline' && inputs.mode != 'pr' }}
-        working-directory: rust
-        run: cargo rustc --release --crate-type cdylib --features php
-
-      # This is a Zend extension, not another FFI cdylib: the `--features php` build exports
-      # `get_module`, so PHP loads it via `extension=` in php.ini rather than `FFI::cdef`.
-      # PHP names extension modules `.so` on macOS too, so the Darwin .dylib is copied to a
-      # .so name rather than kept as one.
-      #
-      # It is a strict superset of the plain cdylib rather than an alternative to it — the
-      # same build still exports every C symbol the ext-ffi backend calls (measured on
-      # HyperUuid when it had twelve: 12 of 12 present, at 689,448 bytes against the plain
-      # build's 431,840 on linux-x64). It still gets its own artifact instead of replacing `native-{rid}`,
-      # because byte-identical native libraries across a caller's php/, go/ and swift/ trees
-      # are what let one committed git blob serve three bindings under one attestation.
-      - name: Stage PHP (ext-php-rs) extension
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.php_extension_schedule == 'inline' && inputs.mode != 'pr' }}
-        shell: bash
-        run: |
-          mkdir -p php-ext
-          case "${{ runner.os }}" in
-            macOS) cp "rust/target/release/lib${{ inputs.crate }}.dylib" "php-ext/${{ inputs.crate }}.so" ;;
-            Linux) cp "rust/target/release/lib${{ inputs.crate }}.so"    "php-ext/${{ inputs.crate }}.so" ;;
-          esac
-
-      # The check that makes attesting this binary worth anything: a Zend extension that
-      # compiled can still be refused at load time. PHP matches a module's build ID exactly
-      # — `API<number>,<NTS|ZTS>` — and rejects every mismatch, so unlike the FFI library
-      # these bytes are pinned to one PHP ABI, not just one platform. This proves they load
-      # and records which ABI they are pinned to, since the artifact carries no metadata of
-      # its own saying so. The module name ext-php-rs registers is CARGO_PKG_NAME, which is
-      # what `crate` already is.
-      - name: Load-check the PHP extension, and record the ABI it is pinned to
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.php_extension_schedule == 'inline' && inputs.mode != 'pr' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          build_id=$(php -i | sed -n 's/^PHP Extension Build => //p')
-          echo "\`php-native-${{ matrix.rid }}\` — PHP $(php -r 'echo PHP_VERSION;'), build ID \`${build_id}\`" \
-            >> "$GITHUB_STEP_SUMMARY"
-          php -d extension="$PWD/php-ext/${{ inputs.crate }}.so" \
-              -r 'exit(extension_loaded("${{ inputs.crate }}") ? 0 : 1);'
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' && inputs.php && inputs.php_extension_schedule == 'inline' && inputs.mode != 'pr' }}
-        with:
-          name: php-native-${{ matrix.rid }}
-          path: php-ext/${{ inputs.crate }}.so
-
-      # Attested on exactly the same footing as the native library and the Magnus extension:
-      # a compiled binary a consumer can neither read nor reproduce. Same verifying command,
-      # same reason it needs both halves of the identity:
-      #
-      #     gh attestation verify <file> --repo <owner>/<repo> --signer-repo SkunkWerkx/.github
-      #
-      # and the same fork-PR gate, since a fork's token cannot sign.
-      - name: Attest PHP (ext-php-rs) extension provenance
-        if: >-
-          matrix.shard != 'swift-ruby' && inputs.php && inputs.php_extension_schedule == 'inline' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os != 'Windows' &&
-          inputs.attest_native && inputs.mode != 'pr' &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: php-ext/${{ inputs.crate }}.so
+      # The ext-php-rs extension is not built here: the build-php-extension job below
+      # (hyper-build-php-extension.yml) builds, load-checks, uploads and attests it on the
+      # three unix legs in release mode, in jobs of its own.
 
       # =========================================================================
       # RUBY — both backends, one section.
       #
       # Magnus (the compiled extension) and Fiddle (the universal zero-compile fallback)
-      # used to sit at opposite ends of this job with five other bindings between them, each
-      # re-doing the same two setup steps. They are one section now: the Xcode workaround and
+      # are one section, so neither re-does the other's setup steps: the Xcode workaround and
       # the native-lib placement happen ONCE and serve both, and the Fiddle suite simply
       # inherits the primary Ruby that trio 2 leaves active.
       #
@@ -1112,14 +973,8 @@ jobs:
       # `xcode-select -s` below repoints the toolchain for the entire job, so it must not run
       # before `swift test`.
       #
-      # Previously only the *Fiddle* half was pinned last for that reason, which quietly did
-      # not work. The Magnus half ran the identical xcode-select much earlier, so whenever
-      # `magnus` was on — the default, and the only configuration anyone runs — the repoint
-      # happened before Swift anyway and the "last" step was skipped as redundant. Measured on
-      # HyperUuid run 33576016306, osx-arm64: xcode-select at 00:38:01, `swift test` at
-      # 00:42:20, four minutes later, and the trailing guard step skipped. Swift stayed green
-      # throughout, so this was a guarantee that had quietly stopped being one rather than an
-      # active break. Moving the entire section down makes it true for the first time.
+      # Both halves run that xcode-select, so pinning only one of them last would not hold:
+      # the other's repoint would come before Swift anyway, and nothing would fail to say so.
       #
       # See the top-of-file note for why "unix legs only" was wrong, and for what the
       # win-arm64 leg needs that the x64 one doesn't.
@@ -1274,7 +1129,7 @@ jobs:
   #    the x86_64 test binary through Rosetta 2, so this is the real code on the real
   #    instruction set, not a compile check.
   #  * No binding's suite runs on it. Every one of them still runs on osx-arm64, against the
-  #    same source; what is no longer proven per release is each language runtime's own x64
+  #    same source; what is not proven per release is each language runtime's own x64
   #    macOS build loading the library.
   #  * No Magnus extension and no ext-php-rs extension is built for it. Both need an x86_64
   #    build of their host runtime to compile against, which is the leg again. Ruby there
@@ -1343,32 +1198,6 @@ jobs:
           subject-path: out/lib${{ inputs.crate }}.dylib
 
   # ===========================================================================
-  # Android — android-arm64 and android-x64, the shared library a .NET for Android app on CoreCLR
-  # loads out of its APK (lib/arm64-v8a/, lib/x86_64/), for the C# binding under MAUI.
-  #
-  # Cross-built on one Ubuntu runner with the NDK the hosted image already carries, its clang
-  # as the linker at API level 21 (below .NET 11's floor of 24; a library built for an older
-  # API runs on every newer one). Three checks stand in for the suite that cannot
-  # run on the host: the library is the architecture its name says; every LOAD segment is
-  # aligned to 16 KB, the page size Android 15 devices may use and Google Play requires of
-  # new apps (a 4 KB-aligned library fails to load on such a device, and the build would not
-  # say so); and the core's exports are there — {crate}_version and at least one door, since
-  # this job has no list of the caller's doors (each repo's own CI holds its exact export
-  # list). The caller runs its binding in an emulator.
-  #
-  # Uploaded and attested as `native-android-{rid}`, the name hyper-pack-nuget.yml's
-  # `android` input looks for. The static archives a Native AOT publish links are not built
-  # here but by build-static-libs, which needs no NDK.
-  # ===========================================================================
-  build-native-android:
-    if: inputs.android && inputs.android_shared_artifact
-    uses: ./.github/workflows/hyper-build-android.yml
-    with:
-      crate: ${{ inputs.crate }}
-      mode: ${{ inputs.mode }}
-      attest_native: ${{ inputs.attest_native }}
-
-  # ===========================================================================
   # musl — linux-musl-x64 and linux-musl-arm64, built and tested inside Alpine.
   #
   # A separate job, not two more rows of the matrix above, for one reason: that job installs
@@ -1389,7 +1218,7 @@ jobs:
   #
   # Not here, and why: Swift (its musl target links the core from a SwiftPM binary
   # static-library target, SE-0482, and is tested through the static Linux SDK in
-  # test-swift-static below).
+  # the caller's hyper-test-swift-static.yml job).
   #
   # The Ruby Magnus extension is built here too, once per ABI like the matrix legs', but not
   # by a setup-* action: inside that Ruby's own `ruby:<abi>-alpine` image, through the
@@ -1578,73 +1407,8 @@ jobs:
           rid: ${{ matrix.rid }}
           image: python:${{ inputs.python_floor_version }}-alpine
 
-  # ===========================================================================
-  # The static libraries.
-  #
-  # Three bindings link the core instead of loading it, each from a no_std static library:
-  #
-  #  * Swift, on every RID and WebAssembly — a SwiftPM binary target (SE-0482) with one
-  #    archive per triple, committed in the binding's artifact bundle, so a SwiftPM
-  #    executable has nothing to load or deploy. Two of those triples can be reached no
-  #    other way: Swift's static Linux SDK (musl) and its WebAssembly SDK build executables
-  #    with no dynamic loader.
-  #  * Go, under cgo on Linux, macOS and Windows — the archive is named on the cgo link
-  #    line, and committed under go/staticlib because a Go module is whatever is in the
-  #    tree. Windows links the MSVC archive C# does; MinGW's linker reads it. TinyGo on
-  #    WebAssembly links the wasm32-wasip1 one (go/staticlib/wasm, tested in the browser by
-  #    hyper-build-wasm.yml). There is no other Go backend: nothing is embedded and nothing
-  #    is loaded at run time.
-  #  * C#, for a Native AOT publish on every RID — the package's targets file hands the
-  #    archive to the AOT linker, so the result is one executable with no library beside it.
-  #    These are not committed; hyper-pack-nuget.yml packs them from this run's artifact.
-  #
-  # Two jobs, so that what is tested is what ships. The first builds all nine archives on
-  # one runner (a static library is never linked, so every target — macOS and Windows
-  # included — cross-compiles with no C toolchain), uploads them as `static-libs` and
-  # attests them; a caller's stage-native-binaries.yml commits exactly those bytes into the
-  # Swift and Go trees. The second downloads that artifact on each architecture and runs the
-  # Swift binding against it in Swift's own containers — containers, because the runner
-  # image has a Swift toolchain for neither the SDKs nor the floor version:
-  #
-  #  * on swift_version: the smoke executable on glibc and through the static Linux SDK,
-  #    then the whole suite and the smoke executable for WebAssembly, and that same wasm
-  #    executable again in headless Chrome through a WASI shim. (The matrix job's
-  #    `swift test` covers glibc too, but only builds the package itself; the smoke
-  #    executable depends on its product the way a consumer does, the path Swift 6.3's
-  #    Swift Build broke — swiftlang/swift-build#1295.)
-  #  * on swift_floor_version: the whole suite and the smoke executable on glibc, and the
-  #    smoke executable on musl and WebAssembly. Not `swift test` for WebAssembly there:
-  #    6.2's XCTest traps inside Foundation's Bundle.main before any test runs
-  #    (`Trap: unreachable` in XCTMain, measured on 6.2.4), so the suite cannot start.
-  #
-  # musl is always the smoke executable, never `swift test`: the static Linux SDK ships no
-  # XCTest. See the swift-static-suite action's suite-swift-static.sh.
-  #
-  # Go and C# are tested where their toolchains already are: each leg of the matrix job and
-  # of the musl job builds its own target's archive first and links it in its own suite.
-  # ===========================================================================
-  build-static-libs:
-    if: inputs.static_libs && inputs.static_libs_artifact
-    uses: ./.github/workflows/hyper-build-static.yml
-    with:
-      crate: ${{ inputs.crate }}
-      project: ${{ inputs.project }}
-      apple_mobile: ${{ inputs.apple_mobile }}
-      android: ${{ inputs.android }}
-      attest_native: ${{ inputs.attest_native }}
-      mode: ${{ inputs.mode }}
-
-  test-swift-static:
-    needs: build-static-libs
-    if: inputs.swift && inputs.swift_static_tests
-    uses: ./.github/workflows/hyper-test-swift-static.yml
-    with:
-      project: ${{ inputs.project }}
-      swift_version: ${{ inputs.swift_version }}
-      swift_floor_version: ${{ inputs.swift_floor_version }}
-
   build-php-extension:
-    if: inputs.php && inputs.mode != 'pr' && inputs.php_extension_schedule == 'parallel'
+    if: inputs.php && inputs.mode != 'pr'
     uses: ./.github/workflows/hyper-build-php-extension.yml
     with:
       crate: ${{ inputs.crate }}

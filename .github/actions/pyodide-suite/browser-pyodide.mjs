@@ -92,9 +92,8 @@ window.result = (async () => {
     lines.push(py.runPython(\`
 import importlib, sys
 mod = importlib.import_module(crate)
-assert mod.BACKEND == "native", mod.BACKEND
 assert mod.native_version() == want, mod.native_version()
-f"{crate} {mod.native_version()} on the {mod.BACKEND} backend, Python {sys.version.split()[0]} on {sys.platform}"
+f"{crate} {mod.native_version()}, Python {sys.version.split()[0]} on {sys.platform}"
 \`), navigator.userAgent);
     const rc = py.runPython(\`
 import pytest

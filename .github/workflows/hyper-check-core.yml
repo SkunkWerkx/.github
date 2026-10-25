@@ -2,7 +2,7 @@ name: HyperForge — check the core and lint every binding
 
 # The static checks every Hyper* ci.yml ran inline, in one place: the no_std and no-panic
 # proofs, the export list held against every binding and against the built shared library on
-# every RID, the corpus oracle, rustfmt and clippy, the MSRV, the SemVer check against the
+# every RID, the corpus oracle, the crate's test suite under wasmtime, rustfmt and clippy, the MSRV, the SemVer check against the
 # last crates.io release, each binding's doc linter and formatter, and actionlint over the
 # caller's own workflows. None of it depends on build-native; every job here is static
 # analysis or a single-platform build. Every tool pin lives here, so the three repositories
@@ -66,6 +66,11 @@ on:
         default: "corpus/oracle.py"
       cdylib:
         description: "Build the no_std shared library on every RID, hold its exports to the core's C ABI and, when hyper.json names a cdylib_smoke script, load it and call every export"
+        required: false
+        type: boolean
+        default: true
+      wasi_tests:
+        description: "The crate's whole cargo test suite, default features, compiled for wasm32-wasip1 and run under wasmtime"
         required: false
         type: boolean
         default: true
@@ -264,7 +269,7 @@ jobs:
       - run: python -I ${{ inputs.corpus_oracle }}
 
   # The shared library every binding loads is built without std (`cargo cdylib`), which leaves
-  # it carrying what std used to bring by itself: the C runtime it links and a hidden
+  # it carrying what std would bring by itself: the C runtime it links and a hidden
   # `rust_eh_personality`. Both are per-platform, and a gap in either is a library that links
   # but will not load, so every RID the Forge ships is built and loaded here rather than
   # assumed. Each leg holds the export surface to exactly the C ABI the Rust source declares
@@ -377,6 +382,45 @@ jobs:
             apk del build-base >/dev/null
             if [ -n "$SMOKE" ]; then python -I "/work/$SMOKE" "$lib" Cargo.toml; fi
           '
+
+  # The crate's own test suite again, compiled for wasm32-wasip1 and run under wasmtime: the
+  # claim each consumer's README makes for WASI is this job, not a build that merely
+  # compiles. wasmtime gives the guest no filesystem by default, and the suites read by
+  # absolute path what was absolute at compile time (CARGO_MANIFEST_DIR, so a corpus in the
+  # repository, and CARGO_TARGET_TMPDIR), so the checkout and the target directory are
+  # mounted at their own paths. The checkout covers the default target directory; the second
+  # mount keeps a relocated one working. wasip1 has no threads: a test that spawns one is the
+  # consumer's to gate on `target_os = "wasi"`.
+  test-wasi:
+    if: inputs.wasi_tests
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: wasm32-wasip1
+      # The release tarball, checked against the SHA-256 GitHub publishes for it. Refreshed
+      # by hand (Dependabot does not see it): bump the version and the checksum together.
+      - name: Install wasmtime 50.0.0
+        env:
+          WASMTIME_VERSION: "50.0.0"
+          WASMTIME_SHA256: 77c19ee0437991f9ac7837b9c269d9c7076744f85dad263fea5214cc2723c7ff
+        run: |
+          set -euo pipefail
+          name="wasmtime-v$WASMTIME_VERSION-x86_64-linux"
+          curl -sSfL -o "$RUNNER_TEMP/$name.tar.xz" \
+            "https://github.com/bytecodealliance/wasmtime/releases/download/v$WASMTIME_VERSION/$name.tar.xz"
+          echo "$WASMTIME_SHA256  $RUNNER_TEMP/$name.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$name.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+      - name: cargo test for wasm32-wasip1 under wasmtime
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          wasmtime --version
+          target=$(cargo metadata --no-deps --format-version 1 | jq -r .target_directory)
+          export CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime run --dir $GITHUB_WORKSPACE --dir $target"
+          cargo test --target wasm32-wasip1
 
   lint-rust:
     if: inputs.lint_rust
@@ -552,7 +596,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # `swiftlint-static`, not `swiftlint`: the dynamic binary links libxml2.so.2, which Ubuntu
-      # 26.04 no longer ships, and wants a Swift toolchain's libsourcekitdInProc.so. The static
+      # 26.04 does not ship, and wants a Swift toolchain's libsourcekitdInProc.so. The static
       # one needs neither. It cannot run SourceKit-backed rules and does not have to:
       # `missing_docs`, the only rule the repositories enable, is syntax-only.
       - name: Install SwiftLint
@@ -601,11 +645,12 @@ jobs:
     container: swift:${{ inputs.swift_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # .swift-format: 4-space indent, 120 columns, every lint rule off, layout only.
+      # .swift-format: 4-space indent, 120 columns, every lint rule off, layout only. Named
+      # outright so it also covers the root Package.swift, which has no config beside it.
       - working-directory: swift
         run: >-
-          swift format lint --strict --recursive
-          Package.swift Sources Tests
+          swift format lint --strict --recursive --configuration .swift-format
+          ../Package.swift Package.swift Sources Tests
           StaticSmokeTest/Package.swift StaticSmokeTest/Sources
           Benchmarks/Package.swift Benchmarks/Benchmarks
 

@@ -17,14 +17,11 @@ name: HyperForge — build and install-test the PyPI wheels
 # (`pypi-wheels-pyodide`), whose job also runs the binding's whole test suite inside Pyodide,
 # under Node and in headless Chrome.
 #
-# This used to live in each caller's release.yml and run only at the tag, on the reasoning
-# that a wheel bakes its version into its own filename and metadata and CI had no version to
-# give it. That stopped being true when the native libraries started embedding the crate
-# version: a release now reuses the CI run that built the version-bump commit (the caller's
-# find-ci-run refuses any other), so the version CI sees is the version being released. What
-# building at the tag bought after that was the first run of this matrix happening after
-# other registries had already published — which is how 0.4.0's osx-x64 smoke test failed
-# with crates.io, NuGet, Maven Central and RubyGems already out.
+# It runs in CI rather than only at the tag: the native libraries embed the crate version,
+# and a release reuses the CI run that built the version-bump commit (the caller's
+# find-ci-run refuses any other), so the version CI sees is the version being released.
+# Building only at the tag would run this matrix for the first time after other registries
+# had already published.
 #
 # A separate workflow rather than more steps in hyper-build-native.yml: maturin is the
 # compile step for a wheel (there is no "pack an already-built extension" mode), it builds
@@ -265,7 +262,7 @@ jobs:
             exit 1
           fi
           check() {
-            echo "import sys, $CRATE; assert $CRATE.BACKEND == 'native', $CRATE.BACKEND; assert $CRATE.native_version() == '$want', $CRATE.native_version(); assert getattr(sys, '_is_gil_enabled', lambda: True)() == $1, 'GIL enabled: ' + str(sys._is_gil_enabled()); print('$CRATE', $CRATE.native_version(), 'on', sys.version.split()[0], 'GIL', sys._is_gil_enabled())"
+            echo "import sys, $CRATE; assert $CRATE.native_version() == '$want', $CRATE.native_version(); assert getattr(sys, '_is_gil_enabled', lambda: True)() == $1, 'GIL enabled: ' + str(sys._is_gil_enabled()); print('$CRATE', $CRATE.native_version(), 'on', sys.version.split()[0], 'GIL', sys._is_gil_enabled())"
           }
           if [[ "$RID" == linux-musl-* ]]; then
             in_docker() {

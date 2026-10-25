@@ -1,5 +1,35 @@
 name: HyperForge — build static libraries
 
+# The static libraries.
+#
+# Three bindings link the core instead of loading it, each from a no_std static library:
+#
+#  * Swift, on every RID and WebAssembly — a SwiftPM binary target (SE-0482) with one
+#    archive per triple, committed in the binding's artifact bundle, so a SwiftPM
+#    executable has nothing to load or deploy. Two of those triples can be reached no
+#    other way: Swift's static Linux SDK (musl) and its WebAssembly SDK build executables
+#    with no dynamic loader.
+#  * Go, under cgo on Linux, macOS and Windows — the archive is named on the cgo link
+#    line, and committed under go/staticlib because a Go module is whatever is in the
+#    tree. Windows links the MSVC archive C# does; MinGW's linker reads it. TinyGo on
+#    WebAssembly links the wasm32-wasip1 one (go/staticlib/wasm, tested in the browser by
+#    hyper-build-wasm.yml). There is no other Go backend: nothing is embedded and nothing
+#    is loaded at run time.
+#  * C#, for a Native AOT publish on every RID — the package's targets file hands the
+#    archive to the AOT linker, so the result is one executable with no library beside it.
+#    These are not committed; hyper-pack-nuget.yml packs them from this run's artifact.
+#
+# This workflow builds all nine archives on one runner (a static library is never linked, so
+# every target — macOS and Windows included — cross-compiles with no C toolchain), uploads
+# them as `static-libs` and attests them; a caller's stage-native-binaries.yml commits
+# exactly those bytes into the Swift and Go trees, and hyper-test-swift-static.yml runs the
+# Swift binding against them. A caller runs it as its own job, so the jobs that need only
+# the archives (Swift static, Apple mobile, Android) start once they exist rather than when
+# the whole native matrix finishes.
+#
+# Go and C# are tested where their toolchains already are: each leg of the native matrix and
+# of its musl job builds its own target's archive first and links it in its own suite.
+
 on:
   workflow_call:
     inputs:

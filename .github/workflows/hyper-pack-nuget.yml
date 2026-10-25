@@ -17,9 +17,9 @@ name: HyperForge — pack a NuGet package for nuget.org
 #
 # So the split is: this job does everything up to and including `dotnet pack`, and uploads
 # the result as a plain build artifact (not a secret, not a job output — artifacts aren't
-# subject to either restriction above). The caller then downloads that artifact in its own
-# tiny local job, logs in fresh from its own workflow file, and pushes — see HyperUuid's
-# release.yml for that half.
+# subject to either restriction above). The release gate preserves it in release-packages,
+# and the publish-nuget composite action, run in the consumer's own release.yml job, logs in
+# fresh from that workflow file and pushes.
 #
 # Only ever called from a release workflow now, not from CI: a .nupkg bakes its version
 # into its own filename and metadata at pack time (source_run_id is required, no same-run
@@ -159,8 +159,8 @@ jobs:
       # Stages runtimes/browser-wasm/nativeassets/net11.0/ before packing, so NuGet's own
       # RID-based asset selection picks the wasm staticlib up automatically for any consumer
       # building with RuntimeIdentifier=browser-wasm — see HyperUuid.csproj's own WASM
-      # comments for the full story. No wasm-tools workload and no second `dotnet build`
-      # needed here anymore: one compiled assembly now covers every platform including
+      # comments for the full story. No wasm-tools workload and no second `dotnet build` is
+      # needed here: one compiled assembly covers every platform including
       # browser-wasm (UuidGenerator.cs picks the right P/Invoke target at runtime via
       # OperatingSystem.IsBrowser(), not a separate compile), so this job's own plain `dotnet
       # pack` below already produces the only managed assembly a consumer needs — only the
@@ -183,8 +183,7 @@ jobs:
 
       # Every native about to go into the package, the browser-wasm archive included, must
       # carry the build provenance hyper-build-native.yml / hyper-build-wasm.yml attested in
-      # the source run. Nothing checked this before 0.8.1, and 0.8.0 shipped a browser-wasm
-      # archive with none. --signer-repo for the reason release.yml's gem gate gives: the
+      # the source run. --signer-repo for the reason the pack-gems action gives: the
       # attest steps live here in the forge.
       - name: Verify build provenance of every native about to be packed
         shell: bash
@@ -232,9 +231,9 @@ jobs:
       # halves genuinely take different commands, which is worth stating in each repo's
       # README rather than leaving a consumer to guess from a failed verification.
       #
-      # Each repo's release.yml additionally attests the finalized, repository-signed package
-      # post-publish, which is the path that needs no such surgery — see the publish job
-      # there. Two attestations over two digests, both valid, covering both verification
+      # The publish-nuget action additionally attests the finalized, repository-signed
+      # package post-publish, in the consumer's release.yml, which is the path that needs no
+      # such surgery. Two attestations over two digests, both valid, covering both verification
       # routes. (The push itself can't run from this forge at all — see the header.)
       - name: Attest the packed .nupkg (pre-push bytes)
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

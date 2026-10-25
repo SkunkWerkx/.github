@@ -6,19 +6,18 @@ producer extraction. They are not measurements of the redesigned workflows.
 The change exposes `hyper-build-static.yml` and `hyper-build-android.yml` as
 independent producer jobs in the caller. Apple tests need only the static producer;
 Android tests need both producers. Swift static checks run separately through
-`hyper-test-swift-static.yml`. The original native entry point still calls those
-workflows by default. Its new `static_libs_artifact`, `swift_static_tests`, and
-`android_shared_artifact` inputs let a caller run each once outside the native
-aggregate. Keep `static_libs: true` and `android: true` in native: these also control
-fresh per-leg static builds and inclusion of Android static archives.
+`hyper-test-swift-static.yml`. The native entry point no longer calls any of the three:
+every caller ran them as its own jobs, so the nested copies (and the native inputs that
+fed only them: `apple_mobile`, `android`, `swift_floor_version` and the three switches
+that turned them off) were removed. Native's `static_libs` still controls each leg's
+fresh per-leg static build.
 
-`php_extension_schedule` defaults to `inline`. `parallel` runs the same extension
-build, staging, PHP ABI load probe, upload and attestation on the original three
-unix RIDs (`linux-x64`, `linux-arm64`, `osx-arm64`) through
-`hyper-build-php-extension.yml`. The Intel macOS job was already core-only.
-The PHP FFI suites and musl floor tests keep their original conditions. Parallel
-extension builds add a macOS runner and repeat PHP setup; their effect requires a
-new run and is not included in the timing model below.
+The ext-php-rs extension build, staging, PHP ABI load probe, upload and attestation
+run on the original three unix RIDs (`linux-x64`, `linux-arm64`, `osx-arm64`) in
+`hyper-build-php-extension.yml`'s jobs, no longer inside the native matrix. The Intel macOS
+job was already core-only. The PHP FFI suites and musl floor tests keep their original
+conditions. The separate extension jobs add a macOS runner and repeat PHP setup; their
+effect is not included in the timing model below, which predates them.
 
 A reusable workflow that calls a Forge composite action checks out the consumer at the
 workspace root and the Forge under `.hyperforge` at `job.workflow_sha`, then calls the

@@ -1,7 +1,9 @@
 name: HyperForge — publish Rust core to crates.io
 
-# Keep this file and jobs.publish: crates.io Trusted Publishing is registered
-# against this executing workflow. No cargo publish/repack occurs after assembly.
+# crates.io Trusted Publishing is registered against the consumer's release.yml, not this
+# file: crates.io matches the OIDC token's workflow_ref, which names the top-level caller.
+# Keep jobs.publish: package_preparation.py finds `pack-crates / publish` in run history.
+# No cargo publish/repack occurs after assembly.
 on:
   workflow_call:
     inputs:

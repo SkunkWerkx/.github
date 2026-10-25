@@ -35,9 +35,16 @@ workflow. This file holds what the code alone won't tell you.
 
 ## Names that are load-bearing
 
-- crates.io Trusted Publishing is registered against `hyper-publish-crate.yml`'s `publish`
-  job, and the Maven publisher's identity is kept stable the same way. Don't rename or split
-  those files or jobs.
+- crates.io Trusted Publishing is registered against each consumer's `release.yml`: crates.io
+  matches the OIDC token's `workflow_ref` claim, which names the top-level calling workflow,
+  never the reusable `hyper-publish-crate.yml` it calls (rust-lang/crates.io,
+  `crates/crates_io_trustpub/src/github/claims.rs`). Renaming a consumer's `release.yml`
+  breaks its crates.io publishing until the publisher is registered again. crates.io is the
+  one registry whose first version is published by hand: `crate-placeholder/` pushes a
+  yanked `0.0.1` by token, and Trusted Publishing takes over from the next version.
+- The `publish` jobs of `hyper-publish-crate.yml` and `hyper-publish-maven.yml` are
+  load-bearing by name (below), and every consumer calls the files by path; don't rename or
+  split those files or jobs.
 - The NuGet push must stay in each consumer's `release.yml`: nuget.org validates the
   executing workflow file, which for anything in here is the Forge.
 - `package_preparation.py` proves "no earlier upload was attempted" by matching the
@@ -82,8 +89,10 @@ osx-x64, native wheels, ruby.wasm, ext-php-rs). Release-only work gates on
   bumps them monthly in one grouped PR, after a 7-day cooldown; `dtolnay/rust-toolchain` is
   ignored there and refreshed by hand to the head of its `stable` branch. A Dependabot PR
   only runs `validate.yml`; the consumers' next runs are where it proves itself.
-- Every binding's tool pin (ruff, revive, SwiftLint, PHP, Ruby, JDK, actionlint) lives in
-  `hyper-check-core.yml`, once; `validate.yml` repeats the actionlint pin for the Forge itself.
+- Every binding's tool pin (ruff, revive, SwiftLint, PHP, Ruby, JDK, actionlint, wasmtime)
+  lives in `hyper-check-core.yml`, once; `validate.yml` repeats the actionlint pin for the
+  Forge itself. wasmtime is a release tarball checked against its SHA-256; Dependabot does not
+  see it, so its version and checksum are bumped together by hand.
 
 ## Writing docs here
 

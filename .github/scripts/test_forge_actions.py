@@ -57,6 +57,94 @@ class ActionFileTests(unittest.TestCase):
                 self.assertNotIn('${{ vars.', text, 'vars are unavailable inside an action; take an input')
 
 
+WORKFLOWS = ACTIONS.parent / 'workflows'
+# A gate on one input's emptiness: `inputs.prepared_run_id == ''` and its `!=` complement
+# between them cover every run, the fresh path and the recovery path.
+EMPTINESS_GATE = re.compile(r"^(inputs\.[\w-]+) (==|!=) ''$")
+
+
+def step_sequences():
+    """(label, steps) for every composite action and every job of every reusable workflow."""
+    for path in sorted(ACTIONS.glob('*/action.yml')):
+        yield path.parent.name, yaml_lite.load(path.read_text())['runs']['steps']
+    for path in sorted(WORKFLOWS.glob('*.yml')):
+        for name, job in yaml_lite.load(path.read_text())['jobs'].items():
+            if 'steps' in job:
+                yield f'{path.name}:{name}', job['steps']
+
+
+def written_files(run):
+    """Files a run script writes by `--output` or a redirection, minus the runner's own."""
+    files = set()
+    for match in re.finditer(r'''(?:--output|>>?)\s+("?)([^\s"'|;&()]+)\1(?=[\s;|&)]|$)''', run):
+        path = match[2]
+        if not path.startswith(('$GITHUB_', '/dev/', '-')):
+            files.add(path)
+    return files
+
+
+def step_text(step):
+    def strings(node):
+        if isinstance(node, dict):
+            return [s for value in node.values() for s in strings(value)]
+        if isinstance(node, list):
+            return [s for value in node for s in strings(value)]
+        return [node] if isinstance(node, str) else []
+    return '\n'.join(strings({k: v for k, v in step.items() if k != 'if'}))
+
+
+def conjuncts(condition):
+    return {part.strip() for part in condition.split('&&')} if condition else set()
+
+
+def written_on_every_path_the_reader_runs(writer_ifs, reader_if):
+    if None in writer_ifs:
+        return True
+    if any(conjuncts(w) <= conjuncts(reader_if) for w in writer_ifs):
+        return True
+    gates = {EMPTINESS_GATE.match(w).groups() for w in writer_ifs if EMPTINESS_GATE.match(w)}
+    return any((name, '==') in gates and (name, '!=') in gates for name, _ in gates)
+
+
+class StepHandoffTests(unittest.TestCase):
+    """A file one step writes and a later step reads must exist on every path the reader runs.
+    The release gate once read release-checksums.txt on the publish dispatch, where only the
+    tag run had written it, so the dispatch failed before any publisher ran."""
+
+    def handoff_gaps(self, label, steps):
+        gaps = []
+        writers = {}
+        for step in steps:
+            condition = step.get('if')
+            written = written_files(step.get('run', ''))
+            for path, conditions in writers.items():
+                if path in written:
+                    continue
+                if re.search(rf'(?<![\w/.-]){re.escape(path)}(?![\w.-])', step_text(step)) and \
+                        not written_on_every_path_the_reader_runs(conditions, condition):
+                    gaps.append(f"{label}: {step.get('name') or step.get('uses')} reads {path}, "
+                                f"written only when {' or '.join(map(str, conditions))}")
+            for path in written:
+                writers.setdefault(path, []).append(condition)
+        return gaps
+
+    def test_no_step_reads_a_file_written_only_on_another_path(self):
+        gaps = [gap for label, steps in step_sequences() for gap in self.handoff_gaps(label, steps)]
+        self.assertEqual(gaps, [])
+
+    def test_the_check_sees_a_file_written_on_one_path_and_read_on_both(self):
+        gated = "inputs.prepared_run_id == ''"
+        steps = [{'name': 'write', 'if': gated, 'run': 'tool checksums --output sums.txt'},
+                 {'name': 'read', 'run': 'cat sums.txt'}]
+        self.assertEqual(len(self.handoff_gaps('fixture', steps)), 1)
+        steps.insert(1, {'name': 'rewrite', 'if': "inputs.prepared_run_id != ''",
+                         'run': 'tool checksums --output sums.txt'})
+        self.assertEqual(self.handoff_gaps('fixture', steps), [])
+        same = [{'name': 'write', 'if': gated, 'run': 'echo > "$RUNNER_TEMP/a"'},
+                {'name': 'attest', 'if': f'{gated} && inputs.publish', 'with': {'subject': '$RUNNER_TEMP/a'}}]
+        self.assertEqual(self.handoff_gaps('fixture', same), [])
+
+
 class ReleaseGateTests(unittest.TestCase):
     def steps(self, name):
         return yaml_lite.load((ACTIONS / name / 'action.yml').read_text())['runs']['steps']
@@ -80,6 +168,15 @@ class ReleaseGateTests(unittest.TestCase):
         names = [s.get('name') for s in self.steps('release-gate')]
         self.assertLess(names.index('Attest every release file from the tag'), names.index('Revalidate complete preserved bytes and every provenance source'))
         self.assertLess(names.index('Revalidate complete preserved bytes and every provenance source'), names.index('Preserve the complete verified release inputs'))
+        # The recovery path downloads release-packages alone; the summary's checksums come
+        # from the revalidated inventory there.
+        relist = steps['List the release attestation subjects from the preserved inventory']
+        self.assertEqual(relist['if'], "inputs.prepared_run_id != ''")
+        self.assertIn('checksums --output release-checksums.txt', relist['run'])
+        self.assertLess(names.index('Revalidate complete preserved bytes and every provenance source'),
+                        names.index('List the release attestation subjects from the preserved inventory'))
+        self.assertLess(names.index('List the release attestation subjects from the preserved inventory'),
+                        names.index('Summarize the release'))
 
     def test_every_registry_mutation_is_gated_on_publish_and_pending(self):
         mutations = {'publish-nuget': ['Publish the preserved package and symbols', 'Record accepted package and symbols',

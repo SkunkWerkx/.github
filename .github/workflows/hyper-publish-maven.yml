@@ -1,7 +1,7 @@
 name: HyperForge — publish to Maven Central
 
-# The existing workflow and publish job identities remain stable. Prepared mode
-# only downloads/verifies final bytes; legacy mode assembles and attests first.
+# Keep jobs.publish: package_preparation.py finds `maven-publish / publish` in run history.
+# Prepared mode only downloads/verifies final bytes; legacy mode assembles and attests first.
 on:
   workflow_call:
     inputs:

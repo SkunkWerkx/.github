@@ -29,6 +29,7 @@ import urllib.error
 import urllib.request
 import zipfile
 
+from package_preparation import not_served
 from release_package_metadata import validate_package_metadata
 
 FORGE = 'SkunkWerkx/.github'
@@ -177,14 +178,18 @@ def verify_release_attestation(root, inventory, registry=None, workspace=None, c
     if not entries:
         raise ValueError('no inventory files in scope')
     repo, staging = inventory['repository'], inventory['staging_sha']
+    # Absolute: the download runs in its own directory, where the relative --root and
+    # --workspace the actions pass name nothing.
+    def path(entry):
+        return str(entry_path(root, workspace, entry).resolve())
     with tempfile.TemporaryDirectory(dir=cwd) as directory:
-        subprocess.run(['gh', 'attestation', 'download', str(entry_path(root, workspace, entries[0])),
+        subprocess.run(['gh', 'attestation', 'download', path(entries[0]),
                         '--repo', repo, '--predicate-type', PREDICATE_TYPE], check=True, cwd=directory)
         bundles = list(Path(directory).glob('*.jsonl'))
         if len(bundles) != 1:
             raise ValueError('expected one release attestation bundle')
         for entry in entries:
-            output = subprocess.check_output(['gh', 'attestation', 'verify', str(entry_path(root, workspace, entry)),
+            output = subprocess.check_output(['gh', 'attestation', 'verify', path(entry),
                                               '--repo', repo, '--bundle', str(bundles[0]),
                                               '--source-digest', staging, '--predicate-type', PREDICATE_TYPE,
                                               '--format', 'json'], text=True)
@@ -227,7 +232,7 @@ def fetch(url):
         with urllib.request.urlopen(request, timeout=90) as response:
             return response.read()
     except urllib.error.HTTPError as error:
-        if error.code == 404:
+        if not_served(error):
             return None
         raise
 
