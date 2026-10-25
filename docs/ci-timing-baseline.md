@@ -20,10 +20,10 @@ The PHP FFI suites and musl floor tests keep their original conditions. Parallel
 extension builds add a macOS runner and repeat PHP setup; their effect requires a
 new run and is not included in the timing model below.
 
-Forge composites remain the existing seven build and test actions, plus the
-`prepare-crate-package` and `prepare-maven-package` release actions. Each job that calls one
-checks out the consumer at the workspace root and Forge under `.hyperforge` at
-`job.workflow_sha`, then calls the action from that checkout. An absent or mutable
+A reusable workflow that calls a Forge composite action checks out the consumer at the
+workspace root and the Forge under `.hyperforge` at `job.workflow_sha`, then calls the
+action from that checkout; a consumer's `release.yml` checks the Forge out at the commit
+`find-ci-run` resolved (`forge_sha`) instead. An absent or mutable
 revision fails before checkout. GitHub documents `job.workflow_repository` and
 `job.workflow_sha` specifically for reusable workflows checking out their own
 source; they are unavailable on GitHub Enterprise Server. See the
@@ -67,13 +67,13 @@ python3 .github/scripts/ci_timing.py /tmp/cast-ci.json
 python3 .github/scripts/test_forge_producers.py -v
 ```
 
-The installed actionlint 1.7.12 predates both the current runner labels and the
-documented `job.workflow_*` properties. This invocation keeps its remaining checks
-enabled while ignoring only those known compatibility errors:
+actionlint 1.7.12, the version `validate.yml` pins, predates the documented
+`job.workflow_*` properties; the runner labels it does not know are declared in
+`.github/actionlint.yaml`. This is `validate.yml`'s invocation, which ignores only those
+two property diagnostics:
 
 ```bash
 actionlint -shellcheck= \
-  -ignore 'label "ubuntu-26.04(-arm)?" is unknown' \
   -ignore 'property "workflow_(sha|repository)" is not defined' \
   .github/workflows/hyper-build-native.yml \
   .github/workflows/hyper-build-static.yml \

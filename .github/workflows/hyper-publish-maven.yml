@@ -43,7 +43,7 @@ on:
         type: string
         default: ""
       publish:
-        description: "Upload to the registry. false stops after the reconciliation and, for crates.io, the Trusted Publishing exchange: the tag run of the two-step release prepares and proves, a dispatch publishes"
+        description: "Upload to the registry. false stops after the reconciliation: the tag run of the two-step release prepares and proves, a dispatch publishes"
         required: false
         type: boolean
         default: true

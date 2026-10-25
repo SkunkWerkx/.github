@@ -3,7 +3,7 @@ name: HyperForge — prepare a release
 # Bumps the version everywhere it lives as committed text (the files `.github/hyper.json`
 # names, by default rust/Cargo.toml, the C# project, java/build.gradle.kts, the gemspec and
 # the Ruby VERSION constant), regenerates rust/Cargo.lock's self-referential entry (cargo
-# publish --locked fails on a stale one) and the lockfile of every companion crate present
+# package --locked fails on a stale one) and the lockfile of every companion crate present
 # (rust/fuzz, rust/browser-test: nothing else regenerates them, and HyperCast's fuzz lockfile
 # once sat at 0.1.0 through three releases), commits straight to master and dispatches the
 # caller's ci.yml against that commit. Python needs nothing: pyproject.toml declares its
@@ -72,7 +72,7 @@ jobs:
           eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
           python3 "$FORGE_SCRIPTS/hyper_config.py" bump --version "$VERSION"
           # Regenerates Cargo.lock's own self-referential package entry to match the bump
-          # above; cargo publish --locked (pack-crates in release.yml) fails on a mismatch.
+          # above; cargo package --locked (prepare-crate-package, at the tag) fails on a mismatch.
           cargo check --manifest-path rust/Cargo.toml
           # Companion crates that path-depend on the core carry their own lockfiles, which
           # nothing else regenerates. Each is updated only if this repository has it.

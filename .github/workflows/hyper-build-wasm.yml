@@ -107,7 +107,8 @@ on:
       ruby_wasm_abis:
         description: >
           JSON list of the Ruby minors the {crate}-wasm gem carries an archive for. Keep it
-          in step with ruby/Rakefile's ABIS and release.yml's list.
+          in step with ruby/Rakefile's ABIS and hyper.json's ruby.abis (hyper_config.py's default),
+          which pack-gems packs.
         required: false
         type: string
         default: '["3.4", "4.0"]'

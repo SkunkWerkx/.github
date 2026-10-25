@@ -83,7 +83,7 @@ osx-x64, native wheels, ruby.wasm, ext-php-rs). Release-only work gates on
   ignored there and refreshed by hand to the head of its `stable` branch. A Dependabot PR
   only runs `validate.yml`; the consumers' next runs are where it proves itself.
 - Every binding's tool pin (ruff, revive, SwiftLint, PHP, Ruby, JDK, actionlint) lives in
-  `hyper-check-core.yml`, once.
+  `hyper-check-core.yml`, once; `validate.yml` repeats the actionlint pin for the Forge itself.
 
 ## Writing docs here
 
@@ -96,8 +96,8 @@ osx-x64, native wheels, ruby.wasm, ext-php-rs). Release-only work gates on
 ## Validating
 
 `validate.yml` runs `python3 -m unittest discover -s .github/scripts -p 'test_*.py'` and
-actionlint (pinned version, flags in the workflow). It only triggers on `.github/**`
-changes. actionlint never reads an `action.yml`; `test_forge_actions.py` is their lint
+actionlint (pinned version, flags in the workflow). It runs on pull requests that touch
+`.github/**` or `docs/**` and on pushes to master that touch `.github/**`. actionlint never reads an `action.yml`; `test_forge_actions.py` is their lint
 (a shell on every `run`, pinned `uses:`, the publish gates). Nothing here builds a
 platform: real behaviour shows up only in the consumers' release-mode CI and in a real
 release.
@@ -136,10 +136,7 @@ release.
 - Remove agent worktrees and their branches once the work is in the main checkout;
   `.claude/` is untracked and `git add` picks it up.
 
-## Open follow-ups (as of 2026-10-23)
+## Open follow-ups (as of 2026-10-25)
 
-- The consumers' `EmccExportedFunction` lists are being re-verified on .NET SDK 11.0.100-rc.2
-  in all three repos (the Forge's export checks never depended on them); see each consumer's
-  follow-ups for the outcome.
 - After the first release on the two-step flow: remove the schema 1 paths from
   `release_inventory.py` and the "Before the first release" runbook section.

@@ -28,7 +28,7 @@ inputs:
     required: false
     default: ""
   publish:
-    description: "\"true\" uploads; \"false\" stops after the registry reconciliation and the OIDC exchange (the tag run of the two-step release)"
+    description: "\"true\" uploads; \"false\" stops after the registry reconciliation, with no OIDC exchange, which this action cannot make without uploading (the tag run of the two-step release)"
     required: false
     default: "true"
 

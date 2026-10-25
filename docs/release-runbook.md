@@ -60,8 +60,8 @@ publish. Delete this section once a release has gone through cleanly.
 
 There is one native build matrix, in A's CI. Static production and Android shared
 production are separate producers; Apple and Android consumer tests start when their own
-artifacts are ready. PHP extension work runs in parallel through the explicit
-`php_extension_schedule` input; other consumers keep the inline default.
+artifacts are ready. All three consumers set `php_extension_schedule: parallel`, which builds the release-mode
+ext-php-rs extensions in jobs of their own; the input's default is still `inline`.
 
 ## After publication
 

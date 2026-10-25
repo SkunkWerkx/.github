@@ -13,7 +13,8 @@ A pattern is a regex whose first group is an export name, or an object `{"block"
 "name": ...}` that first finds blocks with one regex and then names inside each block
 with another. Optional keys: `abi_probe` (a C program compiled against the bundle's header
 and linked with each payload; default `.github/scripts/abi_probe.c`), `cdylib_smoke` (a
-Python script given the linux-x64 shared library and `rust/Cargo.toml`), `wheels` (count,
+Python script given a shared library and `rust/Cargo.toml`: each RID's in hyper-check-core.yml's
+check-cdylib, the committed linux-x64 one in release_guard.py), `wheels` (count,
 default 25), `ruby.abis` and `ruby.platforms`, `go_targets`, `swift_targets`,
 `xcframework_slices`, `version_files` (path -> regex with one group around the version).
 """
