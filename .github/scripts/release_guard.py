@@ -93,6 +93,24 @@ def require_changelog(root, commit, version):
     return section
 
 
+def unversioned_swift_pins(text):
+    """The `.package(...)` declarations in a manifest that pin a revision or a branch."""
+    return re.findall(r'\.package\([^)]*?\b(?:revision|branch)\s*:[^)]*\)', text, re.S)
+
+
+def require_versioned_swift_dependencies(root, commit):
+    # SwiftPM refuses a dependency on a revision or a branch to any consumer resolving a
+    # tagged version of this package, so a pin kept while an upstream was unreleased would
+    # ship a Swift package nobody can depend on.
+    manifests = [p for p in git(root, 'ls-tree', '-r', '--name-only', commit).splitlines()
+                 if p.rsplit('/', 1)[-1] == 'Package.swift']
+    pinned = [f'{path}: {pin}' for path in manifests
+              for pin in unversioned_swift_pins(git(root, 'show', f'{commit}:{path}'))]
+    if pinned:
+        raise ValueError('Package.swift pins a revision or branch; depend on a released version '
+                         'before tagging:\n  ' + '\n  '.join(pinned))
+
+
 def release_record(root, cfg, commit, tag, override, repo):
     message = git(root, 'show', '-s', '--format=%B', commit)
 
@@ -114,6 +132,7 @@ def release_record(root, cfg, commit, tag, override, repo):
         raise ValueError('preparation and staging versions differ')
     if tag:
         require_changelog(root, commit, want)
+        require_versioned_swift_dependencies(root, commit)
     validate_transition(root, cfg, sha, commit)
     validate_staged_tree(root, cfg, commit)
     validate_run(api(repo, f'actions/runs/{run_id}'), sha, run_id, repo)

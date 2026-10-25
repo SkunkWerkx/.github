@@ -2,7 +2,8 @@ name: Release guard
 description: >
   The body of a consumer release.yml's find-ci-run job. Requires the root tag at B, reads B's
   Release-Source-SHA and Release-CI-Run-ID trailers and checks the tag, the versions, the
-  tree, the CI run and the CHANGELOG section (release_guard.py record); on a fresh run
+  tree, the CI run, the CHANGELOG section and that no Package.swift pins a revision or
+  branch (release_guard.py record); on a fresh run
   downloads the preparation run's native artifacts and compares every committed payload with
   them, and on a recovery run validates the preserved package run instead. Runs in the
   consumer's checkout at B (fetch-depth 2) with .hyperforge checked out at the Forge commit

@@ -132,6 +132,21 @@ class ReleaseGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'CHANGELOG.md is missing'):
             self.gate(commit=b)
 
+    def test_tag_refuses_a_swift_dependency_on_a_revision_or_branch(self):
+        pinned = ('.package(url: "https://github.com/SkunkWerkx/HyperCast",\n'
+                  '         revision: "525ef572843e7be955a94fd4b705382948adb2af")')
+        for manifest in ('Package.swift', 'swift/Package.swift'):
+            self.git('reset', '--hard', self.a)
+            self.write(manifest, f'let package = Package(dependencies: [\n    {pinned}\n])\n')
+            a, b = self.prepared_with(CHANGELOG)
+            with self.assertRaisesRegex(ValueError, rf'{manifest}: \.package\(url'):
+                self.gate(commit=b)
+            self.assertEqual(self.gate(commit=b, tag=''), (a, '42'))
+        self.assertEqual(guard.unversioned_swift_pins(
+            '.package(url: "u", branch: "main")\n.package(url: "v", from: "1.0.0")\n'
+            '.package(path: "../")\n.package(url: "w", exact: "1.0.0")'),
+            ['.package(url: "u", branch: "main")'])
+
     def test_changelog_section_is_the_body_of_exactly_one_heading(self):
         self.assertEqual(guard.changelog_section(CHANGELOG, '0.9.0'), '### Changed\n\n- A thing.')
         self.assertEqual(guard.changelog_section(CHANGELOG, '0.8.0'), '- Older.')

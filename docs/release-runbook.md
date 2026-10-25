@@ -43,7 +43,9 @@ nuget.org policy belongs to the account, so none of them needs a first publish b
 
 1. Rename the CHANGELOG's `[Unreleased]` to `[X.Y.Z] - <date>` and add the bullet for every
    package the diff touched; `release_guard.py record` refuses a tag without that section,
-   and the finalizer writes the GitHub Release from it. Merge to master. Dispatch
+   and the finalizer writes the GitHub Release from it. Point every `Package.swift` dependency
+   at a released version: the same check refuses a tag whose manifests pin a `revision:` or
+   `branch:`, which SwiftPM would refuse to every consumer. Merge to master. Dispatch
    `prepare-release.yml` with the bare version. Unchanged version files still dispatch the
    full release-mode CI on A.
 2. The successful CI run stages the verified natives as B (`stage-native-binaries.yml`).
