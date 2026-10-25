@@ -30,6 +30,7 @@ import urllib.request
 import zipfile
 
 from package_preparation import not_served
+from release_guard import LIBRARY_SUFFIXES
 from release_package_metadata import validate_package_metadata
 
 FORGE = 'SkunkWerkx/.github'
@@ -145,9 +146,14 @@ def build_inventory(root, identity, natives=None, workspace=None):
         entry['location'] = 'packages'
     for relative in native_files(workspace, natives):
         path = Path(workspace) / relative
-        # Committed at B, built and attested by the Forge at A, like the wheels.
-        files.append(dict(path=relative, size=path.stat().st_size, sha256=sha256(path),
-                          source_sha=identity['source_sha'], signer_repo=FORGE, location='source'))
+        entry = dict(path=relative, size=path.stat().st_size, sha256=sha256(path), location='source')
+        # The libraries are committed at B, built and attested by the Forge at A, like the
+        # wheels. The metadata staged beside them (the Swift bundle's info.json, the
+        # XCFramework's Info.plist, headers and module maps) carries no build provenance;
+        # the release attestation is what binds it.
+        if path.suffix in LIBRARY_SUFFIXES:
+            entry.update(source_sha=identity['source_sha'], signer_repo=FORGE)
+        files.append(entry)
     return dict(schema=SCHEMA, **identity, tag=f"v{identity['version']}", files=files)
 
 
@@ -215,7 +221,7 @@ def validate_package_run(run, identity, current_run_id=''):
 
 def attest_files(root, inventory, registry=None, workspace=None):
     for entry in inventory['files']:
-        if not in_scope(entry, registry):
+        if not in_scope(entry, registry) or 'signer_repo' not in entry:
             continue
         subprocess.run(['gh','attestation','verify',str(entry_path(root, workspace, entry)),
                         '--repo', inventory['repository'], '--signer-repo', entry['signer_repo'],

@@ -137,13 +137,15 @@ class InventoryTests(unittest.TestCase):
             self.m.confirm_registry(lambda:['missing'], attempts=2, pause=lambda:None)
 
     def natives(self):
-        """A checkout at B with three committed native payloads, and their path list."""
+        """A checkout at B with three committed native libraries and the Swift bundle's
+        info.json, which is staged beside them without build provenance, and their path list."""
         outside = tempfile.TemporaryDirectory()
         self.addCleanup(outside.cleanup)
         workspace = Path(outside.name) / 'checkout'
         self.natives_list = Path(outside.name) / 'natives.txt'
         natives = ['php/src/native/linux-x64/libhypercast.so', 'go/staticlib/linux_amd64/libhypercast.a',
-                   'swift/HyperCastCore.artifactbundle/x86_64-unknown-linux-gnu/libhypercast.a']
+                   'swift/HyperCastCore.artifactbundle/x86_64-unknown-linux-gnu/libhypercast.a',
+                   'swift/HyperCastCore.artifactbundle/info.json']
         for index, relative in enumerate(natives):
             path = workspace / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -155,15 +157,18 @@ class InventoryTests(unittest.TestCase):
         workspace, natives = self.natives()
         result = self.m.build_inventory(self.root, self.identity, natives, workspace)
         self.assertEqual((result['schema'], result['tag']), (2, 'v0.10.0'))
-        self.assertEqual(len(result['files']), len(self.files) + 3)
+        self.assertEqual(len(result['files']), len(self.files) + 4)
         source = [e for e in result['files'] if e['location'] == 'source']
         self.assertEqual([e['path'] for e in source], natives)
-        for entry in source:
+        for entry in source[:3]:
             self.assertEqual((entry['source_sha'], entry['signer_repo']), ('a' * 40, self.m.FORGE))
+        # Staged metadata has no build provenance to name; the release attestation binds it.
+        self.assertNotIn('source_sha', source[3])
+        self.assertNotIn('signer_repo', source[3])
         self.assertTrue(all(e['location'] == 'packages' for e in result['files'] if e['path'].split('/')[0] in self.m.REGISTRIES))
         self.m.validate_inventory(self.root, result, self.identity, workspace)
         # Equal bytes under two paths stay two subjects; `gh attestation verify` matches by digest.
-        digests = [e['sha256'] for e in source[1:]]
+        digests = [e['sha256'] for e in source[1:3]]
         self.assertEqual(digests[0], digests[1])
         lines = self.m.checksums(result).splitlines()
         self.assertEqual(len(lines), len(result['files']))
@@ -246,6 +251,8 @@ if '--predicate-type' in args:
  if os.environ.get('WRONG_PREDICATE'): inventory['version']='0.9.0'
  print(json.dumps([{'verificationResult':{'statement':{'predicateType':args[args.index('--predicate-type')+1],'predicate':inventory}}}]))
  sys.exit(0)
+if path.name=='info.json':
+ sys.exit('HTTP 404: Not Found')
 source='a'*40 if path.parent.name=='pypi' or 'release-packages' not in path.parts else 'b'*40
 sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
 ''')

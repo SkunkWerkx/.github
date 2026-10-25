@@ -17,7 +17,9 @@ INVENTORY = dict(schema=2, repository='SkunkWerkx/HyperUuid', crate='hyperuuid',
                  forge_sha='f' * 40, tag='v1.0.0',
                  files=[dict(path='ruby/hyperuuid-1.0.0.gem', location='packages'),
                         dict(path='pypi/x.whl', location='packages'),
-                        dict(path='go/staticlib/linux_amd64/libhyperuuid.a', location='source')])
+                        dict(path='go/staticlib/linux_amd64/libhyperuuid.a', location='source',
+                             source_sha='a' * 40, signer_repo='SkunkWerkx/.github'),
+                        dict(path='swift/HyperUuidCore.artifactbundle/info.json', location='source')])
 
 
 class ReleaseNotesTests(unittest.TestCase):
@@ -31,8 +33,9 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertIn('--source-ref refs/tags/v1.0.0 --predicate-type ' + notes.PREDICATE_TYPE, body)
         self.assertIn('--signer-repo SkunkWerkx/.github --source-digest ' + 'a' * 40, body)
         self.assertIn('[42](https://github.com/SkunkWerkx/HyperUuid/actions/runs/42)', body)
-        self.assertIn('all 3 of them', body)
-        self.assertIn('the 1 native', body)
+        self.assertIn('all 4 of them', body)
+        self.assertIn('the 1 native libraries committed for Go, Swift and PHP, and the 1 metadata',
+                      ' '.join(body.split()))
         self.assertIn('PEP 740', body)
 
     def test_missing_section_and_schema_one_are_errors(self):

@@ -22,14 +22,15 @@ def verifying(inventory):
     repo, version = inventory['repository'], inventory['version']
     source, run_id = inventory['source_sha'], inventory['ci_run_id']
     files = inventory['files']
-    natives = [e for e in files if e.get('location') == 'source']
+    natives = [e for e in files if e.get('location') == 'source' and 'signer_repo' in e]
+    metadata = sum(e.get('location') == 'source' for e in files) - len(natives)
     return f'''## Verifying
 
 Every file in this release verifies from the tag alone. One attestation, signed by this
 repository's `release.yml` at `v{version}`, names all {len(files)} of them: every registry
-package (NuGet, RubyGems, PyPI, crates.io and Maven Central) and the {len(natives)} native
-libraries committed for Go, Swift and PHP. Its predicate is the release inventory attached
-below.
+package (NuGet, RubyGems, PyPI, crates.io and Maven Central), the {len(natives)} native
+libraries committed for Go, Swift and PHP, and the {metadata} metadata files staged beside
+them. Its predicate is the release inventory attached below.
 
 ```sh
 gh attestation verify <file> --repo {repo} \\
@@ -44,9 +45,9 @@ at commit `{source[:7]}`, the parent of the tagged commit, signed by the Forge:
 gh attestation verify <file> --repo {repo} --signer-repo {FORGE} --source-digest {source}
 ```
 
-`inventory.json` lists every file with its size and SHA-256, the commit it was built from and
-the repository that signed its build provenance; it carries build provenance of its own at
-the tagged commit. PyPI additionally holds a PEP 740 publish attestation for every wheel.
+`inventory.json` lists every file with its size and SHA-256 and, for each file with build
+provenance, the commit it was built from and the repository that signed it; it carries
+build provenance of its own at the tagged commit. PyPI additionally holds a PEP 740 publish attestation for every wheel.
 '''
 
 
