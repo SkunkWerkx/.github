@@ -3,8 +3,8 @@
 The inventory is itself attested by the consumer. File attestations independently
 bind reused wheels to A and assembled packages to B. No native compilation occurs.
 
-Schema 2 (written by `create --natives`) also lists the native payloads committed at B and
-names the release tag, and is the predicate of the release attestation: one `actions/attest`
+The inventory (schema 2, written by `create --natives`) also lists the native payloads
+committed at B and names the release tag, and is the predicate of the release attestation: one `actions/attest`
 statement, signed by the consumer's release.yml at the tag, whose subjects are every file in
 the inventory (`checksums` prints them in shasum form) and whose predicate type is
 PREDICATE_TYPE (documented in docs/predicates/release-v1.md). `verify` checks it for every
@@ -13,7 +13,7 @@ file in scope with the bundle downloaded once, so a consumer's one-line command,
     gh attestation verify <file> --repo <owner>/<repo> --source-ref refs/tags/vX.Y.Z \
         --predicate-type <PREDICATE_TYPE>
 
-is exactly what the release ran before publishing. Schema 1 inventories still verify.
+is exactly what the release ran before publishing.
 """
 import argparse
 import hashlib
@@ -109,7 +109,7 @@ def validate_layout(paths, crate, version):
 def native_files(workspace, natives):
     """The committed native payloads, as repository-relative paths under the checkout at B."""
     if workspace is None:
-        raise ValueError('a schema 2 inventory needs --workspace, the checkout at B')
+        raise ValueError('the inventory needs --workspace, the checkout at B')
     if len(natives) != len(set(natives)) or not natives:
         raise ValueError('native payload list must be non-empty and unique')
     for relative in natives:
@@ -124,12 +124,12 @@ def native_files(workspace, natives):
 def entry_path(root, workspace, entry):
     if entry.get('location') == 'source':
         if workspace is None:
-            raise ValueError('a schema 2 inventory needs --workspace, the checkout at B')
+            raise ValueError('the inventory needs --workspace, the checkout at B')
         return Path(workspace) / entry['path']
     return root / entry['path']
 
 
-def build_inventory(root, identity, natives=None, workspace=None):
+def build_inventory(root, identity, natives, workspace):
     validate_identity(identity)
     paths = payload_files(root)
     validate_layout([p.relative_to(root).as_posix() for p in paths], identity['crate'], identity['version'])
@@ -140,8 +140,6 @@ def build_inventory(root, identity, natives=None, workspace=None):
         files.append(dict(path=name, size=path.stat().st_size, sha256=sha256(path),
                           source_sha=identity['source_sha' if name.startswith('pypi/') else 'staging_sha'],
                           signer_repo=identity['repository'] if name.startswith('ruby/') else FORGE))
-    if natives is None:
-        return dict(schema=1, **identity, files=files)
     for entry in files:
         entry['location'] = 'packages'
     for relative in native_files(workspace, natives):
@@ -157,12 +155,11 @@ def build_inventory(root, identity, natives=None, workspace=None):
     return dict(schema=SCHEMA, **identity, tag=f"v{identity['version']}", files=files)
 
 
-def validate_inventory(root, saved, identity, workspace=None):
-    if saved.get('schema', 1) >= 2:
-        natives = [e['path'] for e in saved['files'] if e.get('location') == 'source']
-        current = build_inventory(root, identity, natives, workspace)
-    else:
-        current = build_inventory(root, identity)
+def validate_inventory(root, saved, identity, workspace):
+    if saved.get('schema') != SCHEMA:
+        raise ValueError(f'only a schema {SCHEMA} inventory verifies')
+    natives = [e['path'] for e in saved['files'] if e.get('location') == 'source']
+    current = build_inventory(root, identity, natives, workspace)
     if saved != current:
         raise ValueError('preserved inventory identity, file set, provenance or bytes differ')
 
@@ -407,9 +404,9 @@ def main():
                         help='Verify the signed inventory and every hash after individual package verification')
     parser.add_argument('--output',type=Path,default=Path('pending'))
     parser.add_argument('--natives',type=Path,
-                        help='create: file listing the committed native payloads (release_guard.py paths); writes schema 2')
+                        help='create (required): file listing the committed native payloads (release_guard.py paths)')
     parser.add_argument('--workspace',type=Path,
-                        help='the checkout at B holding the committed natives; required for schema 2')
+                        help='create and verify: the checkout at B holding the committed natives')
     parser.add_argument('--notes',type=Path,help='finalize: the release body written by release_notes.py')
     args = parser.parse_args()
     identity = {key:os.environ.get(key.upper(),'') for key in IDENTITY}
@@ -420,7 +417,9 @@ def main():
         validate_package_run(run,{**identity,'package_run_id':selected})
     elif args.command in ('create','verify'):
         if args.command == 'create':
-            natives = args.natives.read_text().split() if args.natives else None
+            if not args.natives:
+                raise ValueError('create needs --natives, the committed payloads release_guard.py paths lists')
+            natives = args.natives.read_text().split()
             inventory = build_inventory(args.root,identity,natives,args.workspace)
             (args.root/'inventory.json').write_text(json.dumps(inventory,indent=2)+'\n')
         else:
@@ -435,13 +434,13 @@ def main():
         validate_package_run(run,identity,os.environ.get('GITHUB_RUN_ID',''))
         if not args.inventory_only:
             attest_files(args.root,inventory,args.registry,args.workspace)
-        if args.command == 'verify' and inventory.get('schema',1) >= 2:
+        if args.command == 'verify':
             # The release attestation is new at the gate, so even --inventory-only checks it.
             verify_release_attestation(args.root,inventory,args.registry,args.workspace)
     elif args.command == 'checksums':
         inventory = json.loads((args.root/'inventory.json').read_text())
-        if inventory.get('schema',1) < 2:
-            raise ValueError('release attestation subjects need a schema 2 inventory')
+        if inventory.get('schema') != SCHEMA:
+            raise ValueError(f'release attestation subjects need a schema {SCHEMA} inventory')
         if args.output.resolve().is_relative_to(args.root.resolve()):
             raise ValueError('the checksums file must not be written inside the package root')
         args.output.write_text(checksums(inventory))

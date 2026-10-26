@@ -6,28 +6,6 @@ inventory; recovering a release needs the Forge's master unchanged since the run
 packaged it. Hold Forge merges while a release is in flight anywhere. Do not run this flow
 on the already published v0.9.0 tags.
 
-## Before the first release on this flow (v1.0.0)
-
-This flow has never run end to end: PR CI does not exercise `release.yml`, so the following
-are covered only by unit tests, actionlint and the attestation probe branch:
-
-- the composite actions in a real job (`release-guard`, `pack-gems`, `verify-wheels`,
-  `release-gate`, the three publishers, `finalize-release`), including the `.hyperforge`
-  checkout they depend on and the `release-identity` environment hand-off;
-- `actions/attest` with `subject-checksums` and the `release/v1` predicate, and
-  `gh attestation download`/`verify --bundle` against it (the probe branch proves the
-  mechanism; the gate proves it on real files);
-- the `prepare-crate-package` and `prepare-maven-package` actions, including
-  `cargo package`'s verify build;
-- receipt lookup across this run's earlier attempts and `publication_run_id`;
-- the recovery-rerun check that refuses a second crates.io or Central upload;
-- the Maven confirmation wait (up to an hour after Central reports PUBLISHED; a guess, not
-  a measurement);
-- the finalizer's `go/vX.Y.Z` tag and GitHub Release with notes from the CHANGELOG.
-
-The tag run is the dry run: it stops with nothing uploaded. Inspect it, then dispatch the
-publish. Delete this section once a release has gone through cleanly.
-
 ## A new crate
 
 crates.io is the one registry whose first version is published by hand: it can register a
@@ -48,10 +26,17 @@ nuget.org policy belongs to the account, so none of them needs a first publish b
    `branch:`, which SwiftPM would refuse to every consumer. Merge to master. Dispatch
    `prepare-release.yml` with the bare version. Unchanged version files still dispatch the
    full release-mode CI on A.
-2. The successful CI run stages the verified natives as B (`stage-native-binaries.yml`).
+2. Once every job of A's release-mode CI run is green, its last job (`request-staging`)
+   dispatches `stage-native-binaries.yml` with the run's id: GitHub raises no `workflow_run`
+   for a run `prepare-release.yml` started with a `GITHUB_TOKEN`. Staging waits for the run to
+   complete, then commits the verified natives as B. A CI run a human dispatched also raises
+   `workflow_run`; whichever request comes second finds A staged and is skipped with a notice.
+   If no staging run appears, dispatch it by hand:
+   `gh workflow run stage-native-binaries.yml --ref master -f head_sha=<A>`.
    Inspect B: `Release-Source-SHA`, `Release-CI-Run-ID`, `Release-Forge-SHA`, the digest
    listing, a diff touching only committed payloads, and a green staging run. If master
-   advanced beyond A, prepare again. Run CodeQL on B and tag only once it is green.
+   advanced beyond A for any other reason, prepare again. Run CodeQL on B and tag only once
+   it is green.
 3. Create the root `vX.Y.Z` tag at B (lightweight, unsigned). **The tag run prepares and
    proves; it uploads nothing.** It verifies B against A's run, packs every registry input,
    builds and attests the inventory, attests every file from the tag (`release/v1`),
@@ -67,7 +52,8 @@ nuget.org policy belongs to the account, so none of them needs a first publish b
    ```
 
    That is the recovery path, so every release exercises it: the dispatch re-verifies the
-   preserved bytes, every build provenance and the release attestation (never re-attesting),
+   preserved inventory, every hash and the release attestation (never re-attesting), each
+   publisher verifies its own files' build provenance just before uploading them, it
    publishes to the five registries, then creates `go/vX.Y.Z` and the GitHub Release at B
    with the CHANGELOG section, a Verifying section and `inventory.json` attached.
 
@@ -98,7 +84,9 @@ failed only on the real registries.
   the natives inside the `.nupkg` and the jar were built at A by the Forge's workflows and
   need `--signer-repo SkunkWerkx/.github --source-digest <A>`. `--owner SkunkWerkx` also
   accepts them, with less said. PyPI additionally holds a PEP 740 publish attestation per
-  wheel, filed by the publish action, visible on each file's PyPI page.
+  wheel, filed by the publish action, visible on each file's PyPI page. It must name
+  `release.yml`, as every earlier release's does; PyPI flags a release whose publishing
+  workflow differs from the one before as a change of provenance.
 - `gh attestation verify` prints nothing on success when stdout is not a TTY: check the exit
   code or use `--format json`, whose `predicate` is the inventory for the release attestation.
 - Where each package carries its native: nupkg `runtimes/<rid>/native`, `staticlibs/<rid>`
@@ -144,8 +132,8 @@ nuget.org has accepted a package, rerunning failed jobs stops and asks for
 `publication_run_id`. Dispatch again with it naming the run that pushed the package.
 
 Recovery verifies the selected release run, the A/B source record, the inventory, the
-complete file set, hashes, embedded versions, every build provenance and the release
-attestation again, and never re-attests. It does not require A's native artifacts to remain
+complete file set, hashes, embedded versions and the release attestation again, and each
+publisher the build provenance of every file it uploads; it never re-attests. It does not require A's native artifacts to remain
 downloadable once the complete verified registry inputs have been preserved; it does need the
 checkout at B, since the committed natives are part of the inventory. It does not rebuild
 packages. Missing or expired preserved artifacts fail: inspect the cause and deliberately

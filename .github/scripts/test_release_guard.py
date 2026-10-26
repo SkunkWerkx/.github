@@ -426,6 +426,115 @@ EXPORT int uuid_new_v7(void) {return 0;}
                 guard.validate_payloads(root, cfg, paths, sha, REPO)
 
 
+class StagingRequestTests(unittest.TestCase):
+    """ci.yml's request-staging job dispatches staging from inside the run it names, and a
+    human-dispatched run raises workflow_run too: staging waits for the run, then holds it to
+    the full check, and the second request for one A is a notice, not a second B."""
+    A, B = 'a' * 40, 'b' * 40
+    WORKFLOW = SCRIPTS.parent / 'workflows/hyper-stage-natives.yml'
+
+    def run_record(self, status, conclusion=None, **changes):
+        return {'id': 42, 'head_sha': self.A, 'head_branch': 'master', 'path': '.github/workflows/ci.yml',
+                'event': 'workflow_dispatch', 'repository': {'full_name': REPO},
+                'status': status, 'conclusion': conclusion, **changes}
+
+    def await_run(self, records, timeout=600):
+        reads, sleeps, now = iter(records), [], [0]
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+        with patch.object(guard, 'api', side_effect=lambda repo, endpoint: next(reads)):
+            run = guard.await_run(REPO, self.A, '42', timeout, sleep=sleep, clock=lambda: now[0])
+        return run, sleeps
+
+    def test_waits_for_the_run_then_requires_success(self):
+        run, sleeps = self.await_run([self.run_record('in_progress'), self.run_record('in_progress'),
+                                      self.run_record('completed', 'success')])
+        self.assertEqual((run['status'], len(sleeps)), ('completed', 2))
+        for conclusion in ('failure', 'cancelled'):
+            with self.subTest(conclusion=conclusion), self.assertRaisesRegex(ValueError, 'conclusion=success'):
+                self.await_run([self.run_record('in_progress'), self.run_record('completed', conclusion)])
+        # The bound runs out on an unfinished run: refused, never staged.
+        with self.assertRaisesRegex(ValueError, 'status=completed'):
+            self.await_run([self.run_record('in_progress')] * 10, timeout=60)
+        # Without a wait (workflow_run, a lookup), an unfinished run is refused at once.
+        with self.assertRaisesRegex(ValueError, 'status=completed'):
+            self.await_run([self.run_record('in_progress')], timeout=0)
+
+    def test_a_wrong_run_fails_before_the_wait(self):
+        for changes in ({'head_sha': self.B}, {'head_branch': 'feature'}, {'event': 'pull_request'},
+                        {'path': '.github/workflows/other.yml'}, {'repository': {'full_name': 'someone/else'}}):
+            sleep = unittest.mock.Mock()
+            with self.subTest(changes=changes), \
+                 patch.object(guard, 'api', return_value=self.run_record('in_progress', **changes)), \
+                 self.assertRaises(ValueError):
+                guard.await_run(REPO, self.A, '42', 600, sleep=sleep)
+            sleep.assert_not_called()
+
+    def master(self, sha, parents, message):
+        return {'sha': sha, 'parents': [{'sha': p} for p in parents], 'commit': {'message': message}}
+
+    def test_master_at_a_stages_and_a_staged_a_is_skipped(self):
+        trailers = f'chore: stage\n\nRelease-Source-SHA: {self.A}\nRelease-CI-Run-ID: 42\n'
+        cases = {'at A': (self.master(self.A, ['c' * 40], 'chore: prepare v1.0.0'), None),
+                 'staged': (self.master(self.B, [self.A], trailers), self.B)}
+        for name, (head, expected) in cases.items():
+            with self.subTest(name), patch.object(guard, 'api', return_value=head) as api:
+                self.assertEqual(guard.staged_as(REPO, self.A), expected)
+                api.assert_called_once_with(REPO, 'commits/master')
+        refused = {'an unrelated commit': self.master(self.B, [self.A], 'docs: a fix'),
+                   'staged from another source': self.master(self.B, [self.A], trailers.replace(self.A, 'c' * 40)),
+                   'not A\'s child': self.master(self.B, ['c' * 40], trailers),
+                   'beyond B': self.master('d' * 40, [self.B], 'docs: after the release')}
+        for name, head in refused.items():
+            with self.subTest(name), patch.object(guard, 'api', return_value=head), \
+                 self.assertRaisesRegex(ValueError, 'master advanced beyond preparation source'):
+                guard.staged_as(REPO, self.A)
+
+    def test_skip_step_skips_the_staging_job_with_a_notice(self):
+        script = step(self.WORKFLOW, 'Skip a preparation source master already carries as B')
+        script = script.replace('.hyperforge/.github/scripts/', f'{SCRIPTS}/')
+        trailers = f'stage\n\nRelease-Source-SHA: {self.A}\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gh = root / 'bin/gh'
+            gh.parent.mkdir()
+            gh.write_text('#!/bin/sh\ntest "$*" = "api repos/' + REPO + '/commits/master" && cat "$MASTER_JSON"\n')
+            gh.chmod(0o755)
+            for name, head, staged in (('at A', self.master(self.A, [], ''), ''),
+                                       ('staged', self.master(self.B, [self.A], trailers), self.B),
+                                       ('advanced', self.master(self.B, [self.A], 'docs'), None)):
+                with self.subTest(name):
+                    (root / 'master.json').write_text(json.dumps(head))
+                    (root / 'outputs').write_text('')
+                    env = {**os.environ, 'PATH': f'{gh.parent}:{os.environ["PATH"]}', 'SOURCE_SHA': self.A,
+                           'GITHUB_REPOSITORY': REPO, 'GITHUB_OUTPUT': str(root / 'outputs'),
+                           'MASTER_JSON': str(root / 'master.json')}
+                    result = subprocess.run(['bash', '-c', script], cwd=root, env=env, text=True, capture_output=True)
+                    if staged is None:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('master advanced beyond preparation source', result.stderr)
+                        continue
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual((root / 'outputs').read_text(), f'staged={staged}\n')
+                    self.assertEqual('::notice::' in result.stdout, bool(staged))
+
+    def test_staging_job_is_gated_on_the_skip_and_waits_for_the_run(self):
+        text = self.WORKFLOW.read_text()
+        body = text.split('\njobs:\n')[1]
+        source, stage = body.split('\n  stage-native-binaries:\n')
+        self.assertIn('  source:\n', source)
+        self.assertIn('staged: ${{ steps.staged.outputs.staged }}', source)
+        self.assertNotIn(': write', source)
+        header_lines = stage.split('    steps:')[0]
+        self.assertIn('needs: source', header_lines)
+        self.assertIn("if: needs.source.outputs.staged == ''", header_lines)
+        find = stage.split('      - name: Resolve and validate the exact preparation run\n')[1].split('\n\n')[0]
+        self.assertRegex(find, r'RUN_WAIT_SECONDS: "[1-9][0-9]*"')
+        self.assertIn('release_guard.py" run', find)
+
+
 class DispatchTests(unittest.TestCase):
     def test_dispatch_uses_master_and_checks_this_dispatch_head(self):
         with patch.dict(sys.modules, {'release_guard': guard}):

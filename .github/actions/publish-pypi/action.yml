@@ -1,10 +1,13 @@
-name: Publish to PyPI
+name: Prepare the PyPI upload
 description: >
-  Rechecks the preserved inventory, reconciles the wheels PyPI already serves by exact bytes,
-  publishes only the missing ones with Trusted Publishing (pypa/gh-action-pypi-publish, which
-  also files a PEP 740 publish attestation per wheel on PyPI), then waits until every public
-  wheel matches the prepared bytes. The action cannot separate the OIDC exchange from the
-  upload, so a tag run skips it. Must run in the consumer's release.yml: Trusted Publishing
+  Rechecks the preserved inventory and reconciles the wheels PyPI already serves by exact
+  bytes, leaving only the missing ones in pending-pypi and reporting `pending`. The upload and
+  the wait are the consumer's next two steps, not this action's: pypa/gh-action-pypi-publish
+  finds its own container image only as a step of the workflow itself (nested in a composite
+  action, github.action_repository and action_ref are empty, actions/runner#2473, and it looks
+  for ghcr.io/<consumer>:<tag> instead), so the consumer's pypi-publish job runs it right after
+  this, gated on `pending` and on a publish dispatch, then runs `release_inventory.py
+  registry-confirm --registry pypi`. Must run in the consumer's release.yml: Trusted Publishing
   rejects the Forge's identity. Runs in the consumer's checkout at B.
 
 inputs:
@@ -27,10 +30,11 @@ inputs:
     description: "Prior publication attempt holding registry receipts; the prepared run on a publish dispatch"
     required: false
     default: ""
-  publish:
-    description: "\"true\" uploads; \"false\" stops after the registry reconciliation, with no OIDC exchange, which this action cannot make without uploading (the tag run of the two-step release)"
-    required: false
-    default: "true"
+
+outputs:
+  pending:
+    description: "\"true\" when pending-pypi holds wheels PyPI does not serve yet"
+    value: ${{ steps.pending.outputs.pending }}
 
 runs:
   using: composite
@@ -57,14 +61,3 @@ runs:
       id: pending
       shell: bash
       run: python3 "$FORGE_SCRIPTS/release_inventory.py" registry-plan --registry pypi --output pending-pypi
-
-    - name: Publish only missing preserved wheels (Trusted Publishing)
-      if: steps.pending.outputs.pending == 'true' && inputs.publish == 'true'
-      uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
-      with:
-        packages-dir: pending-pypi
-
-    - name: Verify every public wheel matches the prepared bytes
-      if: inputs.publish == 'true'
-      shell: bash
-      run: python3 "$FORGE_SCRIPTS/release_inventory.py" registry-confirm --registry pypi

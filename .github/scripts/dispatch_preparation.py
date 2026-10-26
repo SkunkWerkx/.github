@@ -20,7 +20,7 @@ def dispatch(repo, sha):
     try:
         validate_run(api(repo, f'actions/runs/{run_id}'), sha, run_id, repo, completed=False)
     except ValueError:
-        # A branch race must not later produce a successful workflow_run staging event.
+        # A branch race must not reach staging: a cancelled run never gets to request-staging.
         subprocess.run(['gh', 'run', 'cancel', run_id, '--repo', repo], check=True)
         raise
     if os.environ.get('GITHUB_OUTPUT'):

@@ -107,14 +107,13 @@ runs:
         predicate-type: https://github.com/SkunkWerkx/.github/predicates/release/v1
         predicate-path: release-packages/inventory.json
 
-    # Fresh files were individually verified by create above, so a fresh run rechecks the
-    # signed inventory, every hash and the release attestation; a recovery run rechecks every
-    # file's build provenance as well. Neither re-attests.
+    # The signed inventory, every hash and the release attestation, on every run; neither path
+    # re-attests. Each file's build provenance is not rechecked here: a fresh run verified it
+    # in create above, and on a recovery run every publisher verifies its own files' build
+    # provenance immediately before uploading them, so a second pass here would only repeat it.
     - name: Revalidate complete preserved bytes and every provenance source
       shell: bash
-      env:
-        INVENTORY_ONLY: ${{ inputs.prepared_run_id == '' && '--inventory-only' || '' }}
-      run: python3 "$FORGE_SCRIPTS/release_inventory.py" verify --workspace . $INVENTORY_ONLY
+      run: python3 "$FORGE_SCRIPTS/release_inventory.py" verify --inventory-only --workspace .
 
     # A recovery run downloads release-packages alone, and the checksums file was written beside
     # it, never inside, so it is derived again here from the inventory just revalidated: the

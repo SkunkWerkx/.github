@@ -36,15 +36,21 @@ class InventoryTests(unittest.TestCase):
         self.files = {p.relative_to(self.root).as_posix():p.read_bytes()
                       for p in self.root.rglob('*') if p.is_file()}
 
+    def build(self):
+        """The inventory of this package root and a checkout at B holding the natives."""
+        self.workspace, natives = self.natives()
+        return self.m.build_inventory(self.root, self.identity, natives, self.workspace)
+
     def test_inventory_binds_all_bytes_and_provenance_to_a_b(self):
-        result = self.m.build_inventory(self.root, self.identity)
-        self.assertEqual(len(result['files']), len(self.files))
-        self.m.validate_inventory(self.root, result, self.identity)
-        for entry in result['files']:
+        result = self.build()
+        packages = [e for e in result['files'] if e['location'] == 'packages']
+        self.assertEqual(len(packages), len(self.files))
+        self.m.validate_inventory(self.root, result, self.identity, self.workspace)
+        for entry in packages:
             self.assertEqual(entry['source_sha'], self.identity['source_sha' if entry['path'].startswith('pypi/') else 'staging_sha'])
 
     def test_recovery_rejects_altered_missing_and_extra_bytes(self):
-        saved = self.m.build_inventory(self.root, self.identity)
+        saved = self.build()
         path = self.root/'crate/upload.bin'
         for operation in ['altered', 'missing', 'extra']:
             with self.subTest(operation=operation):
@@ -55,34 +61,38 @@ class InventoryTests(unittest.TestCase):
                 if operation == 'missing': path.unlink()
                 if operation == 'extra': extra.write_bytes(b'extra')
                 with self.assertRaises(ValueError):
-                    self.m.validate_inventory(self.root, saved, self.identity)
+                    self.m.validate_inventory(self.root, saved, self.identity, self.workspace)
 
     def test_recovery_rejects_wrong_subject_run_source_and_signer(self):
-        saved = self.m.build_inventory(self.root, self.identity)
+        saved = self.build()
         for field, value in [('staging_sha', 'c'*40), ('source_sha', 'd'*40),
                              ('ci_run_id', '99'), ('repository', 'other/repo'),
                              ('forge_sha', 'e'*40)]:
             with self.subTest(field=field):
                 with self.assertRaises(ValueError):
-                    self.m.validate_inventory(self.root, saved, {**self.identity, field:value})
+                    self.m.validate_inventory(self.root, saved, {**self.identity, field:value}, self.workspace)
         saved['files'][0]['source_sha'] = 'c'*40
-        with self.assertRaises(ValueError): self.m.validate_inventory(self.root, saved, self.identity)
+        with self.assertRaises(ValueError): self.m.validate_inventory(self.root, saved, self.identity, self.workspace)
+        # A schema 1 inventory (no natives, no tag) no longer verifies at all.
+        legacy = dict(schema=1, **self.identity, files=[e for e in self.build()['files'] if e['location'] == 'packages'])
+        with self.assertRaisesRegex(ValueError, 'schema 2'):
+            self.m.validate_inventory(self.root, legacy, self.identity, self.workspace)
 
     def test_missing_registry_platform_and_stale_version_rejected(self):
         (self.root/'ruby/hypercast-0.10.0-arm64-darwin.gem').unlink()
         with self.assertRaisesRegex(ValueError, 'Ruby'):
-            self.m.build_inventory(self.root, self.identity)
+            self.build()
         (self.root/'ruby/hypercast-0.10.0-arm64-darwin.gem').write_bytes(self.files['ruby/hypercast-0.10.0-arm64-darwin.gem'])
         (self.root/'pypi/hypercast-0.10.0-abi0-none-platform.whl').rename(self.root/'pypi/hypercast-0.8.0-abi0-none-platform.whl')
         with self.assertRaisesRegex(ValueError, 'version'):
-            self.m.build_inventory(self.root, self.identity)
+            self.build()
 
     def test_symlinks_rejected(self):
         path = self.root/'crate/upload.bin'
         path.unlink()
         path.symlink_to(self.root/'crate/metadata.json')
         with self.assertRaisesRegex(ValueError, 'regular'):
-            self.m.build_inventory(self.root, self.identity)
+            self.build()
 
     def test_exact_run_identity_and_failed_publication_can_recover(self):
         run = dict(id=34, head_sha='b'*40, path='.github/workflows/release.yml',
@@ -174,11 +184,6 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(len(lines), len(result['files']))
         self.assertEqual(lines[-1], f"{source[-1]['sha256']}  {natives[-1]}")
         self.assertTrue(all(len(line.split('  ')[0]) == 64 for line in lines))
-        # A schema 1 inventory still verifies unchanged, and never carries locations.
-        legacy = self.m.build_inventory(self.root, self.identity)
-        self.assertEqual(legacy['schema'], 1)
-        self.assertNotIn('location', legacy['files'][0])
-        self.m.validate_inventory(self.root, legacy, self.identity)
 
     def test_schema_two_rejects_tampered_missing_or_colliding_natives(self):
         workspace, natives = self.natives()
@@ -190,11 +195,11 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'regular file'):
             self.m.validate_inventory(self.root, saved, self.identity, workspace)
         with self.assertRaisesRegex(ValueError, 'workspace'):
-            self.m.validate_inventory(self.root, saved, self.identity)
+            self.m.validate_inventory(self.root, saved, self.identity, None)
         for bad in (['nuget/x.nupkg'], ['inventory.json'], natives[:1] * 2, []):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 self.m.build_inventory(self.root, self.identity, bad, workspace)
-        (self.root / 'inventory.json').write_text(json.dumps(self.m.build_inventory(self.root, self.identity)))
+        (self.root / 'inventory.json').write_text(json.dumps({**saved, 'schema': 1}))
         result = subprocess.run([sys.executable, str(Path(__file__).with_name('release_inventory.py')), 'checksums',
                                  '--root', str(self.root), '--output', str(workspace / 'sums.txt')],
                                 capture_output=True, text=True)
@@ -332,6 +337,7 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_cli_recovers_verified_bytes_without_native_artifacts_and_rejects_wrong_provenance(self):
+        workspace, natives = self.natives()
         helper=tempfile.TemporaryDirectory()
         self.addCleanup(helper.cleanup)
         directory=Path(helper.name)
@@ -342,19 +348,31 @@ args=sys.argv[1:]
 if args[0]=='api':
  print(json.dumps(dict(id=34,head_sha='b'*40,path='.github/workflows/release.yml',event='push',status='completed',conclusion='failure',repository=dict(full_name='SkunkWerkx/HyperCast'))))
  sys.exit(0)
+if args[1]=='download':
+ pathlib.Path('sha256:deadbeef.jsonl').write_text('{}')
+ sys.exit(0)
+if '--predicate-type' in args:
+ inventory=json.loads(pathlib.Path(os.environ['INVENTORY']).read_text())
+ print(json.dumps([{'verificationResult':{'statement':{'predicateType':args[args.index('--predicate-type')+1],'predicate':inventory}}}]))
+ sys.exit(0)
 path=pathlib.Path(args[2])
-source='a'*40 if path.parent.name=='pypi' else 'b'*40
+source='a'*40 if path.parent.name=='pypi' or os.environ['ROOT'] not in str(path.resolve()) else 'b'*40
 if os.environ.get('WRONG_SOURCE') and path.suffix=='.crate': source='c'*40
 sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
 ''')
         gh.chmod(0o755)
         env={**os.environ,**{key.upper():value for key,value in self.identity.items()},
-             'PATH':str(directory)+os.pathsep+os.environ['PATH'],'GITHUB_RUN_ID':'34'}
+             'PATH':str(directory)+os.pathsep+os.environ['PATH'],'GITHUB_RUN_ID':'34',
+             'INVENTORY':str(self.root/'inventory.json'),'ROOT':str(self.root.resolve())}
         command=['python3',str(Path(__file__).with_name('release_inventory.py'))]
-        subprocess.run([*command,'create','--root',str(self.root)],env=env,check=True)
+        tree=['--root',str(self.root),'--workspace',str(workspace)]
+        result=subprocess.run([*command,'create',*tree[:2]],env=env,capture_output=True,text=True)
+        self.assertNotEqual(result.returncode,0,'create without --natives must refuse')
+        self.assertIn('--natives',result.stderr)
+        subprocess.run([*command,'create',*tree,'--natives',str(self.natives_list)],env=env,check=True)
         env.update(GITHUB_RUN_ID='56',PACKAGE_RUN_ID='56')
-        subprocess.run([*command,'verify','--root',str(self.root)],env=env,check=True)
-        result=subprocess.run([*command,'verify','--root',str(self.root)],
+        subprocess.run([*command,'verify',*tree],env=env,check=True)
+        result=subprocess.run([*command,'verify',*tree],
                               env={**env,'WRONG_SOURCE':'1'},capture_output=True)
         self.assertNotEqual(result.returncode,0,'Wrong-source crate provenance must reject recovery')
 

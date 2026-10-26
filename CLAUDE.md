@@ -69,8 +69,7 @@ workflow. This file holds what the code alone won't tell you.
 - The finalizer writes the GitHub Release from the CHANGELOG's `## [X.Y.Z]` section
   (`release_notes.py`); `release_guard.py record` refuses a tag whose CHANGELOG lacks it, so
   the failure comes before anything publishes.
-- Release and recovery steps: `docs/release-runbook.md`. Its "Before the first release on
-  this flow" section stays until a release has gone through cleanly.
+- Release and recovery steps: `docs/release-runbook.md`.
 
 ## Modes
 
@@ -144,8 +143,3 @@ release.
   signed.
 - Remove agent worktrees and their branches once the work is in the main checkout;
   `.claude/` is untracked and `git add` picks it up.
-
-## Open follow-ups (as of 2026-10-25)
-
-- After the first release on the two-step flow: remove the schema 1 paths from
-  `release_inventory.py` and the "Before the first release" runbook section.

@@ -6,9 +6,10 @@ Every path, name and target comes from the consumer's `.github/hyper.json` (`hyp
 the one project-specific piece, the C program that proves the ABI of a linked payload, is the
 consumer's `abi_probe` file, compiled here against the Swift bundle's header.
 
-Modes, all run from the consumer's checkout:
+Modes, all but `staged` run from the consumer's checkout:
   record    at release entry: read B's trailers, check tag, versions, tree, CI run and CHANGELOG
-  run       re-check a CI run id against A
+  run       re-check a CI run id against A, waiting up to RUN_WAIT_SECONDS for it to complete
+  staged    print B when master is already A's staging commit, else master must be A (API only)
   master    origin/master must still be A
   index     the staging index (A + copied payloads) is exactly the artifact bytes
   payloads  every artifact payload is present, exports the ABI and passes the probe
@@ -23,6 +24,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hyper_config  # noqa: E402
@@ -68,6 +70,40 @@ def validate_run(run, sha, run_id, repo, completed=True):
         raise ValueError('CI run must use the full release-mode matrix')
     if run.get('repository', {}).get('full_name', '').lower() != repo.lower():
         raise ValueError('CI run belongs to a different repository')
+
+
+def await_run(repo, sha, run_id, timeout=0, interval=20, sleep=time.sleep, clock=time.monotonic):
+    """The run once it has completed, waiting up to `timeout` seconds; then the full check.
+
+    ci.yml's request-staging job dispatches staging from inside the run, so the run is still
+    in progress when staging starts. Everything but completion is checked on the first read,
+    so a wrong run fails at once instead of after the wait."""
+    deadline = clock() + timeout
+    while True:
+        run = api(repo, f'actions/runs/{run_id}')
+        validate_run(run, sha, run_id, repo, completed=False)
+        if run.get('status') == 'completed' or clock() >= deadline:
+            break
+        sleep(interval)
+    validate_run(run, sha, run_id, repo)
+    return run
+
+
+def staged_as(repo, sha):
+    """B when master is already preparation source A's staging commit, None while it is A.
+
+    Staging can be asked twice for one A: by ci.yml's request-staging job and, when a human
+    dispatched that run, by workflow_run as well, or by a second ci.yml run on A. The second
+    request finds B (A's only child, naming A as its source) and has nothing to do. Anything
+    else on master fails exactly as before."""
+    head = api(repo, 'commits/master')
+    if head['sha'] == sha:
+        return None
+    parents = [parent['sha'] for parent in head.get('parents', [])]
+    sources = re.findall(r'^Release-Source-SHA: (.*)$', head['commit']['message'], re.M)
+    if parents == [sha] and sources == [sha]:
+        return head['sha']
+    raise ValueError(f'master advanced beyond preparation source {sha}; prepare again')
 
 
 def version_at(root, sha):
@@ -265,8 +301,14 @@ def validate_payloads(root, cfg, paths, sha, repo, compare=False, attest=True):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('mode', choices=('record', 'run', 'master', 'index', 'payloads', 'compare', 'paths'))
+    parser.add_argument('mode', choices=('record', 'run', 'staged', 'master', 'index', 'payloads', 'compare', 'paths'))
     args = parser.parse_args()
+    if args.mode == 'staged':
+        # Run before anything is checked out: it reads master through the API alone.
+        staged = staged_as(os.environ['GITHUB_REPOSITORY'], os.environ['SOURCE_SHA'])
+        if staged:
+            print(staged)
+        return
     root = Path.cwd()
     cfg = config(root)
     if args.mode == 'paths':
@@ -284,7 +326,7 @@ def main():
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write(f'source_sha={sha}\nrun_id={run_id}\n')
     elif args.mode == 'run':
-        validate_run(api(repo, f'actions/runs/{run_id}'), sha, run_id, repo)
+        await_run(repo, sha, run_id, int(os.environ.get('RUN_WAIT_SECONDS') or 0))
     elif args.mode == 'master':
         require_master(root, sha)
     elif args.mode == 'index':

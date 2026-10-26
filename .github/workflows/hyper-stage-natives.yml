@@ -10,8 +10,13 @@ name: HyperForge — stage native binaries for release
 # release's until the next one. Nothing on master reads them (every ci.yml leg builds and
 # links its own), so they only have to be right at the tagged commit.
 #
-# The caller's stage-native-binaries.yml triggers on its ci.yml completing on master and on
-# workflow_dispatch with a head SHA, and passes the preparation SHA here. Every artifact's
+# The caller's stage-native-binaries.yml is dispatched by its ci.yml's last job (with the run's
+# id, while that run is still finishing: GitHub raises no workflow_run for the release's run,
+# which prepare-release started with a GITHUB_TOKEN), runs on workflow_run when a human
+# dispatched ci.yml, and can be dispatched by hand with a head SHA; it passes the preparation
+# SHA here. A request for an A that master already carries as B is skipped with a notice, so
+# two requests for one run make one commit. Every staged run waits for its ci.yml run to
+# complete and is then held to a completed, successful, release-mode run at A. Every artifact's
 # SLSA attestation is verified BEFORE it is allowed into the tree, every library's export
 # surface and ABI are probed, and the commit records the run, A and the Forge commit that
 # staged it as trailers release.yml reads back. Deliberately a direct push, not a bot-opened
@@ -25,13 +30,47 @@ on:
         required: true
         type: string
       event_run_id:
-        description: "The completed ci.yml run's id when triggered by workflow_run; empty looks it up for A"
+        description: "The ci.yml run to stage (workflow_run's, or the one ci.yml's request-staging job names); staging waits for it to complete. Empty looks up a successful one for A"
         required: false
         type: string
         default: ""
 
 jobs:
+  # Decided before a runner checks anything out: is A still master, already staged, or
+  # neither? The first stages, the second is a notice and a skipped job rather than a red run
+  # that looks like a failure, the third fails as it always has.
+  source:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    outputs:
+      staged: ${{ steps.staged.outputs.staged }}
+    steps:
+      - name: Check out the exact executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      - name: Skip a preparation source master already carries as B
+        id: staged
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Expected a full preparation SHA"; exit 1; }
+          STAGED=$(python3 .hyperforge/.github/scripts/release_guard.py staged)
+          if [ -n "$STAGED" ]; then
+            echo "::notice::$SOURCE_SHA is already staged as $STAGED; nothing to do."
+          fi
+          echo "staged=$STAGED" >> "$GITHUB_OUTPUT"
+
   stage-native-binaries:
+    needs: source
+    if: needs.source.outputs.staged == ''
     runs-on: ubuntu-26.04
     permissions:
       contents: write
@@ -59,6 +98,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           EVENT_RUN_ID: ${{ inputs.event_run_id }}
+          # request-staging dispatches from inside its run, so that run completes moments after
+          # this starts; the bound only stops a run that never finishes from holding the group.
+          RUN_WAIT_SECONDS: "1800"
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Expected a full preparation SHA"; exit 1; }

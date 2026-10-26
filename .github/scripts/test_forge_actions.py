@@ -163,8 +163,11 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(attest['if'], "inputs.prepared_run_id == ''")
         self.assertEqual(steps['Attest the complete package inventory']['if'], "inputs.prepared_run_id == ''")
         verify = steps['Revalidate complete preserved bytes and every provenance source']
-        self.assertIn('verify --workspace .', verify['run'])
+        # Both paths: per-file build provenance is create's job on a fresh run and each
+        # publisher's, just before its upload, on a recovery run.
+        self.assertIn('verify --inventory-only --workspace .', verify['run'])
         self.assertNotIn('if', verify)
+        self.assertNotIn('env', verify)
         names = [s.get('name') for s in self.steps('release-gate')]
         self.assertLess(names.index('Attest every release file from the tag'), names.index('Revalidate complete preserved bytes and every provenance source'))
         self.assertLess(names.index('Revalidate complete preserved bytes and every provenance source'), names.index('Preserve the complete verified release inputs'))
@@ -182,11 +185,9 @@ class ReleaseGateTests(unittest.TestCase):
         mutations = {'publish-nuget': ['Publish the preserved package and symbols', 'Record accepted package and symbols',
                                        'Attest successful NuGet receipt', 'Attest the finalized served package',
                                        'Attest the finalized served package from the tag'],
-                     'publish-rubygems': ['Publish only missing preserved gems'],
-                     'publish-pypi': ['Publish only missing preserved wheels (Trusted Publishing)']}
+                     'publish-rubygems': ['Publish only missing preserved gems']}
         waits = {'publish-nuget': ['Verify the finalized repository-signed package'],
-                 'publish-rubygems': ['Verify every public gem matches the prepared bytes'],
-                 'publish-pypi': ['Verify every public wheel matches the prepared bytes']}
+                 'publish-rubygems': ['Verify every public gem matches the prepared bytes']}
         for action, names in mutations.items():
             steps = {s.get('name'): s for s in self.steps(action)}
             for name in names:
@@ -206,6 +207,19 @@ class ReleaseGateTests(unittest.TestCase):
         finalized = nuget['Attest the finalized served package from the tag']
         self.assertEqual(finalized['with']['predicate-type'], PREDICATE)
         self.assertEqual(finalized['with']['predicate-path'], 'release-packages/inventory.json')
+
+    def test_pypi_action_prepares_and_leaves_the_upload_to_the_caller(self):
+        # pypa/gh-action-pypi-publish nested in a composite action looks for its image at
+        # ghcr.io/<consumer>:<tag> (actions/runner#2473): both v1.0.0 uploads failed that way.
+        action = yaml_lite.load((ACTIONS / 'publish-pypi' / 'action.yml').read_text())
+        steps = action['runs']['steps']
+        self.assertFalse([s for s in steps if 'pypa/' in s.get('uses', '')])
+        self.assertNotIn('publish', action['inputs'])
+        self.assertEqual(action['outputs']['pending']['value'], '${{ steps.pending.outputs.pending }}')
+        runs = [s['run'] for s in steps if 'run' in s]
+        self.assertIn('verify --registry pypi --workspace .', runs[0])
+        self.assertIn('registry-plan --registry pypi --output pending-pypi', runs[-1])
+        self.assertEqual(steps[-1].get('id'), 'pending')
 
     def test_finalizer_writes_notes_from_the_changelog(self):
         steps = {s.get('name'): s for s in self.steps('finalize-release')}
