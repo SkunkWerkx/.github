@@ -566,6 +566,164 @@ jobs:
           project: ${{ inputs.project }}
           targets: ${{ matrix.static_targets }}
 
+      # TypeScript (napi-rs): the addon built for this leg's own target — every runner here is
+      # native, so napi's --platform picks the host triple — then the suite on Node and on Bun.
+      # The addon is its own cdylib in typescript/, path-depending on rust/ and building into
+      # typescript/target, so it never touches the core library the other suites load.
+      #
+      # `--js binding.js --dts binding.d.ts` is in the package's build script for a reason:
+      # without them napi writes its own loader over the hand-written index.js and index.d.ts.
+      # The git diff after the build is what proves no napi release changed what it writes.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node }}
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Build the TypeScript (napi-rs) addon
+        id: node_addon
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd typescript && npm ci && npm run build)
+          git diff --exit-code -- typescript/index.js typescript/index.d.ts typescript/binding.js typescript/binding.d.ts
+          ls -l typescript/*.node
+
+      # Print-only, for now: the highest glibc symbol version the addon references. The core's
+      # 2.34 floor (checked above) is a no_std library's; the addon links std, so its floor is
+      # measured here first and stated in the TypeScript README from that, then enforced.
+      - name: glibc the TypeScript addon references (printed, never fails)
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' && runner.os == 'Linux' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "::group::glibc symbol versions referenced by typescript/*.node"
+          objdump -T typescript/*.node | grep -o 'GLIBC_[0-9.]*' | sort -V | uniq || true
+          echo "newest: $(objdump -T typescript/*.node | grep -o 'GLIBC_[0-9.]*' | sort -V | uniq | tail -1)"
+          echo "::endgroup::"
+
+      - name: Test TypeScript bindings on Node
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' }}
+        working-directory: typescript
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test
+          npm run typecheck
+
+      # Bun on Windows ARM64 is not verified yet; until it is, the Bun run skips that leg.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' && matrix.rid != 'win-arm64' }}
+        with:
+          bun-version: ${{ inputs.bun_version }}
+
+      - name: Test TypeScript bindings on Bun
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' && matrix.rid != 'win-arm64' }}
+        working-directory: typescript
+        shell: bash
+        run: npm run test:bun
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' }}
+        with:
+          name: node-${{ matrix.rid }}
+          path: typescript/*.node
+          if-no-files-found: error
+
+      # The same attestation, for the same reason, as this leg's native library.
+      - name: Attest the TypeScript addon's build provenance
+        if: >-
+          matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node &&
+          steps.node_addon.conclusion == 'success' && inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: typescript/*.node
+
+      # R: R CMD check --as-cran, failing on a NOTE as CRAN's incoming checks would, from the
+      # tree vendor.sh leaves (the core copied in, the crates vendored, the corpus staged). On
+      # Windows R builds with Rtools' MinGW, so the package's Rust half needs the gnu target.
+      # R on Windows ARM64 is experimental (CRAN builds no binaries for it), so that leg skips
+      # the R steps; revisit when R and Rtools ship it as a supported platform.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && runner.os == 'Windows' }}
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' }}
+        with:
+          r-version: ${{ inputs.r_version }}
+          use-public-rspm: true
+          # Off, or on Windows Rtools' MSYS usr/bin leads PATH for the rest of the job and every
+          # later step gets GNU tar, find and sort: setup-dotnet's installer fed its .tar.gz to
+          # that tar, which read `C:` as a host name. R 4.2+ finds Rtools 4.2+ through
+          # RTOOLS4x_HOME when it builds a package, so the check needs nothing on PATH.
+          windows-path-include-rtools: false
+
+      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' }}
+        with:
+          working-directory: r
+          extra-packages: any::rcmdcheck
+
+      - name: Vendor the R package's core, crates and corpus
+        id: r_vendor
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' }}
+        shell: bash
+        run: |
+          bash r/tools/vendor.sh
+
+      - name: R CMD check the R package
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && steps.r_vendor.conclusion == 'success' }}
+        uses: r-lib/actions/check-r-package@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          working-directory: r
+          args: 'c("--no-manual", "--as-cran")'
+          error-on: '"note"'
+
+      # The same check on the previous R minor, the floor the package's users are likeliest to
+      # still run. Linux x64 only: what differs between R minors is R, not the platform. The
+      # three steps carry their own library paths: setup-r-dependencies writes R_LIBS_SITE,
+      # R_LIBS_USER and R_LIB_FOR_PAK to GITHUB_ENV only when they are unset, so without these
+      # the floor R would search the first R's libraries, find its pak missing and fail to load
+      # its compiled packages (rlang's .so, built under the newer R). The check writes to its
+      # own directory so it cannot meet the first one's.
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version }}
+        env:
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
+        with:
+          r-version: ${{ inputs.r_floor_version }}
+          use-public-rspm: true
+          windows-path-include-rtools: false
+
+      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version }}
+        env:
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
+        with:
+          working-directory: r
+          extra-packages: any::rcmdcheck
+
+      - name: R CMD check the R package — the floor R
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.r_vendor.conclusion == 'success' }}
+        env:
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
+        uses: r-lib/actions/check-r-package@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          working-directory: r
+          args: 'c("--no-manual", "--as-cran")'
+          error-on: '"note"'
+          check-dir: '"check-floor"'
+
       # Python (PyO3 feature), every leg — the only Python backend, so it's proven here
       # rather than deferred to a release-time-only build.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -666,158 +824,6 @@ jobs:
       #    on macOS, so blindly re-running it would have handed back most of the savings.
       #    The conditions below are exact rather than convenient, which is why they are ugly.
       # ---------------------------------------------------------------------------
-
-      # TypeScript (napi-rs): the addon built for this leg's own target — every runner here is
-      # native, so napi's --platform picks the host triple — then the suite on Node and on Bun.
-      # The addon is its own cdylib in typescript/, path-depending on rust/ and building into
-      # typescript/target, so it never touches the core library the other suites load.
-      #
-      # `--js binding.js --dts binding.d.ts` is in the package's build script for a reason:
-      # without them napi writes its own loader over the hand-written index.js and index.d.ts.
-      # The git diff after the build is what proves no napi release changed what it writes.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node }}
-        with:
-          node-version: ${{ inputs.node_version }}
-
-      - name: Build the TypeScript (napi-rs) addon
-        id: node_addon
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          (cd typescript && npm ci && npm run build)
-          git diff --exit-code -- typescript/index.js typescript/index.d.ts typescript/binding.js typescript/binding.d.ts
-          ls -l typescript/*.node
-
-      # Print-only, for now: the highest glibc symbol version the addon references. The core's
-      # 2.34 floor (checked above) is a no_std library's; the addon links std, so its floor is
-      # measured here first and stated in the TypeScript README from that, then enforced.
-      - name: glibc the TypeScript addon references (printed, never fails)
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' && runner.os == 'Linux' }}
-        continue-on-error: true
-        shell: bash
-        run: |
-          echo "::group::glibc symbol versions referenced by typescript/*.node"
-          objdump -T typescript/*.node | grep -o 'GLIBC_[0-9.]*' | sort -V | uniq || true
-          echo "newest: $(objdump -T typescript/*.node | grep -o 'GLIBC_[0-9.]*' | sort -V | uniq | tail -1)"
-          echo "::endgroup::"
-
-      - name: Test TypeScript bindings on Node
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' }}
-        working-directory: typescript
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm test
-          npm run typecheck
-
-      # Bun on Windows ARM64 is not verified yet; until it is, the Bun run skips that leg.
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' && matrix.rid != 'win-arm64' }}
-        with:
-          bun-version: ${{ inputs.bun_version }}
-
-      - name: Test TypeScript bindings on Bun
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' && matrix.rid != 'win-arm64' }}
-        working-directory: typescript
-        shell: bash
-        run: npm run test:bun
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' }}
-        with:
-          name: node-${{ matrix.rid }}
-          path: typescript/*.node
-          if-no-files-found: error
-
-      # The same attestation, for the same reason, as this leg's native library.
-      - name: Attest the TypeScript addon's build provenance
-        if: >-
-          matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node &&
-          steps.node_addon.conclusion == 'success' && inputs.attest_native && inputs.mode != 'pr' &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: typescript/*.node
-
-      # R: R CMD check --as-cran, failing on a NOTE as CRAN's incoming checks would, from the
-      # tree vendor.sh leaves (the core copied in, the crates vendored, the corpus staged). On
-      # Windows R builds with Rtools' MinGW, so the package's Rust half needs the gnu target.
-      # R on Windows ARM64 is experimental (CRAN builds no binaries for it), so that leg skips
-      # the R steps; revisit when R and Rtools ship it as a supported platform.
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && runner.os == 'Windows' }}
-        with:
-          targets: x86_64-pc-windows-gnu
-
-      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' }}
-        with:
-          r-version: ${{ inputs.r_version }}
-          use-public-rspm: true
-
-      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' }}
-        with:
-          working-directory: r
-          extra-packages: any::rcmdcheck
-
-      - name: Vendor the R package's core, crates and corpus
-        id: r_vendor
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' }}
-        shell: bash
-        run: |
-          bash r/tools/vendor.sh
-
-      - name: R CMD check the R package
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && steps.r_vendor.conclusion == 'success' }}
-        uses: r-lib/actions/check-r-package@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
-        with:
-          working-directory: r
-          args: 'c("--no-manual", "--as-cran")'
-          error-on: '"note"'
-
-      # The same check on the previous R minor, the floor the package's users are likeliest to
-      # still run. Linux x64 only: what differs between R minors is R, not the platform. The
-      # three steps carry their own library paths: setup-r-dependencies writes R_LIBS_SITE,
-      # R_LIBS_USER and R_LIB_FOR_PAK to GITHUB_ENV only when they are unset, so without these
-      # the floor R would search the first R's libraries, find its pak missing and fail to load
-      # its compiled packages (rlang's .so, built under the newer R). The check writes to its
-      # own directory so it cannot meet the first one's.
-      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version }}
-        env:
-          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
-          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
-          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
-        with:
-          r-version: ${{ inputs.r_floor_version }}
-          use-public-rspm: true
-
-      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version }}
-        env:
-          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
-          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
-          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
-        with:
-          working-directory: r
-          extra-packages: any::rcmdcheck
-
-      - name: R CMD check the R package — the floor R
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.r_vendor.conclusion == 'success' }}
-        env:
-          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
-          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
-          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
-        uses: r-lib/actions/check-r-package@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
-        with:
-          working-directory: r
-          args: 'c("--no-manual", "--as-cran")'
-          error-on: '"note"'
-          check-dir: '"check-floor"'
 
       # C#: the real [LibraryImport] resolution/marshalling path per OS.
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
@@ -1551,6 +1557,62 @@ jobs:
             echo "go=golang:$(sed -n 's/^go \([0-9]*\.[0-9]*\).*/\1/p' go/go.mod)-alpine" >> "$GITHUB_OUTPUT"
           fi
 
+      # Builds the TypeScript addon in Node's Alpine image, runs the suite there and again on
+      # Bun's, and leaves the .node in out-musl for the upload below — see suite-musl.sh.
+      - name: Node on Alpine (the napi-rs addon, then Bun on the same addon)
+        id: node_musl
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node }}
+        uses: ./.hyperforge/.github/actions/musl-suite
+        with:
+          binding: node
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: node:${{ inputs.node_version }}-alpine
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_musl.conclusion == 'success' }}
+        with:
+          name: node-${{ matrix.rid }}
+          path: out-musl/*.node
+          if-no-files-found: error
+
+      - name: Attest the TypeScript addon's build provenance
+        if: >-
+          !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node &&
+          steps.node_musl.conclusion == 'success' && inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out-musl/*.node
+
+      # The floors are a list (every Node major `engines` still admits), so this is a loop over
+      # the same script the action runs rather than one action call per version. Each run builds
+      # and tests in that Node's image. After the upload, so the addon a floor run leaves in
+      # out-musl is never the one shipped.
+      - name: Node on Alpine — the declared floors
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && inputs.node_floor_versions != '' }}
+        shell: bash
+        env:
+          NODE_FLOOR_VERSIONS: ${{ inputs.node_floor_versions }}
+          NODE_VERSION: ${{ inputs.node_version }}
+          CRATE: ${{ inputs.crate }}
+          RID: ${{ matrix.rid }}
+        run: |
+          set -uo pipefail
+          failed=()
+          for version in $NODE_FLOOR_VERSIONS; do
+            [ "$version" = "$NODE_VERSION" ] && continue
+            echo "::group::node $version on Alpine — $RID"
+            SUITE_IMAGE="node:$version-alpine" .hyperforge/.github/actions/musl-suite/suite-musl.sh node "$CRATE" "$RID" . out-musl || failed+=("$version")
+            echo "::endgroup::"
+          done
+          # Every floor runs and reports; the step fails after the loop if any did.
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::the Node suite failed on Alpine for node ${failed[*]}"
+            exit 1
+          fi
+
       - name: C# on Alpine (suite + Native AOT)
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_runtimes_dir != '' && inputs.csharp }}
         uses: ./.hyperforge/.github/actions/musl-suite
@@ -1656,62 +1718,6 @@ jobs:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
           image: python:${{ inputs.python_floor_version }}-alpine
-
-      # Builds the TypeScript addon in Node's Alpine image, runs the suite there and again on
-      # Bun's, and leaves the .node in out-musl for the upload below — see suite-musl.sh.
-      - name: Node on Alpine (the napi-rs addon, then Bun on the same addon)
-        id: node_musl
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node }}
-        uses: ./.hyperforge/.github/actions/musl-suite
-        with:
-          binding: node
-          crate: ${{ inputs.crate }}
-          rid: ${{ matrix.rid }}
-          image: node:${{ inputs.node_version }}-alpine
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_musl.conclusion == 'success' }}
-        with:
-          name: node-${{ matrix.rid }}
-          path: out-musl/*.node
-          if-no-files-found: error
-
-      - name: Attest the TypeScript addon's build provenance
-        if: >-
-          !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node &&
-          steps.node_musl.conclusion == 'success' && inputs.attest_native && inputs.mode != 'pr' &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: out-musl/*.node
-
-      # The floors are a list (every Node major `engines` still admits), so this is a loop over
-      # the same script the action runs rather than one action call per version. Each run builds
-      # and tests in that Node's image. After the upload, so the addon a floor run leaves in
-      # out-musl is never the one shipped.
-      - name: Node on Alpine — the declared floors
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && inputs.node_floor_versions != '' }}
-        shell: bash
-        env:
-          NODE_FLOOR_VERSIONS: ${{ inputs.node_floor_versions }}
-          NODE_VERSION: ${{ inputs.node_version }}
-          CRATE: ${{ inputs.crate }}
-          RID: ${{ matrix.rid }}
-        run: |
-          set -uo pipefail
-          failed=()
-          for version in $NODE_FLOOR_VERSIONS; do
-            [ "$version" = "$NODE_VERSION" ] && continue
-            echo "::group::node $version on Alpine — $RID"
-            SUITE_IMAGE="node:$version-alpine" .hyperforge/.github/actions/musl-suite/suite-musl.sh node "$CRATE" "$RID" . out-musl || failed+=("$version")
-            echo "::endgroup::"
-          done
-          # Every floor runs and reports; the step fails after the loop if any did.
-          if [ "${#failed[@]}" -gt 0 ]; then
-            echo "::error::the Node suite failed on Alpine for node ${failed[*]}"
-            exit 1
-          fi
 
   build-php-extension:
     if: inputs.php && inputs.mode != 'pr'

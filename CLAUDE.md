@@ -79,6 +79,19 @@ workflow. This file holds what the code alone won't tell you.
 osx-x64, native wheels, ruby.wasm, ext-php-rs). Release-only work gates on
 `inputs.mode != 'pr'`; a PR run must sign nothing.
 
+## Fail fast: the newest binding runs first
+
+In `hyper-build-native.yml` the bindings run in one job per leg, in order, and the order is
+newest first: a binding's steps go immediately after the Rust compile steps (core, test
+suite, artifact, static libraries), ahead of every binding that has already shipped, in the
+desktop job and in the musl job's suite list alike. The newest code is where a run fails, and
+a failure in the first minutes lets the owner cancel the rest of the tree and re-run instead
+of waiting on forty minutes of suites that were going to pass. When a binding has been
+through a release, the next new one goes in front of it. Order a toolchain's PATH edits with
+this in mind: setup-r keeps Rtools off PATH (`windows-path-include-rtools: false`) because
+on Windows its MSYS `usr/bin` would otherwise lead PATH for every later step, and GNU tar
+there broke setup-dotnet's extraction.
+
 ## Versions and floors
 
 - Each language's primary toolchain is its current release; check endoflife.date rather
