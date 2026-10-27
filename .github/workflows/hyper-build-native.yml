@@ -781,22 +781,37 @@ jobs:
 
       # The same check on the previous R minor, the floor the package's users are likeliest to
       # still run. Linux x64 only: what differs between R minors is R, not the platform. The
-      # dependencies are installed again because each R minor keeps its own library, and the
-      # check writes to its own directory so it cannot meet the first one's.
+      # three steps carry their own library paths: setup-r-dependencies writes R_LIBS_SITE,
+      # R_LIBS_USER and R_LIB_FOR_PAK to GITHUB_ENV only when they are unset, so without these
+      # the floor R would search the first R's libraries, find its pak missing and fail to load
+      # its compiled packages (rlang's .so, built under the newer R). The check writes to its
+      # own directory so it cannot meet the first one's.
       - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version }}
+        env:
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
         with:
           r-version: ${{ inputs.r_floor_version }}
           use-public-rspm: true
 
       - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version }}
+        env:
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
         with:
           working-directory: r
           extra-packages: any::rcmdcheck
 
       - name: R CMD check the R package — the floor R
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.r_vendor.conclusion == 'success' }}
+        env:
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
         uses: r-lib/actions/check-r-package@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
         with:
           working-directory: r
