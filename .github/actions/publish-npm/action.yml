@@ -1,0 +1,109 @@
+name: Publish to npm
+description: >
+  Rechecks the preserved inventory, reconciles the packages registry.npmjs.org already serves
+  by exact bytes, publishes only the missing tarballs (every platform package before the root
+  that names them) through npm Trusted Publishing, then waits until every public package
+  matches the prepared bytes. Must run in the consumer's release.yml: the Trusted Publisher
+  registered on npmjs.com is the consumer's workflow, never the Forge's. Runs in the
+  consumer's checkout at B.
+
+inputs:
+  version:
+    description: "The release version (the tag without its v)"
+    required: true
+  source_sha:
+    description: "Preparation source A"
+    required: true
+  ci_run_id:
+    description: "The release-mode ci.yml run at A"
+    required: true
+  forge_sha:
+    description: "The Forge commit this run resolved and checked out as .hyperforge"
+    required: true
+  token:
+    description: "github.token"
+    required: true
+  publication_run_id:
+    description: "Prior publication attempt holding registry receipts; the prepared run on a publish dispatch"
+    required: false
+    default: ""
+  publish:
+    description: "\"true\" uploads; \"false\" stops after the registry reconciliation (the tag run of the two-step release)"
+    required: false
+    default: "true"
+  node_version:
+    description: "The Node.js whose npm publishes (npm 11.5.1 or later exchanges the OIDC token)"
+    required: false
+    default: "24"
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.hyperforge/.github/actions/release-identity
+      with:
+        version: ${{ inputs.version }}
+        source_sha: ${{ inputs.source_sha }}
+        ci_run_id: ${{ inputs.ci_run_id }}
+        forge_sha: ${{ inputs.forge_sha }}
+        token: ${{ inputs.token }}
+        publication_run_id: ${{ inputs.publication_run_id }}
+
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: release-packages
+        path: release-packages
+
+    - name: Recheck the immutable inventory before authentication
+      shell: bash
+      run: python3 "$FORGE_SCRIPTS/release_inventory.py" verify --registry npm --workspace .
+
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node_version }}
+        registry-url: https://registry.npmjs.org
+
+    # There is no credentials step: npm 11.5.1 and later exchanges the job's OIDC token for a
+    # short-lived publish token inside `npm publish` itself (and records provenance with it).
+    # So, unlike RubyGems and NuGet, the tag run cannot pre-flight the exchange; a missing
+    # Trusted Publisher registration surfaces on the publish dispatch. The version is checked
+    # on both runs, so an npm too old to exchange fails the tag run instead.
+    - name: Require an npm that exchanges the OIDC token itself
+      shell: bash
+      run: |
+        set -euo pipefail
+        have=$(npm --version)
+        node -e '
+          const [have, want] = process.argv.slice(1).map(v => v.split(".").map(Number));
+          const older = want.findIndex((n, i) => have[i] !== n);
+          process.exit(older >= 0 && have[older] < want[older] ? 1 : 0);
+        ' "$have" 11.5.1 || { echo "::error::npm $have predates Trusted Publishing (11.5.1)"; exit 1; }
+        echo "npm $have"
+
+    - name: Reconcile existing npm packages by exact public bytes
+      id: pending
+      shell: bash
+      run: python3 "$FORGE_SCRIPTS/release_inventory.py" registry-plan --registry npm --output pending-npm
+
+    # registry-plan copies the pending tarballs into one flat directory, where the root's
+    # file name sorts first; the order is set here. Every platform package goes before the
+    # root, whose optionalDependencies name them, and anything that is neither stops the
+    # loop before the first upload.
+    - name: Publish only missing preserved npm packages
+      if: steps.pending.outputs.pending == 'true' && inputs.publish == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        root="pending-npm/$CRATE-$VERSION.tgz"
+        platforms=(pending-npm/skunkwerkx-"$CRATE"-*-"$VERSION".tgz)
+        all=(pending-npm/*)
+        expected=$(( ${#platforms[@]} + $([ -f "$root" ] && echo 1 || echo 0) ))
+        [ "${#all[@]}" -eq "$expected" ] \
+          || { echo "::error::pending-npm holds files that are no package of this release: ${all[*]}"; exit 1; }
+        for f in "${platforms[@]}"; do npm publish "$f" --access public; done
+        if [ -f "$root" ]; then npm publish "$root" --access public; fi
+
+    - name: Verify every public npm package matches the prepared bytes
+      if: inputs.publish == 'true'
+      shell: bash
+      run: python3 "$FORGE_SCRIPTS/release_inventory.py" registry-confirm --registry npm

@@ -76,8 +76,11 @@ docker run --rm "${platform_args[@]}" \
 
     needed=$(readelf -d "$lib" | sed -n "s/.*(NEEDED).*\[\(.*\)\]/\1/p" | sort | tr "\n" " ")
     echo "NEEDED: $needed"
-    case "$needed" in
-      "libc.musl-"*".so.1 ") ;;
+    # The count as well as the name: a bare "libc.musl-"*".so.1 " pattern also matches
+    # "libc.musl-aarch64.so.1 libgcc_s.so.1 ", since * spans the space (measured).
+    set -- $needed
+    case "$#:${1:-}" in
+      "1:libc.musl-"*".so.1") ;;
       *) echo "::error::$lib must depend on musl libc and nothing else, found: $needed"; exit 1 ;;
     esac
 

@@ -2,12 +2,19 @@ name: HyperForge — prepare a release
 
 # Bumps the version everywhere it lives as committed text (the files `.github/hyper.json`
 # names, by default rust/Cargo.toml, the C# project, java/build.gradle.kts, the gemspec and
-# the Ruby VERSION constant), regenerates rust/Cargo.lock's self-referential entry (cargo
-# package --locked fails on a stale one) and the lockfile of every companion crate present
-# (rust/fuzz, rust/browser-test: nothing else regenerates them, and HyperCast's fuzz lockfile
-# once sat at 0.1.0 through three releases), commits straight to master and dispatches the
-# caller's ci.yml against that commit. Python needs nothing: pyproject.toml declares its
-# version dynamic, sourced from rust/Cargo.toml.
+# the Ruby VERSION constant, plus typescript/package.json and r/DESCRIPTION where those
+# directories exist), regenerates rust/Cargo.lock's self-referential entry (cargo package
+# --locked fails on a stale one), typescript/package-lock.json (npm, lock only), the
+# lockfile of every companion crate present (rust/fuzz, rust/browser-test, typescript:
+# nothing else regenerates them, and HyperCast's fuzz lockfile once sat at 0.1.0 through
+# three releases) and the napi-rs wrappers typescript/binding.js and binding.d.ts (napi bakes
+# package.json's version into binding.js's version-mismatch check, so a bump without a
+# rebuild fails every Node leg's `git diff --exit-code` wrapper guard on the release-mode
+# run), commits straight to master and dispatches the caller's ci.yml against that commit.
+# Python needs nothing: pyproject.toml declares its version dynamic, sourced from
+# rust/Cargo.toml. Nor does the R wrapper crate: r/tools/vendor.sh --stage derives its
+# r/src/rust/Cargo.lock from rust/Cargo.lock wherever the package is built, and it is
+# never committed.
 #
 # PHP, Swift and Go have no version field of their own (Packagist, SwiftPM and Go modules
 # resolve from the git tag), but the native libraries committed for them embed the crate
@@ -63,6 +70,11 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: hashFiles('typescript/package.json') != ''
+        with:
+          node-version: '24'
+
       - name: Bump every committed manifest to the version
         env:
           VERSION: ${{ inputs.version }}
@@ -74,13 +86,21 @@ jobs:
           # Regenerates Cargo.lock's own self-referential package entry to match the bump
           # above; cargo package --locked (prepare-crate-package, at the tag) fails on a mismatch.
           cargo check --manifest-path rust/Cargo.toml
+          # The npm lock carries the package's own version too; lock only, no install scripts.
+          if [ -f typescript/package.json ]; then (cd typescript && npm install --package-lock-only --ignore-scripts); fi
           # Companion crates that path-depend on the core carry their own lockfiles, which
           # nothing else regenerates. Each is updated only if this repository has it.
-          for companion in rust/fuzz rust/browser-test; do
+          for companion in rust/fuzz rust/browser-test typescript; do
             if [ -f "$companion/Cargo.lock" ]; then
               cargo update --manifest-path "$companion/Cargo.toml" --package "$CRATE"
             fi
           done
+
+      # After the bump, so the wrappers napi writes carry the new version (see the header).
+      # The addon it compiles (typescript/*.node) is gitignored and never committed.
+      - name: Regenerate the napi-rs wrappers at the version
+        if: hashFiles('typescript/package.json') != ''
+        run: (cd typescript && npm ci --ignore-scripts && npm run build)
 
       - name: Show what changed
         run: git diff --stat
@@ -95,9 +115,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           python3 "$FORGE_SCRIPTS/hyper_config.py" version-files | cut -f1 | xargs git add rust/Cargo.lock
-          for lock in rust/fuzz/Cargo.lock rust/browser-test/Cargo.lock; do
+          for lock in rust/fuzz/Cargo.lock rust/browser-test/Cargo.lock typescript/package-lock.json typescript/Cargo.lock; do
             if [ -f "$lock" ]; then git add "$lock"; fi
           done
+          if [ -f typescript/package.json ]; then git add typescript/binding.js typescript/binding.d.ts; fi
           if git diff --cached --quiet; then
             echo "::notice::Every manifest already says $VERSION — nothing to commit."
           else

@@ -4,16 +4,22 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import shutil
 import struct
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 import warnings
 import zipfile
 
 from package_preparation import crate_metadata
+from hyper_config import NODE_PLATFORMS, RUBY_PLATFORMS
 
 SCRIPT = Path(__file__).with_name('release_package_metadata.py')
+# npm platform package names (napi-rs), and the corpus members every R source tarball carries.
+NODE_SUFFIXES = tuple(NODE_PLATFORMS.values())
+R_CORPUS = ('v5.json', 'sql_order.json', 'sql_order_refused.json', 'timestamp.json', 'inspect.json')
 PLATFORMS = ('', '-x86_64-linux-gnu', '-aarch64-linux-gnu', '-x86_64-linux-musl',
              '-aarch64-linux-musl', '-arm64-darwin', '-x64-mingw-ucrt', '-aarch64-mingw-ucrt')
 
@@ -34,6 +40,36 @@ def write_tar(path, entries, mode='w:gz'):
             entry = tarfile.TarInfo(name)
             entry.size = len(data)
             archive.addfile(entry, io.BytesIO(data))
+
+
+def npm_manifest(name, version, **fields):
+    return json.dumps(dict(name=name, version=version, **fields)).encode()
+
+
+def write_npm(root, crate, version, platform_version=None, dependency_version=None):
+    """The nine `npm pack` tarballs: the root package, then one per napi platform."""
+    names = [f'@skunkwerkx/{crate}-{suffix}' for suffix in NODE_SUFFIXES]
+    dependencies = {name: dependency_version or version for name in names}
+    write_tar(root / f'npm/{crate}-{version}.tgz', [
+        ('package/package.json', npm_manifest(crate, version, optionalDependencies=dependencies)),
+        ('package/index.js', b'module.exports = {}\n')])
+    for suffix, name in zip(NODE_SUFFIXES, names):
+        write_tar(root / f'npm/skunkwerkx-{crate}-{suffix}-{version}.tgz', [
+            ('package/package.json', npm_manifest(name, platform_version or version)),
+            (f'package/{crate}.{suffix}.node', b'native')])
+
+
+def r_entries(crate, version, description=None, drop=()):
+    entries = [(f'{crate}/DESCRIPTION', (description or f'Package: {crate}\nVersion: {version}\n').encode()),
+               (f'{crate}/src/rust/vendor.tar.xz', b'vendored crates'),
+               (f'{crate}/src/rust/Cargo.lock', b'version = 4\n'),
+               (f'{crate}/src/rust/core/Cargo.toml', f'[package]\nname="{crate}"\n'.encode())]
+    entries += [(f'{crate}/tests/testthat/corpus/{name}', b'[]') for name in R_CORPUS]
+    return [(name, data) for name, data in entries if name not in drop]
+
+
+def write_cran(root, crate, version, **changes):
+    write_tar(root / f'cran/{crate}_{version}.tar.gz', r_entries(crate, version, **changes))
 
 
 def create_packages(root, crate='hypercast', version='0.10.0'):
@@ -72,6 +108,8 @@ def create_packages(root, crate='hypercast', version='0.10.0'):
         path = root / 'maven/repository' / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
+    write_npm(root, crate, version)
+    write_cran(root, crate, version)
 
 
 class PackageMetadataTests(unittest.TestCase):
@@ -193,6 +231,88 @@ class PackageMetadataTests(unittest.TestCase):
         self.rewrite_zip(path, lambda entries: [(name, data.replace(b'Version: 0.10.0', b'Version: 0.10.0\nVersion: 0.8.0')) for name, data in entries])
         with self.assertRaises(ValueError):
             self.validate()
+
+    def test_npm_and_cran_groups_are_optional(self):
+        shutil.rmtree(self.root / 'npm')
+        shutil.rmtree(self.root / 'cran')
+        self.validate()
+
+    def test_rejects_npm_tarballs_with_stale_or_wrong_identity(self):
+        cases = {'platform at another version': dict(platform_version='0.8.0'),
+                 'optionalDependency at another version': dict(dependency_version='0.8.0')}
+        for label, change in cases.items():
+            with self.subTest(label):
+                shutil.rmtree(self.root / 'npm')
+                write_npm(self.root, 'hypercast', '0.10.0', **change)
+                with self.assertRaisesRegex(ValueError, 'npm'):
+                    self.validate()
+        shutil.rmtree(self.root / 'npm')
+        write_npm(self.root, 'hypercast', '0.10.0')
+        root_tgz = self.root / 'npm/hypercast-0.10.0.tgz'
+        platform = self.root / f'npm/skunkwerkx-hypercast-{NODE_SUFFIXES[0]}-0.10.0.tgz'
+        names = [f'@skunkwerkx/hypercast-{s}' for s in NODE_SUFFIXES]
+        broken = {
+            'wrong root name': (root_tgz, npm_manifest('wrongproject', '0.10.0',
+                                optionalDependencies={n: '0.10.0' for n in names})),
+            'stale root version': (root_tgz, npm_manifest('hypercast', '0.8.0',
+                                   optionalDependencies={n: '0.10.0' for n in names})),
+            'missing optionalDependency': (root_tgz, npm_manifest('hypercast', '0.10.0',
+                                           optionalDependencies={n: '0.10.0' for n in names[1:]})),
+            'extra optionalDependency': (root_tgz, npm_manifest('hypercast', '0.10.0',
+                                         optionalDependencies={**{n: '0.10.0' for n in names}, 'left-pad': '0.10.0'})),
+            'wrong platform name': (platform, npm_manifest('@skunkwerkx/wrongproject-linux-x64-gnu', '0.10.0')),
+            'platform named as another platform': (platform, npm_manifest(names[1], '0.10.0')),
+            'platform named as the root': (platform, npm_manifest('hypercast', '0.10.0')),
+        }
+        for label, (path, manifest) in broken.items():
+            with self.subTest(label):
+                original = path.read_bytes()
+                write_tar(path, [('package/package.json', manifest)])
+                with self.assertRaisesRegex(ValueError, 'npm'):
+                    self.validate()
+                path.write_bytes(original)
+        self.validate()
+        original = root_tgz.read_bytes()
+        write_tar(root_tgz, [('package/index.js', b'')])
+        with self.assertRaises(ValueError):
+            self.validate()
+        root_tgz.write_bytes(original)
+        (self.root / 'npm/extra-0.10.0.tgz').write_bytes(original)
+        with self.assertRaises(ValueError):
+            self.validate()
+
+    def test_rejects_r_source_tarball_with_stale_identity_or_missing_members(self):
+        path = self.root / 'cran/hypercast_0.10.0.tar.gz'
+        members = [name for name, _ in r_entries('hypercast', '0.10.0')
+                   if name != 'hypercast/DESCRIPTION']
+        self.assertEqual(len(members), 8)
+        for member in members:
+            with self.subTest(missing=member):
+                write_cran(self.root, 'hypercast', '0.10.0', drop=(member,))
+                with self.assertRaisesRegex(ValueError, 'R source tarball'):
+                    self.validate()
+        for label, description in {'stale version': 'Package: hypercast\nVersion: 0.8.0\n',
+                                   'wrong package': 'Package: wrongproject\nVersion: 0.10.0\n',
+                                   'two versions': 'Package: hypercast\nVersion: 0.10.0\nVersion: 0.8.0\n'}.items():
+            with self.subTest(label):
+                write_cran(self.root, 'hypercast', '0.10.0', description=description)
+                with self.assertRaisesRegex(ValueError, 'R source tarball'):
+                    self.validate()
+        write_tar(path, [(name.replace('hypercast/', 'wrongproject/', 1), data)
+                         for name, data in r_entries('hypercast', '0.10.0')])
+        with self.assertRaisesRegex(ValueError, 'R source tarball'):
+            self.validate()
+        write_cran(self.root, 'hypercast', '0.10.0')
+        self.validate()
+
+    def test_counts_follow_the_consumer_config(self):
+        cfg = SimpleNamespace(wheels=24, ruby_platforms=dict(list(RUBY_PLATFORMS.items())[:6]),
+                              node_platforms=NODE_PLATFORMS)
+        with self.assertRaisesRegex(ValueError, '24 wheels'):
+            self.m.validate_package_metadata(self.root, 'hypercast', '0.10.0', cfg)
+        (self.root / 'pypi/hypercast-0.10.0-abi0-none-platform.whl').unlink()
+        with self.assertRaisesRegex(ValueError, '8 RubyGems'):
+            self.m.validate_package_metadata(self.root, 'hypercast', '0.10.0', cfg)
 
 
 if __name__ == '__main__':

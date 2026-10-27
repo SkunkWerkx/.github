@@ -9,7 +9,8 @@ name: HyperForge — check the core and lint every binding
 # cannot drift one version at a time. Names come from the caller's .github/hyper.json.
 #
 # Each job has a toggle so a repository can say, in its ci.yml and with a reason, why a
-# check does not apply to it; the default is everything on.
+# check does not apply to it; the default is everything on, but for the Node and R lints,
+# off until the bindings they lint reach every repository (HyperUuid turns them on).
 
 on:
   workflow_call:
@@ -114,6 +115,18 @@ on:
         required: false
         type: boolean
         default: true
+      # Off by default, unlike the rest: only HyperUuid has these bindings yet, and it passes
+      # true. The defaults flip in the cascade that brings the bindings to the siblings.
+      lint_node:
+        description: "Biome over the TypeScript binding, and rustfmt and clippy over its napi-rs crate (typescript/)"
+        required: false
+        type: boolean
+        default: false
+      lint_r:
+        description: "lintr over the R package, failing on any lint, and rustfmt over its Rust half (r/src/rust)"
+        required: false
+        type: boolean
+        default: false
       format_csharp:
         required: false
         type: boolean
@@ -560,6 +573,80 @@ jobs:
         run: ruff check .
       - working-directory: python
         run: ruff format --check .
+
+  lint-node:
+    if: inputs.lint_node
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy
+      - working-directory: typescript
+        shell: bash
+        run: npm ci
+      # Biome (typescript/biome.json): the lint rules and the formatter, both checked.
+      - working-directory: typescript
+        shell: bash
+        run: npm run lint
+      - working-directory: typescript
+        shell: bash
+        run: cargo fmt --check
+      - working-directory: typescript
+        shell: bash
+        run: cargo clippy --release -- -D warnings
+
+  # lintr reads r/.lintr. The Rust half's manifest depends on the core by a path the package
+  # copies in (src/rust/core, untracked), and cargo fmt resolves the manifest, so the core is
+  # staged first.
+  lint-r:
+    if: inputs.lint_r
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          r-version: release
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          working-directory: r
+          extra-packages: any::lintr
+          needs: lint
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt
+      # lintr's object_usage linter loads the package it lints: without an installed copy
+      # every exported name is a false positive (34 on HyperUuid), so the package is
+      # installed into a scratch library first. The install needs the staged core.
+      - name: Install the package for lintr
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash r/tools/vendor.sh --stage
+          mkdir -p "$RUNNER_TEMP/rlib"
+          R CMD INSTALL --library="$RUNNER_TEMP/rlib" r
+      - name: lintr
+        shell: Rscript {0}
+        env:
+          R_LIBS: ${{ runner.temp }}/rlib
+        run: |
+          lints <- c(lintr::lint_package("r"), lintr::lint_dir("r/bench"), lintr::lint_dir("r/tools"))
+          print(lints)
+          if (length(lints) > 0) quit(status = 1)
+      - name: cargo fmt --check
+        shell: bash
+        run: cargo fmt --check --manifest-path r/src/rust/Cargo.toml
+      # The C shim's formatter (r/.clang-format); the runner image ships clang-format.
+      - name: clang-format --dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang-format --version
+          clang-format --dry-run -Werror r/src/*.c r/src/*.h
 
   lint-php:
     if: inputs.lint_php

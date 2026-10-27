@@ -102,28 +102,48 @@ jobs:
           run-id: ${{ inputs.source_run_id }}
           github-token: ${{ github.token }}
 
-      - name: Arrange runtimes/{rid}/native/ layout
+      - name: Require the exact executing Forge revision
         shell: bash
+        env:
+          FORGE_SHA: ${{ job.workflow_sha }}
+          FORGE_REPOSITORY: ${{ job.workflow_repository }}
         run: |
           set -euo pipefail
-          declare -A LIB_NAMES=(
-            [linux-x64]=lib${{ inputs.crate }}.so
-            [linux-arm64]=lib${{ inputs.crate }}.so
-            [osx-x64]=lib${{ inputs.crate }}.dylib
-            [osx-arm64]=lib${{ inputs.crate }}.dylib
-            [win-x64]=${{ inputs.crate }}.dll
-            [win-arm64]=${{ inputs.crate }}.dll
-          )
-          if [ "${{ inputs.musl }}" = "true" ]; then
-            LIB_NAMES[linux-musl-x64]=lib${{ inputs.crate }}.so
-            LIB_NAMES[linux-musl-arm64]=lib${{ inputs.crate }}.so
+          [[ "$FORGE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Executing Forge SHA is missing or invalid"; exit 1; }
+          [ "$FORGE_REPOSITORY" = SkunkWerkx/.github ] || { echo "::error::Unexpected executing Forge repository"; exit 1; }
+
+      - name: Check out the exact executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      # The library name per RID is hyper.json's (hyper_config.py's lib_names), the map every
+      # other Forge step reads; the musl pair ships only when the source run built it, and
+      # Android's RIDs are .NET's alone, so they are named here.
+      - name: Arrange runtimes/{rid}/native/ layout
+        shell: bash
+        env:
+          FORGE_SCRIPTS: .hyperforge/.github/scripts
+          INPUT_CRATE: ${{ inputs.crate }}
+          MUSL: ${{ inputs.musl }}
+          ANDROID: ${{ inputs.android }}
+          RUNTIMES_DIR: ${{ inputs.runtimes_dir }}
+        run: |
+          set -euo pipefail
+          eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
+          [ "$CRATE" = "$INPUT_CRATE" ] || { echo "::error::crate input $INPUT_CRATE differs from hyper.json's $CRATE"; exit 1; }
+          if [ "$MUSL" != "true" ]; then
+            unset 'LIB_NAMES[linux-musl-x64]' 'LIB_NAMES[linux-musl-arm64]'
           fi
-          if [ "${{ inputs.android }}" = "true" ]; then
-            LIB_NAMES[android-arm64]=lib${{ inputs.crate }}.so
-            LIB_NAMES[android-x64]=lib${{ inputs.crate }}.so
+          if [ "$ANDROID" = "true" ]; then
+            LIB_NAMES[android-arm64]=lib$CRATE.so
+            LIB_NAMES[android-x64]=lib$CRATE.so
           fi
           for rid in "${!LIB_NAMES[@]}"; do
-            dest="${{ inputs.runtimes_dir }}/$rid/native"
+            dest="$RUNTIMES_DIR/$rid/native"
             mkdir -p "$dest"
             cp "artifacts/native-$rid/${LIB_NAMES[$rid]}" "$dest/"
           done

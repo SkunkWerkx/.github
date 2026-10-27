@@ -3,7 +3,7 @@
 #
 #   suite-musl.sh <binding> <crate> <rid> <repo-root> <musl-lib-dir>
 #
-# <binding> is one of: csharp, go, java, php, python, ruby. <rid> is linux-musl-x64 or linux-musl-arm64 and has to match
+# <binding> is one of: csharp, go, java, node, php, python, ruby. <rid> is linux-musl-x64 or linux-musl-arm64 and has to match
 # the container's architecture (DOCKER_PLATFORM overrides the host's, as in build-musl.sh).
 # SUITE_IMAGE overrides the binding's default image, which is how the same suite runs a
 # second time on the oldest runtime the binding claims: `php:8.2-cli-alpine` beside
@@ -173,6 +173,70 @@ case "$binding" in
       cd /t
       pytest -q -p no:cacheprovider tests
     '
+    ;;
+
+  # Two containers again. The first builds the TypeScript addon in Node's Alpine image (a
+  # napi-rs cdylib of its own, path-depending on rust/, so the musl library above is not what
+  # it loads) and runs the suite on that Node; SUITE_IMAGE is how the same build and suite run
+  # on each older major `engines` admits. The second runs the suite on Bun's Alpine image
+  # against that same .node, which is left in <musl-lib-dir> for the job to upload. (Bun's
+  # image carries libgcc for Bun itself, so the bare-image proof is the readelf gate's.)
+  #
+  # `|| exit 1` on the build line: the scripts run under plain `sh -e`, which does not stop on
+  # a failure that is not the last command of an && list.
+  #
+  # The addon links std, so build-musl.sh's two linker facts both apply here: a dynamic CRT
+  # (RUSTFLAGS replaces the crate's own .cargo/config.toml rustflags, so -crt-static is
+  # repeated) and the static unwinder, without which the .node needs a libgcc_s that neither
+  # image ships. The readelf gate is build-musl.sh's. The wrappers are compared with the
+  # checkout's after the build: without --js and --dts napi writes its own loader over them.
+  # The linker is named outright because napi assumes the aarch64 musl target is a cross-build
+  # from x86_64 and asks for aarch64-linux-musl-gcc, which a native arm64 Alpine does not have
+  # (measured: "linker `aarch64-linux-musl-gcc` not found"); napi leaves a set one alone. The
+  # x86_64 one is set the same way so a napi release that maps that target too changes nothing.
+  node)
+    addon=$(mktemp -d)
+    trap 'rm -rf "$addon"' EXIT
+    chmod 777 "$addon"
+    extra_env=(-v "$addon:/addon" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)")
+    in_alpine "${SUITE_IMAGE:-node:${NODE_VERSION:-26}-alpine}" '
+      apk add --no-cache build-base curl >/dev/null
+      curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -q
+      . "$HOME/.cargo/env"
+      echo "== node $(node --version), $(rustc -vV | sed -n "s/^host: //p"), Alpine $(cat /etc/alpine-release), $RID"
+      (cd /src && tar --exclude=target --exclude=node_modules --exclude="*.node" -cf - rust typescript) | tar -C /work -xf -
+      mkdir /unwind
+      echo "GROUP ( $(gcc -print-file-name=libgcc_eh.a) $(gcc -print-file-name=libgcc.a) )" > /unwind/libgcc_s.so
+      export RUSTFLAGS="-C target-feature=-crt-static -L native=/unwind"
+      export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=gcc CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=gcc
+      cd /work/typescript
+      npm ci && npm run build && npm test || exit 1
+      for wrapper in index.js index.d.ts binding.js binding.d.ts; do
+        cmp "$wrapper" "/src/typescript/$wrapper" || { echo "::error::napi build rewrote typescript/$wrapper"; exit 1; }
+      done
+      for lib in ./*.node; do
+        needed=$(readelf -d "$lib" | sed -n "s/.*(NEEDED).*\[\(.*\)\]/\1/p" | sort | tr "\n" " ")
+        echo "NEEDED ($lib): $needed"
+        # The count as well as the name: a bare "libc.musl-"*".so.1 " pattern also matches
+        # "libc.musl-aarch64.so.1 libgcc_s.so.1 ", since * spans the space (measured).
+        set -- $needed
+        case "$#:${1:-}" in
+          "1:libc.musl-"*".so.1") ;;
+          *) echo "::error::$lib must depend on musl libc and nothing else, found: $needed"; exit 1 ;;
+        esac
+      done
+      cp ./*.node /addon/
+      chown "$HOST_UID:$HOST_GID" /addon/*.node
+    '
+    extra_env=(-v "$addon:/addon:ro")
+    in_alpine "oven/bun:alpine" '
+      (cd /src && tar --exclude=target --exclude=node_modules --exclude="*.node" -cf - typescript) | tar -C /work -xf -
+      cp /addon/*.node /work/typescript/
+      cd /work/typescript
+      echo "== bun $(bun --version), Alpine $(cat /etc/alpine-release), $RID"
+      bun test tests/
+    '
+    cp "$addon"/*.node "$lib_dir/"
     ;;
 
   # The Fiddle backend, forced, over this library: what the universal gem runs on Alpine for

@@ -6,16 +6,24 @@ inventory; recovering a release needs the Forge's master unchanged since the run
 packaged it. Hold Forge merges while a release is in flight anywhere. Do not run this flow
 on the already published v0.9.0 tags.
 
-## A new crate
+## A new crate or package
 
-crates.io is the one registry whose first version is published by hand: it can register a
-Trusted Publisher only for a crate that already exists. Before a new Hyper\* crate's first
-release, run [`crate-placeholder/reserve-crate.sh`](../crate-placeholder/) with a short-lived
+crates.io and npm are the registries whose first version is published by hand: each can
+register a Trusted Publisher only for a package that already exists. Before a new Hyper\*
+crate's first release, run [`crate-placeholder/reserve-crate.sh`](../crate-placeholder/) with a short-lived
 token (it pushes and yanks `0.0.1`), register the publisher on the crate's settings page
 against the repository and the workflow `release.yml` (the token's `workflow_ref` names the
 top-level caller, not `hyper-publish-crate.yml`), and revoke the token. Every version after
 that publishes through Trusted Publishing. PyPI and RubyGems take pending publishers, and a
 nuget.org policy belongs to the account, so none of them needs a first publish by hand.
+
+npm is the same rule once per package: a consumer with a TypeScript binding ships nine (the
+root and the eight `@skunkwerkx/<crate>-<platform>` platform packages). Before the first
+release that carries them, the owner publishes a placeholder version below the release,
+`0.0.1`, under each of the nine names with a granular token, registers `release.yml` as the
+trusted publisher on every one of the nine packages' settings pages and revokes the token.
+The release version itself is never published by hand, so the first real version is the
+first one `release.yml` publishes through Trusted Publishing, and it carries npm provenance.
 
 ## Normal release
 
@@ -40,10 +48,11 @@ nuget.org policy belongs to the account, so none of them needs a first publish b
 3. Create the root `vX.Y.Z` tag at B (lightweight, unsigned). **The tag run prepares and
    proves; it uploads nothing.** It verifies B against A's run, packs every registry input,
    builds and attests the inventory, attests every file from the tag (`release/v1`),
-   preserves `release-packages` for 90 days, plans every registry (what nuget.org, RubyGems
-   and PyPI already serve) and completes the NuGet, RubyGems and crates.io Trusted Publishing
-   exchanges without pushing. PyPI's action cannot separate the exchange from the upload and
-   is skipped. No Go tag, no GitHub Release.
+   preserves `release-packages` for 90 days, plans every registry (what nuget.org, RubyGems,
+   PyPI and npm already serve) and completes the NuGet, RubyGems and crates.io Trusted
+   Publishing exchanges without pushing. PyPI's action cannot separate the exchange from the
+   upload and is skipped; npm's exchange happens inside `npm publish`, so the tag run cannot
+   pre-flight it either, and its plan is the check. No Go tag, no GitHub Release.
 4. Inspect the tag run's summary: the inventory, the checksums every subject carries, each
    publisher's plan. Then publish from the preserved bytes:
 
@@ -54,8 +63,11 @@ nuget.org policy belongs to the account, so none of them needs a first publish b
    That is the recovery path, so every release exercises it: the dispatch re-verifies the
    preserved inventory, every hash and the release attestation (never re-attesting), each
    publisher verifies its own files' build provenance just before uploading them, it
-   publishes to the five registries, then creates `go/vX.Y.Z` and the GitHub Release at B
-   with the CHANGELOG section, a Verifying section and `inventory.json` attached.
+   publishes to the six registries, then creates `go/vX.Y.Z` and the GitHub Release at B
+   with the CHANGELOG section, a Verifying section and `inventory.json` attached. The CRAN
+   tarball (`cran/hyperuuid_<v>.tar.gz`) is attested and inventoried like every other file
+   but no job uploads it: the maintainer submits it to CRAN by hand from the preserved
+   bytes.
 
 There is one native build matrix, in A's CI. Static production and Android shared
 production are separate producers; Apple and Android consumer tests start when their own
@@ -142,7 +154,11 @@ prepare fresh inputs if needed.
 RubyGems and PyPI reconcile every already published file against the prepared bytes, then
 upload only missing files. Any conflict fails. crates.io verifies the public archive before
 skipping or sending the preserved framed request. Maven reuses its recorded Central
-deployment and checks the public signed coordinate.
+deployment and checks the public signed coordinate. npm reconciles each of the nine
+packages by `dist.integrity` against the prepared tarball, byte-compares the served
+`dist.tarball`, and publishes only the missing ones, the platform packages before the root
+so the root never names a version that is not yet installable; a conflict fails. CRAN has
+nothing to recover: no job uploaded it, so the preserved tarball is resubmitted by hand.
 
 If Central accepted an upload but its response was lost, find the exact deployment ID in
 the Publisher Portal and also pass `-f maven_deployment_id=ID`. The workflow checks the
@@ -161,8 +177,8 @@ pushed it.
 
 Concurrency serializes releases without canceling an active publisher. A failed registry
 leaves other successful publications in place; the gate avoids preparation failures after
-publishing starts, but does not make five independent registries an atomic transaction. A
-failed finalizer can be rerun after the five publisher jobs succeed. Existing tags pointing
+publishing starts, but does not make six independent registries an atomic transaction. A
+failed finalizer can be rerun after the six publisher jobs succeed. Existing tags pointing
 elsewhere or conflicting public bytes require reconciliation, not an override.
 
 ## Validation and timing

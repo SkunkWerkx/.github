@@ -41,7 +41,9 @@ workflow. This file holds what the code alone won't tell you.
   `crates/crates_io_trustpub/src/github/claims.rs`). Renaming a consumer's `release.yml`
   breaks its crates.io publishing until the publisher is registered again. crates.io is the
   one registry whose first version is published by hand: `crate-placeholder/` pushes a
-  yanked `0.0.1` by token, and Trusted Publishing takes over from the next version.
+  yanked `0.0.1` by token, and Trusted Publishing takes over from the next version. npm is
+  the same per package (the root and the eight platform packages), first published by the
+  owner with a granular token.
 - The `publish` jobs of `hyper-publish-crate.yml` and `hyper-publish-maven.yml` are
   load-bearing by name (below), and every consumer calls the files by path; don't rename or
   split those files or jobs.
@@ -55,7 +57,7 @@ workflow. This file holds what the code alone won't tell you.
 
 ## Publishing is irreversible
 
-- crates.io, Maven Central, NuGet and RubyGems never let a version be replaced. Attest
+- crates.io, Maven Central, NuGet, RubyGems and npm never let a version be replaced. Attest
   before upload, upload only the attested bytes, never repack at publish time, never retry
   an HTTP mutation blindly, and write the receipt before the request (the
   `package_preparation.py` header).
@@ -125,7 +127,7 @@ release.
 - Fix stale docs, comments and links on sight; that permission is standing. READMEs state
   the current state only, history goes in the CHANGELOG, and README examples are verified
   by hand in the same pass. No CI step for docs.
-- A change reaches all seven bindings and the sibling repos in the same pass, with parity
+- A change reaches all nine bindings and the sibling repos in the same pass, with parity
   in behaviour, API and wording. Where a binding can't follow, say why for that binding.
   Never leave a repo half-edited.
 - Pre-1.0, a breaking change is a plain CHANGELOG entry under Unreleased; no semver

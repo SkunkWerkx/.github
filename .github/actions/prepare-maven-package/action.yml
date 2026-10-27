@@ -75,23 +75,20 @@ runs:
         CRATE: ${{ inputs.crate }}
         MUSL: ${{ inputs.musl }}
         RESOURCES_DIR: ${{ inputs.java_resources_dir }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
       run: |
         set -euo pipefail
         verify() {
           gh attestation verify "$1" --repo "$GITHUB_REPOSITORY" \
             --signer-repo SkunkWerkx/.github --source-digest "$SOURCE_SHA"
         }
-        declare -A LIB_NAMES=(
-          [linux-x64]=lib$CRATE.so
-          [linux-arm64]=lib$CRATE.so
-          [osx-x64]=lib$CRATE.dylib
-          [osx-arm64]=lib$CRATE.dylib
-          [win-x64]=$CRATE.dll
-          [win-arm64]=$CRATE.dll
-        )
-        if [ "$MUSL" = "true" ]; then
-          LIB_NAMES[linux-musl-x64]=lib$CRATE.so
-          LIB_NAMES[linux-musl-arm64]=lib$CRATE.so
+        # The library name per RID is hyper.json's (hyper_config.py's lib_names), the map
+        # every other Forge step reads; the musl pair ships only when the source run built it.
+        crate=$CRATE
+        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
+        [ "$CRATE" = "$crate" ] || { echo "::error::crate input $crate differs from hyper.json's $CRATE"; exit 1; }
+        if [ "$MUSL" != "true" ]; then
+          unset 'LIB_NAMES[linux-musl-x64]' 'LIB_NAMES[linux-musl-arm64]'
         fi
         for rid in "${!LIB_NAMES[@]}"; do
           dest="$RESOURCES_DIR/$rid"

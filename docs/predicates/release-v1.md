@@ -17,7 +17,9 @@ Subjects (about 90 per release) are every file in `inventory.json`:
 
 - the registry packages: the `.nupkg` and `.snupkg`, the nine gems, the 25 wheels, the
   `.crate` with its saved registry request, the signed Maven bundle and the repository files
-  inside it (the jar, the sources and javadoc jars, the `.pom`, their signatures);
+  inside it (the jar, the sources and javadoc jars, the `.pom`, their signatures), and, from
+  a consumer with those bindings, the nine npm tarballs (the root package and one per
+  platform) and the CRAN source tarball, which no job uploads (the maintainer submits it);
 - the native libraries committed at the tagged commit for Go (`go/staticlib/**`), Swift
   (the artifact bundle and the XCFramework) and PHP (`php/src/native/**`), and the metadata
   staged beside them: the bundle's `info.json` and the XCFramework's `Info.plist`, headers
@@ -44,7 +46,7 @@ the push.
 | `ci_run_id` | the release-mode `ci.yml` run at A |
 | `package_run_id` | the `release.yml` run that packed and attested |
 | `forge_sha` | the Forge commit that run used |
-| `files[]` | `path`, `size`, `sha256`, `location` (`packages` or `source`), `source_sha` (A for wheels and native libraries, B for packages assembled at the tag), `signer_repo` (the repository whose workflow signed the file's build provenance: `SkunkWerkx/.github` for Forge-built files, the consumer for the gems). Both are absent for the staged metadata, which carries no build provenance; the release attestation is its only binding |
+| `files[]` | `path`, `size`, `sha256`, `location` (`packages` or `source`), `source_sha` (A for wheels and native libraries, B for packages assembled at the tag), `signer_repo` (the repository whose workflow signed the file's build provenance: `SkunkWerkx/.github` for Forge-built files, the consumer for the gems, the npm tarballs and the CRAN tarball). Both are absent for the staged metadata, which carries no build provenance; the release attestation is its only binding |
 
 `inventory.json` itself carries SLSA build provenance at B, made in the same gate.
 

@@ -15,8 +15,10 @@ with another. Optional keys: `abi_probe` (a C program compiled against the bundl
 and linked with each payload; default `.github/scripts/abi_probe.c`), `cdylib_smoke` (a
 Python script given a shared library and `rust/Cargo.toml`: each RID's in hyper-check-core.yml's
 check-cdylib, the committed linux-x64 one in release_guard.py), `wheels` (count,
-default 25), `ruby.abis` and `ruby.platforms`, `go_targets`, `swift_targets`,
-`xcframework_slices`, `version_files` (path -> regex with one group around the version).
+default 25), `ruby.abis` and `ruby.platforms`, `node.platforms` (RID -> napi platform
+name), `go_targets`, `swift_targets`, `xcframework_slices`, `version_files` (path -> regex
+with one group around the version; the default list adds `typescript/package.json` and
+`r/DESCRIPTION` only when that binding's directory exists at the consumer's root).
 """
 import json
 from pathlib import Path
@@ -43,6 +45,12 @@ RUBY_PLATFORMS = {'linux-x64': 'x86_64-linux-gnu', 'linux-arm64': 'aarch64-linux
                   'linux-musl-x64': 'x86_64-linux-musl', 'linux-musl-arm64': 'aarch64-linux-musl',
                   'osx-arm64': 'arm64-darwin', 'win-x64': 'x64-mingw-ucrt',
                   'win-arm64': 'aarch64-mingw-ucrt'}
+# napi-rs's platform names for the RIDs the npm package ships: the glibc and musl Linux builds
+# are distinct packages, and Windows names its ABI.
+NODE_PLATFORMS = {'linux-x64': 'linux-x64-gnu', 'linux-arm64': 'linux-arm64-gnu',
+                  'linux-musl-x64': 'linux-x64-musl', 'linux-musl-arm64': 'linux-arm64-musl',
+                  'osx-x64': 'darwin-x64', 'osx-arm64': 'darwin-arm64',
+                  'win-x64': 'win32-x64-msvc', 'win-arm64': 'win32-arm64-msvc'}
 WHEELS = 25
 CONFIG_PATH = '.github/hyper.json'
 
@@ -71,6 +79,7 @@ class HyperConfig:
         ruby = data.get('ruby', {})
         self.ruby_abis = tuple(ruby.get('abis', RUBY_ABIS))
         self.ruby_platforms = dict(ruby.get('platforms', RUBY_PLATFORMS))
+        self.node_platforms = dict(data.get('node', {}).get('platforms', NODE_PLATFORMS))
         self.go_targets = tuple(data.get('go_targets', GO_TARGETS))
         self.swift_targets = tuple(data.get('swift_targets', SWIFT_TARGETS))
         self.xcframework_slices = tuple(data.get('xcframework_slices', XCFRAMEWORK_SLICES))
@@ -123,13 +132,21 @@ class HyperConfig:
 
     def default_version_files(self):
         """Path -> regex with one group around the version, for prepare-release."""
-        return {
+        files = {
             'rust/Cargo.toml': r'^version = "([^"]+)"',
             f'csharp/{self.project}/{self.project}.csproj': r'<Version>([^<]+)</Version>',
             'java/build.gradle.kts': rf'^version = System\.getenv\("{self.version_env}"\) \?: "([^"]+)"',
             f'ruby/{self.crate}.gemspec': r'spec\.version = "([^"]+)"',
             f'ruby/lib/{self.crate}.rb': r'VERSION = "([^"]+)"',
         }
+        # The TypeScript and R bindings exist in some consumers only; a config loaded
+        # without a root describes the classic five.
+        if self.root is not None:
+            if (self.root / 'typescript').is_dir():
+                files['typescript/package.json'] = r'^  "version": "([^"]+)",$'
+            if (self.root / 'r').is_dir():
+                files['r/DESCRIPTION'] = r'^Version: (.+)$'
+        return files
 
     def payload_paths(self, artifacts):
         """Every committed native payload -> where the CI artifacts hold it."""
@@ -199,7 +216,7 @@ def shell(cfg):
              f'NATIVE_EXTENSION={cfg.native_extension}',
              'RUBY_ABIS=(' + ' '.join(cfg.ruby_abis) + ')',
              assoc('LIB_NAMES', cfg.lib_names), assoc('PHP_LIBS', cfg.php_libs),
-             assoc('RUBY_PLATFORMS', cfg.ruby_platforms),
+             assoc('RUBY_PLATFORMS', cfg.ruby_platforms), assoc('NODE_PLATFORMS', cfg.node_platforms),
              assoc('STATIC_TREES', {cfg.bundle: len(cfg.swift_targets),
                                     cfg.xcframework: len(cfg.xcframework_slices),
                                     'go/staticlib': len(cfg.go_targets)})]
@@ -245,6 +262,7 @@ def main():
     else:
         print(json.dumps(dict(crate=cfg.crate, project=cfg.project, wheels=cfg.wheels,
                               ruby_abis=cfg.ruby_abis, ruby_platforms=cfg.ruby_platforms,
+                              node_platforms=cfg.node_platforms,
                               go_targets=cfg.go_targets, swift_targets=cfg.swift_targets,
                               xcframework_slices=cfg.xcframework_slices,
                               version_files=cfg.version_files), indent=2))

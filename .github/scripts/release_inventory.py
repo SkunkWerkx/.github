@@ -16,6 +16,7 @@ file in scope with the bundle downloaded once, so a consumer's one-line command,
 is exactly what the release ran before publishing.
 """
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -26,21 +27,27 @@ import subprocess
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 
+import hyper_config
 from package_preparation import not_served
 from release_guard import LIBRARY_SUFFIXES
-from release_package_metadata import validate_package_metadata
+from release_package_metadata import DEFAULTS, npm_filename, npm_names, npm_package, validate_package_metadata
 
 FORGE = 'SkunkWerkx/.github'
 PREDICATE_TYPE = 'https://github.com/SkunkWerkx/.github/predicates/release/v1'
 SCHEMA = 2
-REGISTRIES = ('nuget', 'ruby', 'pypi', 'crate', 'maven')
+# The registries a release publishes to. The CRAN source tarball is inventoried and attested
+# like a package but no job uploads it: the maintainer submits the preserved bytes by hand.
+REGISTRIES = ('nuget', 'ruby', 'pypi', 'crate', 'maven', 'npm')
+INVENTORY_GROUPS = REGISTRIES + ('cran',)
+# Signed in the consumer's own release.yml at B rather than by the Forge.
+CONSUMER_SIGNED = ('ruby/', 'npm/', 'cran/')
 IDENTITY = ('repository', 'crate', 'version', 'source_sha', 'staging_sha',
             'ci_run_id', 'package_run_id', 'forge_sha')
-PLATFORMS = ('x86_64-linux-gnu', 'aarch64-linux-gnu', 'x86_64-linux-musl',
-             'aarch64-linux-musl', 'arm64-darwin', 'x64-mingw-ucrt', 'aarch64-mingw-ucrt')
+NPM_REGISTRY = 'https://registry.npmjs.org/'
 
 
 def sha256(path):
@@ -72,15 +79,26 @@ def payload_files(root):
         if path.is_symlink() or not (path.is_dir() or path.is_file()):
             raise ValueError(f'payload must be a regular file: {relative}')
         if path.is_file() and relative != 'inventory.json':
-            if relative.split('/')[0] not in ('nuget','ruby','pypi','crate','maven'):
+            if relative.split('/')[0] not in INVENTORY_GROUPS:
                 raise ValueError(f'unexpected payload: {relative}')
             files.append(path)
     return files
 
 
-def validate_layout(paths, crate, version):
-    groups = {group: [p for p in paths if p.split('/')[0] == group]
-              for group in ('nuget','ruby','pypi','crate','maven')}
+def layout_config(workspace, crate):
+    """The consumer's hyper.json in the checkout at B, which fixes the wheel, gem and npm
+    package counts; the Forge defaults when the tree has none (the fixtures)."""
+    if workspace is None or not (Path(workspace) / hyper_config.CONFIG_PATH).is_file():
+        return DEFAULTS
+    cfg = hyper_config.load(workspace)
+    if cfg.crate != crate:
+        raise ValueError(f'hyper.json names crate {cfg.crate}, the release {crate}')
+    return cfg
+
+
+def validate_layout(paths, crate, version, cfg=None):
+    cfg = cfg or DEFAULTS
+    groups = {group: [p for p in paths if p.split('/')[0] == group] for group in INVENTORY_GROUPS}
     nuget = groups['nuget']
     if len(nuget) != 2 or sorted(Path(p).suffix for p in nuget) != ['.nupkg','.snupkg']:
         raise ValueError('NuGet package or symbols missing')
@@ -88,12 +106,12 @@ def validate_layout(paths, crate, version):
         if Path(p).name.lower() != f'{crate}.{version}{Path(p).suffix}':
             raise ValueError(f'NuGet version/name mismatch: {p}')
     gems = {f'ruby/{crate}-{version}.gem', f'ruby/{crate}-wasm-{version}.gem'}
-    gems.update(f'ruby/{crate}-{version}-{platform}.gem' for platform in PLATFORMS)
+    gems.update(f'ruby/{crate}-{version}-{platform}.gem' for platform in cfg.ruby_platforms.values())
     if set(groups['ruby']) != gems:
         raise ValueError('Ruby platform/version inventory is incomplete')
     wheels = groups['pypi']
-    if len(wheels) != 25:
-        raise ValueError(f'expected 25 wheels, got {len(wheels)}')
+    if len(wheels) != cfg.wheels:
+        raise ValueError(f'expected {cfg.wheels} wheels, got {len(wheels)}')
     for p in wheels:
         if not Path(p).name.startswith(f'{crate}-{version}-') or not p.endswith('.whl'):
             raise ValueError(f'wheel version/name mismatch: {p}')
@@ -104,6 +122,13 @@ def validate_layout(paths, crate, version):
         raise ValueError('saved crate request/metadata missing')
     if len(groups['maven']) < 1 or len([p for p in groups['maven'] if p.endswith('.zip')]) != 1:
         raise ValueError('Maven signed bundle missing')
+    # Optional groups: a consumer without the TypeScript or R binding ships neither.
+    if groups['npm']:
+        root, names = npm_names(crate, cfg.node_platforms.values())
+        if set(groups['npm']) != {f'npm/{npm_filename(name, version)}' for name in (root, *names)}:
+            raise ValueError('npm root and platform package inventory is incomplete or stale')
+    if groups['cran'] and groups['cran'] != [f'cran/{crate}_{version}.tar.gz']:
+        raise ValueError('CRAN source tarball name/version mismatch')
 
 
 def native_files(workspace, natives):
@@ -113,7 +138,7 @@ def native_files(workspace, natives):
     if len(natives) != len(set(natives)) or not natives:
         raise ValueError('native payload list must be non-empty and unique')
     for relative in natives:
-        if relative.split('/')[0] in REGISTRIES or relative == 'inventory.json':
+        if relative.split('/')[0] in INVENTORY_GROUPS or relative == 'inventory.json':
             raise ValueError(f'native payload path collides with a package path: {relative}')
         path = Path(workspace) / relative
         if path.is_symlink() or not path.is_file():
@@ -132,14 +157,15 @@ def entry_path(root, workspace, entry):
 def build_inventory(root, identity, natives, workspace):
     validate_identity(identity)
     paths = payload_files(root)
-    validate_layout([p.relative_to(root).as_posix() for p in paths], identity['crate'], identity['version'])
-    validate_package_metadata(root, identity['crate'], identity['version'])
+    cfg = layout_config(workspace, identity['crate'])
+    validate_layout([p.relative_to(root).as_posix() for p in paths], identity['crate'], identity['version'], cfg)
+    validate_package_metadata(root, identity['crate'], identity['version'], cfg)
     files = []
     for path in paths:
         name = path.relative_to(root).as_posix()
         files.append(dict(path=name, size=path.stat().st_size, sha256=sha256(path),
                           source_sha=identity['source_sha' if name.startswith('pypi/') else 'staging_sha'],
-                          signer_repo=identity['repository'] if name.startswith('ruby/') else FORGE))
+                          signer_repo=identity['repository'] if name.startswith(CONSUMER_SIGNED) else FORGE))
     for entry in files:
         entry['location'] = 'packages'
     for relative in native_files(workspace, natives):
@@ -287,6 +313,28 @@ def registry_plan(root, registry, output):
             if served is None: raise ValueError('PyPI lists an unavailable artifact')
             return served
         pending = select_missing(paths, wheel_remote)
+    elif registry == 'npm':
+        def npm_remote(path):
+            manifest = npm_package(path)
+            name = urllib.parse.quote(manifest['name'], safe='@')
+            body = fetch(f"{NPM_REGISTRY}{name}/{urllib.parse.quote(manifest['version'])}")
+            if body is None: return None
+            dist = json.loads(body).get('dist', {})
+            with path.open('rb') as stream:
+                local = 'sha512-' + base64.b64encode(hashlib.file_digest(stream, 'sha512').digest()).decode()
+            if dist.get('integrity') != local:
+                raise ValueError(f'npm registry conflict: {path.name} already contains different bytes')
+            url = dist.get('tarball', '')
+            if not url.startswith(NPM_REGISTRY):
+                raise ValueError('unexpected npm artifact host')
+            served = fetch(url)
+            if served is None: raise ValueError('npm lists an unavailable artifact')
+            return served
+        # The publish loop pushes in this order: every platform package before the root,
+        # whose optionalDependencies name them.
+        root_name = npm_filename(crate, version)
+        paths.sort(key=lambda p: (p.name == root_name, p.name))
+        pending = select_missing(paths, npm_remote)
     elif registry == 'nuget':
         packed = next(p for p in paths if p.suffix == '.nupkg')
         url = f'https://api.nuget.org/v3-flatcontainer/{crate}/{version}/{crate}.{version}.nupkg'

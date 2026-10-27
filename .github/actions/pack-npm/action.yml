@@ -1,0 +1,148 @@
+name: Pack the npm packages
+description: >
+  Downloads the preparation run's napi-rs addons (node-<rid>), verifies the build provenance
+  of every one, and packs the TypeScript binding's nine npm tarballs on a copy of typescript/:
+  one platform package per napi name in hyper.json's node.platforms, each carrying its one
+  addon, then the root package with optionalDependencies pinning every platform package at
+  this version, injected at pack time and never committed. Attests the tarballs in the
+  caller's identity and uploads them as npm-packages. Runs in the consumer's checkout at B.
+
+inputs:
+  run_id:
+    description: "The release-mode ci.yml run at A"
+    required: true
+  source_sha:
+    description: "Preparation source A"
+    required: true
+  token:
+    description: "github.token"
+    required: true
+  node_version:
+    description: "The Node.js that runs npm and the napi CLI"
+    required: false
+    default: "24"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        pattern: node-*
+        path: artifacts/node
+        merge-multiple: false
+        run-id: ${{ inputs.run_id }}
+        github-token: ${{ inputs.token }}
+
+    # Nothing here rebuilds an addon: each .node goes verbatim into its platform package, so
+    # `npm publish` is the last moment these bytes can still be rejected, and it cannot be
+    # undone. ci.yml attested every one at build time through the Forge's build workflow,
+    # hence --signer-repo (see pack-gems).
+    - name: Verify build provenance of every addon about to be packed
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        SOURCE_SHA: ${{ inputs.source_sha }}
+      run: |
+        set -euo pipefail
+        for f in artifacts/node/node-*/*; do
+          echo "::group::verify $f"
+          if ! gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" --signer-repo SkunkWerkx/.github \
+               --source-digest "$SOURCE_SHA"; then
+            echo "::error::No valid build provenance for $f — refusing to publish a package containing it."
+            exit 1
+          fi
+          echo "::endgroup::"
+        done
+
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node_version }}
+
+    # Packed on a copy under $RUNNER_TEMP: `npm pkg set` rewrites the root package.json, and
+    # the checkout's must stay as committed for every later step. Never `napi prepublish`,
+    # which publishes on its own. A missing node-<rid> artifact fails at the cp: a release
+    # never ships a root package naming a platform package that has no addon.
+    - name: Pack one platform package per napi name, then the root
+      shell: bash
+      env:
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
+        addons=(artifacts/node/node-*/*)
+        [ "${#addons[@]}" -eq "${#NODE_PLATFORMS[@]}" ] \
+          || { echo "::error::expected ${#NODE_PLATFORMS[@]} addons in artifacts/node, found: ${addons[*]}"; exit 1; }
+        work="$RUNNER_TEMP/pack"
+        out="$GITHUB_WORKSPACE/npm-packages"
+        rm -rf "$work" "$out"
+        cp -R typescript "$work"
+        mkdir -p "$out"
+        cd "$work"
+        version=$(node -p 'require("./package.json").version')
+        scope_name=$(node -p 'require("./package.json").napi.packageName')
+        [ "$scope_name" = "@skunkwerkx/$CRATE" ] \
+          || { echo "::error::napi.packageName is $scope_name; the platform packages must be @skunkwerkx/$CRATE-<platform>"; exit 1; }
+        npm ci --ignore-scripts
+        npx napi create-npm-dirs
+        mapfile -t rids < <(printf '%s\n' "${!NODE_PLATFORMS[@]}" | sort)
+        for rid in "${rids[@]}"; do
+          suffix="${NODE_PLATFORMS[$rid]}"
+          cp "$GITHUB_WORKSPACE/artifacts/node/node-$rid/$CRATE.$suffix.node" "npm/$suffix/"
+          (cd "npm/$suffix" && npm pack --ignore-scripts --pack-destination "$out")
+          npm pkg set "optionalDependencies.$scope_name-$suffix=$version"
+        done
+        npm pack --ignore-scripts --pack-destination "$out"
+
+    # Nine tarballs, each platform package holding exactly one addon and the root none, the
+    # root pinning all eight at this version: the release gate's validator checks the same
+    # again, and this fails the pack job first. The committed package.json must still carry
+    # no optionalDependencies, which proves the copy above was the one rewritten.
+    - name: Check the packed tarballs and the untouched checkout
+      shell: bash
+      env:
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
+        version=$(node -p 'require("./typescript/package.json").version')
+        tarballs=(npm-packages/*.tgz)
+        want=$(( ${#NODE_PLATFORMS[@]} + 1 ))
+        [ "${#tarballs[@]}" -eq "$want" ] \
+          || { echo "::error::expected $want npm tarballs, found: ${tarballs[*]}"; exit 1; }
+        for f in "${tarballs[@]}"; do
+          addons=$(tar tzf "$f" | grep -c '\.node$' || true)
+          want=1
+          [ "$(basename "$f")" = "$CRATE-$version.tgz" ] && want=0
+          echo "$f: $addons addons"
+          [ "$addons" = "$want" ] || { echo "::error::$f carries $addons .node files; expected $want"; exit 1; }
+        done
+        if grep -q optionalDependencies typescript/package.json; then
+          echo "::error::typescript/package.json carries optionalDependencies: they are injected at pack time, never committed"
+          exit 1
+        fi
+        git diff --exit-code -- typescript
+        PYTHONPATH="$FORGE_SCRIPTS" python3 -c '
+        import sys
+        from pathlib import Path
+        import hyper_config
+        from release_package_metadata import npm_tarball
+        crate, version, root = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+        platforms = list(hyper_config.load(".").node_platforms.values())
+        for path in sorted(root.glob("*.tgz")):
+            print(path.name, "->", npm_tarball(path, crate, version, platforms))
+        ' "$CRATE" "$version" npm-packages
+
+    # Attested BEFORE the upload, over the exact files `npm publish` pushes later from the
+    # preserved release-packages. This action runs in the consumer's release.yml, so the
+    # inventory records these as signed by the consumer at B.
+    - name: Attest the packed npm tarballs
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      with:
+        subject-path: npm-packages/*.tgz
+
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: npm-packages
+        path: npm-packages/*.tgz
+        if-no-files-found: error
+        retention-days: 90

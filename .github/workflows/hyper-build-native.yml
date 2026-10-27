@@ -30,7 +30,7 @@ name: HyperForge — build native core, test every binding
 #
 # What that costs, and how it is paid back: six jobs under `fail-fast: false` gave binding
 # isolation for free, so every binding step here carries `!cancelled()` to keep one
-# binding's failure from masking the other six, plus a
+# binding's failure from masking the others, plus a
 # `steps.native_lib.conclusion == 'success'` guard so a broken core build aborts instead of
 # producing thirty derived failures. A red step still names its binding.
 #
@@ -130,10 +130,10 @@ on:
         description: >
           `release` (the default) builds, tests and attests everything a release ships.
           `pr` keeps every leg and every binding's suite, so the conformance corpus is proven
-          in all eight languages on every platform, and drops what only a release needs:
+          in every language the consumer enables, on every platform, and drops what only a release needs:
           attestations, the Magnus build against ruby_compat_version (a second ABI for the
           fat gem; the primary ABI is still built and tested), the osx-x64 cross-build
-          (packaged, never tested by a binding), and the ext-php-rs extension (shipped by no
+          (packaged; with `node` on, only the TypeScript addon's suite runs on it), and the ext-php-rs extension (shipped by no
           package; built so it cannot rot, which the weekly release-mode run covers). The floor-version runs stay: they are cheap,
           off the critical path, and exactly the drift a PR should catch. A caller passes
           `pr` on pull_request events and `release` on every other.
@@ -242,6 +242,48 @@ on:
         required: false
         type: boolean
         default: true
+      # The two below are off by default, the reverse of the five above, because only
+      # HyperUuid has these bindings yet: it passes true, and HyperCast and HyperTabular run
+      # exactly the steps they ran before. The defaults flip in the cascade that brings the
+      # bindings to the siblings.
+      node:
+        description: >
+          Build the TypeScript binding's napi-rs addon on every leg (osx-x64 cross-built, both
+          musl RIDs in Alpine), run its suite on Node and on Bun, and upload and attest each
+          addon as `node-{rid}`
+        required: false
+        type: boolean
+        default: false
+      r:
+        description: "R CMD check --as-cran the R package on every leg but win-arm64, and on r_floor_version on linux-x64"
+        required: false
+        type: boolean
+        default: false
+      node_version:
+        description: "Primary Node.js major — the current release. Every leg builds and tests the addon on it."
+        required: false
+        type: string
+        default: "26"
+      node_floor_versions:
+        description: "Older Node.js majors the package's `engines` admits, space-separated — the musl job runs the suite on each as well as on node_version. Empty skips the floor runs."
+        required: false
+        type: string
+        default: "22 24"
+      bun_version:
+        description: "The Bun setup-bun installs for the suite's Bun run on the matrix legs"
+        required: false
+        type: string
+        default: "latest"
+      r_version:
+        description: "The R setup-r installs for R CMD check on every leg (`release` is the current one)"
+        required: false
+        type: string
+        default: "release"
+      r_floor_version:
+        description: "An older R checked a second time, on linux-x64 (`oldrel` is the previous minor). Empty skips it."
+        required: false
+        type: string
+        default: "oldrel"
       ruby_version:
         description: "Primary Ruby — the current release. The ABI every Magnus artifact and the Fiddle suite run against."
         required: false
@@ -310,7 +352,8 @@ on:
           Also cross-build the core for osx-x64 on the Apple silicon runner, run the crate's
           own suite on it under Rosetta, and upload and attest it as `native-osx-x64` — the
           artifact every downstream packer already globs for. There is no Intel macOS leg:
-          no binding's suite runs on this RID.
+          the only binding's suite run on this RID is the TypeScript addon's (with `node` on),
+          cross-built and tested on an x64 Node under Rosetta.
         required: false
         type: boolean
         default: true
@@ -614,7 +657,7 @@ jobs:
       # Two consequences worth stating:
       #
       #  * Every step below carries `!cancelled()` so one binding's failure does not mask the
-      #    other six. That isolation was free when these were separate jobs under
+      #    others. That isolation was free when these were separate jobs under
       #    `fail-fast: false`; in one job it has to be asked for. A red step still names the
       #    binding, so the diagnosis is as fast as it was before — it is the *parallelism*
       #    that is given up here, not the reporting.
@@ -623,6 +666,143 @@ jobs:
       #    on macOS, so blindly re-running it would have handed back most of the savings.
       #    The conditions below are exact rather than convenient, which is why they are ugly.
       # ---------------------------------------------------------------------------
+
+      # TypeScript (napi-rs): the addon built for this leg's own target — every runner here is
+      # native, so napi's --platform picks the host triple — then the suite on Node and on Bun.
+      # The addon is its own cdylib in typescript/, path-depending on rust/ and building into
+      # typescript/target, so it never touches the core library the other suites load.
+      #
+      # `--js binding.js --dts binding.d.ts` is in the package's build script for a reason:
+      # without them napi writes its own loader over the hand-written index.js and index.d.ts.
+      # The git diff after the build is what proves no napi release changed what it writes.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node }}
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Build the TypeScript (napi-rs) addon
+        id: node_addon
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd typescript && npm ci && npm run build)
+          git diff --exit-code -- typescript/index.js typescript/index.d.ts typescript/binding.js typescript/binding.d.ts
+          ls -l typescript/*.node
+
+      # Print-only, for now: the highest glibc symbol version the addon references. The core's
+      # 2.34 floor (checked above) is a no_std library's; the addon links std, so its floor is
+      # measured here first and stated in the TypeScript README from that, then enforced.
+      - name: glibc the TypeScript addon references (printed, never fails)
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' && runner.os == 'Linux' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "::group::glibc symbol versions referenced by typescript/*.node"
+          objdump -T typescript/*.node | grep -o 'GLIBC_[0-9.]*' | sort -V | uniq || true
+          echo "newest: $(objdump -T typescript/*.node | grep -o 'GLIBC_[0-9.]*' | sort -V | uniq | tail -1)"
+          echo "::endgroup::"
+
+      - name: Test TypeScript bindings on Node
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' }}
+        working-directory: typescript
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test
+          npm run typecheck
+
+      # Bun on Windows ARM64 is not verified yet; until it is, the Bun run skips that leg.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' && matrix.rid != 'win-arm64' }}
+        with:
+          bun-version: ${{ inputs.bun_version }}
+
+      - name: Test TypeScript bindings on Bun
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' && matrix.rid != 'win-arm64' }}
+        working-directory: typescript
+        shell: bash
+        run: npm run test:bun
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_addon.conclusion == 'success' }}
+        with:
+          name: node-${{ matrix.rid }}
+          path: typescript/*.node
+          if-no-files-found: error
+
+      # The same attestation, for the same reason, as this leg's native library.
+      - name: Attest the TypeScript addon's build provenance
+        if: >-
+          matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node &&
+          steps.node_addon.conclusion == 'success' && inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: typescript/*.node
+
+      # R: R CMD check --as-cran, failing on a NOTE as CRAN's incoming checks would, from the
+      # tree vendor.sh leaves (the core copied in, the crates vendored, the corpus staged). On
+      # Windows R builds with Rtools' MinGW, so the package's Rust half needs the gnu target.
+      # R on Windows ARM64 is experimental (CRAN builds no binaries for it), so that leg skips
+      # the R steps; revisit when R and Rtools ship it as a supported platform.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && runner.os == 'Windows' }}
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' }}
+        with:
+          r-version: ${{ inputs.r_version }}
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' }}
+        with:
+          working-directory: r
+          extra-packages: any::rcmdcheck
+
+      - name: Vendor the R package's core, crates and corpus
+        id: r_vendor
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' }}
+        shell: bash
+        run: |
+          bash r/tools/vendor.sh
+
+      - name: R CMD check the R package
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && steps.r_vendor.conclusion == 'success' }}
+        uses: r-lib/actions/check-r-package@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          working-directory: r
+          args: 'c("--no-manual", "--as-cran")'
+          error-on: '"note"'
+
+      # The same check on the previous R minor, the floor the package's users are likeliest to
+      # still run. Linux x64 only: what differs between R minors is R, not the platform. The
+      # dependencies are installed again because each R minor keeps its own library, and the
+      # check writes to its own directory so it cannot meet the first one's.
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version }}
+        with:
+          r-version: ${{ inputs.r_floor_version }}
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version }}
+        with:
+          working-directory: r
+          extra-packages: any::rcmdcheck
+
+      - name: R CMD check the R package — the floor R
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.r && matrix.rid != 'win-arm64' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.r_vendor.conclusion == 'success' }}
+        uses: r-lib/actions/check-r-package@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          working-directory: r
+          args: 'c("--no-manual", "--as-cran")'
+          error-on: '"note"'
+          check-dir: '"check-floor"'
 
       # C#: the real [LibraryImport] resolution/marshalling path per OS.
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
@@ -1128,8 +1308,9 @@ jobs:
   #    allocation proof. `cargo test --target x86_64-apple-darwin` on an arm64 Mac executes
   #    the x86_64 test binary through Rosetta 2, so this is the real code on the real
   #    instruction set, not a compile check.
-  #  * No binding's suite runs on it. Every one of them still runs on osx-arm64, against the
-  #    same source; what is not proven per release is each language runtime's own x64
+  #  * One binding's suite runs on it: the TypeScript addon is cross-built the same way and
+  #    tested on an x64 Node under Rosetta. Every other one still runs on osx-arm64, against
+  #    the same source; what is not proven per release is each of those runtimes' own x64
   #    macOS build loading the library.
   #  * No Magnus extension and no ext-php-rs extension is built for it. Both need an x86_64
   #    build of their host runtime to compile against, which is the leg again. Ruby there
@@ -1197,6 +1378,59 @@ jobs:
         with:
           subject-path: out/lib${{ inputs.crate }}.dylib
 
+      # The TypeScript addon, cross-built the same way: npm ci and the napi CLI run on the
+      # arm64 Node, and --target names the x86_64 triple. Then an x64 Node, which runs under
+      # Rosetta, loads it and runs the suite, the one binding whose own runtime is tested on
+      # this RID: an x64 Node is a download away, where an x64 Ruby or PHP would be the leg.
+      # The wrapper guard and the architecture check are the matrix legs' and the core's above.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: inputs.node
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Cross-build the TypeScript addon for x86_64
+        if: inputs.node
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd typescript && npm ci && npx napi build --release --platform --target x86_64-apple-darwin --js binding.js --dts binding.d.ts)
+          git diff --exit-code -- typescript/index.js typescript/index.d.ts typescript/binding.js typescript/binding.d.ts
+          archs="$(lipo -archs typescript/*.node)"
+          echo "architectures: $archs"
+          [ "$archs" = x86_64 ] || { echo "::error::expected an x86_64 addon, got: $archs"; exit 1; }
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: inputs.node
+        with:
+          node-version: ${{ inputs.node_version }}
+          architecture: x64
+
+      - name: Test TypeScript bindings on x64 Node, under Rosetta
+        if: inputs.node
+        working-directory: typescript
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -p '`node ${process.version} on ${process.arch}`'
+          [ "$(node -p process.arch)" = x64 ] || { echo "::error::the Node on PATH is not x64"; exit 1; }
+          npm test
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.node
+        with:
+          name: node-osx-x64
+          path: typescript/*.node
+          if-no-files-found: error
+
+      - name: Attest the TypeScript addon's build provenance
+        if: >-
+          inputs.node && inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: typescript/*.node
+
   # ===========================================================================
   # musl — linux-musl-x64 and linux-musl-arm64, built and tested inside Alpine.
   #
@@ -1211,14 +1445,15 @@ jobs:
   # staging steps pick the two musl libraries up by the name they already glob for.
   #
   # The suites double as the floor tests. Every `*-alpine` image exists for old versions as
-  # well as new, so the PHP, Ruby and Python suites run twice — on the version the matrix job uses
-  # and on the oldest one the package declares. Before this job nothing ran a declared floor
+  # well as new, so the PHP, Ruby, Python and Node suites run twice or more — on the version the
+  # matrix job uses and on the oldest one (for Node, each older major) the package declares. Before this job nothing ran a declared floor
   # at all: HyperCast claimed PHP 8.1 while using 8.2 syntax, and no run could have noticed.
   # Go needs no second run: its image is the version go.mod names, which is the floor.
   #
   # Not here, and why: Swift (its musl target links the core from a SwiftPM binary
   # static-library target, SE-0482, and is tested through the static Linux SDK in
-  # the caller's hyper-test-swift-static.yml job).
+  # the caller's hyper-test-swift-static.yml job), and R (a source package, compiled on the
+  # user's machine, and R CMD check on the matrix legs is the check CRAN itself runs).
   #
   # The Ruby Magnus extension is built here too, once per ABI like the matrix legs', but not
   # by a setup-* action: inside that Ruby's own `ruby:<abi>-alpine` image, through the
@@ -1406,6 +1641,62 @@ jobs:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
           image: python:${{ inputs.python_floor_version }}-alpine
+
+      # Builds the TypeScript addon in Node's Alpine image, runs the suite there and again on
+      # Bun's, and leaves the .node in out-musl for the upload below — see suite-musl.sh.
+      - name: Node on Alpine (the napi-rs addon, then Bun on the same addon)
+        id: node_musl
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node }}
+        uses: ./.hyperforge/.github/actions/musl-suite
+        with:
+          binding: node
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: node:${{ inputs.node_version }}-alpine
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && steps.node_musl.conclusion == 'success' }}
+        with:
+          name: node-${{ matrix.rid }}
+          path: out-musl/*.node
+          if-no-files-found: error
+
+      - name: Attest the TypeScript addon's build provenance
+        if: >-
+          !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node &&
+          steps.node_musl.conclusion == 'success' && inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out-musl/*.node
+
+      # The floors are a list (every Node major `engines` still admits), so this is a loop over
+      # the same script the action runs rather than one action call per version. Each run builds
+      # and tests in that Node's image. After the upload, so the addon a floor run leaves in
+      # out-musl is never the one shipped.
+      - name: Node on Alpine — the declared floors
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.node && inputs.node_floor_versions != '' }}
+        shell: bash
+        env:
+          NODE_FLOOR_VERSIONS: ${{ inputs.node_floor_versions }}
+          NODE_VERSION: ${{ inputs.node_version }}
+          CRATE: ${{ inputs.crate }}
+          RID: ${{ matrix.rid }}
+        run: |
+          set -uo pipefail
+          failed=()
+          for version in $NODE_FLOOR_VERSIONS; do
+            [ "$version" = "$NODE_VERSION" ] && continue
+            echo "::group::node $version on Alpine — $RID"
+            SUITE_IMAGE="node:$version-alpine" .hyperforge/.github/actions/musl-suite/suite-musl.sh node "$CRATE" "$RID" . out-musl || failed+=("$version")
+            echo "::endgroup::"
+          done
+          # Every floor runs and reports; the step fails after the loop if any did.
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::the Node suite failed on Alpine for node ${failed[*]}"
+            exit 1
+          fi
 
   build-php-extension:
     if: inputs.php && inputs.mode != 'pr'

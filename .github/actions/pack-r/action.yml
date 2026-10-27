@@ -1,0 +1,101 @@
+name: Pack the R source package
+description: >
+  Builds the R binding's CRAN source tarball from the checkout at B: tools/vendor.sh stages
+  the Rust core and the five corpus files and vendors the crates.io dependencies (CRAN builds
+  offline), `R CMD build` packs it, and the tarball is checked for its corpus members and its
+  DESCRIPTION, attested in the caller's identity and uploaded as cran-packages. No job ever
+  uploads it to CRAN: the maintainer submits the preserved bytes by hand. Runs in the
+  consumer's checkout at B.
+
+inputs:
+  source_sha:
+    description: "Preparation source A, recorded in the job log beside the tarball it packed"
+    required: true
+  r_version:
+    description: "The R that runs R CMD build"
+    required: false
+    default: "release"
+
+runs:
+  using: composite
+  steps:
+    # vendor.sh derives r/src/rust/Cargo.lock from rust/Cargo.lock (cargo update) and runs
+    # `cargo vendor --locked` against it; R CMD build itself compiles nothing.
+    - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+    - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+      with:
+        r-version: ${{ inputs.r_version }}
+        use-public-rspm: true
+
+    # tools/vendor-authors.R reads `cargo metadata` with jsonlite to regenerate inst/AUTHORS;
+    # nothing else here needs an R package, and R CMD build builds no vignettes. Unpinned on
+    # purpose: inst/AUTHORS is a deterministic text derived from cargo metadata, and the
+    # r_source_tarball validator below checks the tarball regardless of the jsonlite version.
+    - name: Install jsonlite for the AUTHORS regeneration
+      shell: bash
+      run: Rscript -e 'install.packages("jsonlite")' -e 'stopifnot(requireNamespace("jsonlite", quietly = TRUE))'
+
+    # The full run, then --verify: a corpus file, the core copy or the derived lock missing
+    # from the staged tree fails the tag run here, not the CRAN check weeks later. The full
+    # run also regenerates inst/AUTHORS from the vendored crates; a committed copy that
+    # differs is stale, and fails the pack rather than shipping.
+    - name: Stage the core and corpus and vendor the crates
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source_sha }}
+      run: |
+        set -euo pipefail
+        echo "Packing r/ at $GITHUB_SHA (prepared from $SOURCE_SHA)"
+        bash r/tools/vendor.sh
+        bash r/tools/vendor.sh --verify
+        git diff --exit-code -- r/inst/AUTHORS || {
+          echo "::error::r/inst/AUTHORS is stale: run r/tools/vendor.sh and commit the result"
+          exit 1
+        }
+
+    - name: Build the source tarball
+      shell: bash
+      run: |
+        set -euo pipefail
+        rm -rf cran-packages
+        mkdir cran-packages
+        (cd cran-packages && R CMD build ../r)
+
+    # Exactly the five corpus JSON files under tests/testthat/corpus/ (the directory entry
+    # itself does not end in .json), then the full member and DESCRIPTION check the release
+    # gate runs again over the preserved bytes.
+    - name: Check the tarball's corpus members and DESCRIPTION
+      shell: bash
+      env:
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
+        version=$(sed -n 's/^Version: //p' r/DESCRIPTION)
+        tarball="cran-packages/${CRATE}_${version}.tar.gz"
+        built=(cran-packages/*)
+        [ "${built[*]}" = "$tarball" ] || { echo "::error::expected only $tarball, found: ${built[*]}"; exit 1; }
+        corpus=$(tar tzf "$tarball" | grep -c 'tests/testthat/corpus/.*\.json$' || true)
+        [ "$corpus" = 5 ] || { echo "::error::$tarball carries $corpus corpus files; expected 5"; exit 1; }
+        PYTHONPATH="$FORGE_SCRIPTS" python3 -c '
+        import sys
+        from pathlib import Path
+        from release_package_metadata import r_source_tarball
+        r_source_tarball(Path(sys.argv[1]), sys.argv[2], sys.argv[3])
+        print(sys.argv[1], "carries the core, the vendored crates, the corpus and its DESCRIPTION")
+        ' "$tarball" "$CRATE" "$version"
+
+    # The inventory records the cran/ group as signed by the consumer at B, which this
+    # attestation in the consumer's release.yml is.
+    - name: Attest the R source tarball
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      with:
+        subject-path: cran-packages/*.tar.gz
+
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: cran-packages
+        path: cran-packages/*.tar.gz
+        if-no-files-found: error
+        retention-days: 90

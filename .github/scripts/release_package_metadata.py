@@ -2,7 +2,12 @@
 
 This checks metadata and archive structure, not registry signatures. Provenance
 and registry-specific signing verification remain the release inventory's job.
-RubyGem YAML is inspected as a narrow scalar subset and never deserialized.
+RubyGem YAML is inspected as a narrow scalar subset and never deserialized; an npm
+tarball's package.json is parsed as JSON and nothing in it is run.
+
+The counts (wheels, Ruby platform gems, npm platform packages) are the consumer's
+`.github/hyper.json` values when a config is passed, the Forge defaults otherwise. The npm
+and CRAN groups are optional: a consumer without those bindings ships neither.
 """
 from email import policy
 from email.parser import BytesParser
@@ -16,7 +21,27 @@ import tomllib
 from xml.etree import ElementTree as ET
 import zipfile
 
+from types import SimpleNamespace
+
+import hyper_config
 from package_preparation import crate_payload
+
+NPM_SCOPE = '@skunkwerkx'
+# The corpus members every R source tarball must carry (tests/testthat/corpus/), so a
+# tarball missing one fails the tag run, not the CRAN check weeks later.
+R_CORPUS_FILES = ('v5.json', 'sql_order.json', 'sql_order_refused.json', 'timestamp.json', 'inspect.json')
+DEFAULTS = SimpleNamespace(wheels=hyper_config.WHEELS, ruby_platforms=hyper_config.RUBY_PLATFORMS,
+                           node_platforms=hyper_config.NODE_PLATFORMS)
+
+
+def npm_names(crate, platforms):
+    """The root npm package's name, and its platform packages' names in napi-rs's form."""
+    return crate, [f'{NPM_SCOPE}/{crate}-{suffix}' for suffix in platforms]
+
+
+def npm_filename(name, version):
+    """`npm pack`'s file name: a scoped name loses its `@` and its `/` becomes `-`."""
+    return name.removeprefix('@').replace('/', '-') + f'-{version}.tgz'
 
 
 def unique_pairs(pairs):
@@ -183,8 +208,54 @@ def maven(path, crate, version):
             raise ValueError('Maven expanded repository differs from preserved bundle')
 
 
-def validate_package_metadata(root: Path, crate: str, version: str) -> None:
+def npm_package(path):
+    """The package.json `npm pack` wrote into a tarball, parsed and never executed."""
+    entries = tar_entries(path)
+    if 'package/package.json' not in entries:
+        raise ValueError(f'npm tarball has no package/package.json: {path.name}')
+    manifest = json.loads(entries['package/package.json'], object_pairs_hook=unique_pairs)
+    if not isinstance(manifest, dict) or not all(isinstance(manifest.get(key), str) for key in ('name', 'version')):
+        raise ValueError(f'npm package.json needs a name and a version: {path.name}')
+    return manifest
+
+
+def npm_tarball(path, crate, version, platforms):
+    """One of the npm packages: the root, whose optionalDependencies pin every platform
+    package at this version, or a platform package. Its name must be the one its file says."""
+    root, names = npm_names(crate, platforms)
+    manifest = npm_package(path)
+    name = manifest['name']
+    if name not in (root, *names) or manifest['version'] != version or path.name != npm_filename(name, version):
+        raise ValueError(f'npm embedded package name/version differs: {path.name}')
+    if name == root and manifest.get('optionalDependencies') != {platform: version for platform in names}:
+        raise ValueError(f'npm root optionalDependencies must pin every platform package at {version}')
+    return name
+
+
+def r_source_tarball(path, crate, version):
+    """The R source package as `R CMD build` wrote it: DESCRIPTION, the vendored crates,
+    the wrapper's lock (derived at staging, never committed, so only the tarball carries
+    it), the core copy and the five corpus files under one top-level `{crate}/`."""
+    entries = tar_entries(path)
+    required = [f'{crate}/DESCRIPTION', f'{crate}/src/rust/vendor.tar.xz', f'{crate}/src/rust/Cargo.lock',
+                f'{crate}/src/rust/core/Cargo.toml']
+    required += [f'{crate}/tests/testthat/corpus/{name}' for name in R_CORPUS_FILES]
+    for name in required:
+        if name not in entries:
+            raise ValueError(f'R source tarball member missing: {name}')
+    if any(name.split('/')[0] != crate for name in entries):
+        raise ValueError('R source tarball has entries outside its package directory')
+    lines = entries[f'{crate}/DESCRIPTION'].decode('utf-8').splitlines()
+    fields = {key: [line.split(':', 1)[1].strip() for line in lines if line.startswith(key + ':')]
+              for key in ('Package', 'Version')}
+    if fields != {'Package': [crate], 'Version': [version]}:
+        raise ValueError('R source tarball DESCRIPTION package/version differs from release identity')
+
+
+def validate_package_metadata(root: Path, crate: str, version: str, cfg=None) -> None:
     """Reject stale, renamed, ambiguous, or incomplete preserved registry inputs."""
+    cfg = cfg or DEFAULTS
+    gem_count = len(cfg.ruby_platforms) + 2
     try:
         packages = list((root / 'nuget').rglob('*.nupkg')) + list((root / 'nuget').rglob('*.snupkg'))
         if len(packages) != 2 or {path.suffix for path in packages} != {'.nupkg', '.snupkg'}:
@@ -193,14 +264,23 @@ def validate_package_metadata(root: Path, crate: str, version: str) -> None:
             nuget(path, crate, version)
         wheels = list((root / 'pypi').rglob('*.whl'))
         gems = list((root / 'ruby').rglob('*.gem'))
-        if len(wheels) != 25 or len(gems) != 9:
-            raise ValueError('expected 25 wheels and nine RubyGems')
+        if len(wheels) != cfg.wheels or len(gems) != gem_count:
+            raise ValueError(f'expected {cfg.wheels} wheels and {gem_count} RubyGems')
         for path in wheels:
             wheel(path, crate, version)
         for path in gems:
             gem(path, crate, version)
         rust_crate(one((root / 'crate').rglob('*.crate'), 'crate package'), crate, version)
         maven(one((root / 'maven').rglob('*.zip'), 'Maven bundle'), crate, version)
+        if (root / 'npm').exists():
+            platforms = list(cfg.node_platforms.values())
+            tarballs = list((root / 'npm').rglob('*'))
+            names = [npm_tarball(path, crate, version, platforms) for path in tarballs]
+            expected_root, expected = npm_names(crate, platforms)
+            if sorted(names) != sorted([expected_root, *expected]):
+                raise ValueError(f'expected the npm root package and {len(platforms)} platform packages, once each')
+        if (root / 'cran').exists():
+            r_source_tarball(one((root / 'cran').rglob('*'), 'R source tarball'), crate, version)
     except (OSError, UnicodeError, EOFError, KeyError, TypeError, zipfile.BadZipFile,
             tarfile.TarError, ET.ParseError) as error:
         raise ValueError(f'invalid package metadata: {error}') from error

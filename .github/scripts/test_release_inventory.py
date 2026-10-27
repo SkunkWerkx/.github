@@ -1,4 +1,5 @@
 """Functional tests for the immutable package hand-off and registry recovery."""
+import base64
 import hashlib
 import importlib.util
 import io
@@ -8,13 +9,14 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 import unittest.mock
 import urllib.error
 import zipfile
 
-from test_package_inventory_metadata import create_packages
+from test_package_inventory_metadata import NODE_SUFFIXES, create_packages, write_cran, write_npm
 
 SPEC = importlib.util.spec_from_file_location('inventory', Path(__file__).with_name('release_inventory.py'))
 
@@ -375,6 +377,151 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
         result=subprocess.run([*command,'verify',*tree],
                               env={**env,'WRONG_SOURCE':'1'},capture_output=True)
         self.assertNotEqual(result.returncode,0,'Wrong-source crate provenance must reject recovery')
+
+    def layout(self):
+        return sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob('*') if p.is_file())
+
+    def test_npm_and_cran_groups_are_optional_and_exact(self):
+        paths = self.layout()
+        self.assertEqual(sum(p.startswith('npm/') for p in paths), 9)
+        self.assertIn('cran/hypercast_0.10.0.tar.gz', paths)
+        self.m.validate_layout(paths, 'hypercast', '0.10.0')
+        self.m.validate_layout([p for p in paths if p.split('/')[0] not in ('npm', 'cran')], 'hypercast', '0.10.0')
+        platform = f'npm/skunkwerkx-hypercast-{NODE_SUFFIXES[0]}-0.10.0.tgz'
+        broken = {
+            'missing platform package': [p for p in paths if p != platform],
+            'missing root package': [p for p in paths if p != 'npm/hypercast-0.10.0.tgz'],
+            'stale platform version': [p.replace('-0.10.0.tgz', '-0.8.0.tgz') if p == platform else p for p in paths],
+            'unscoped platform name': [p.replace('skunkwerkx-', '') if p == platform else p for p in paths],
+            'extra npm file': paths + ['npm/hypercast-0.8.0.tgz'],
+            'stale R version': [p.replace('0.10.0', '0.8.0') if p.startswith('cran/') else p for p in paths],
+            'extra cran file': paths + ['cran/hypercast_0.8.0.tar.gz'],
+            'R package under another name': [p.replace('hypercast_', 'wrongproject_') if p.startswith('cran/') else p for p in paths],
+        }
+        for label, layout in broken.items():
+            with self.subTest(label), self.assertRaisesRegex(ValueError, 'npm|CRAN'):
+                self.m.validate_layout(layout, 'hypercast', '0.10.0')
+        with self.assertRaisesRegex(ValueError, 'unexpected payload'):
+            (self.root / 'bun').mkdir()
+            (self.root / 'bun/x.tgz').write_bytes(b'')
+            self.m.payload_files(self.root)
+
+    def test_npm_and_cran_are_signed_by_the_consumer_at_b(self):
+        inventory = self.build()
+        entries = [e for e in inventory['files'] if e['path'].split('/')[0] in ('npm', 'cran')]
+        self.assertEqual(len(entries), 10)
+        for entry in entries:
+            self.assertEqual((entry['signer_repo'], entry['source_sha']), ('SkunkWerkx/HyperCast', 'b' * 40))
+        self.assertIn('npm', self.m.REGISTRIES)
+        self.assertNotIn('cran', self.m.REGISTRIES, 'no job ever uploads the CRAN tarball')
+        self.assertEqual(self.m.INVENTORY_GROUPS, self.m.REGISTRIES + ('cran',))
+        for bad in (['npm/x.tgz'], ['cran/x.tar.gz']):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'collides'):
+                self.m.build_inventory(self.root, self.identity, bad, self.workspace)
+
+    def test_layout_follows_the_consumer_config_at_b(self):
+        inventory = self.build()
+        config = self.workspace / '.github/hyper.json'
+        config.parent.mkdir(parents=True)
+        base = dict(crate='hypercast', project='HyperCast',
+                    exports=dict(sources=['rust/src/ffi.rs'], patterns=['x'], prefixes=['hypercast_']))
+        config.write_text(json.dumps(base))
+        self.assertEqual(self.m.build_inventory(self.root, self.identity, [e['path'] for e in inventory['files'] if e['location'] == 'source'], self.workspace), inventory)
+        natives = [e['path'] for e in inventory['files'] if e['location'] == 'source']
+        for change, message in (({'wheels': 24}, '24 wheels'),
+                                ({'node': {'platforms': {'linux-x64': 'linux-x64-gnu'}}}, 'npm'),
+                                ({'crate': 'hypertabular'}, 'crate')):
+            with self.subTest(change=change):
+                config.write_text(json.dumps({**base, **change}))
+                with self.assertRaisesRegex(ValueError, message):
+                    self.m.build_inventory(self.root, self.identity, natives, self.workspace)
+
+    def npm_registry(self, published):
+        """A fake fetch over registry.npmjs.org holding `published` (local tarball -> served bytes)."""
+        served, requests = {}, []
+        for path, body in published.items():
+            with tarfile.open(path) as archive:
+                manifest = json.load(archive.extractfile('package/package.json'))
+            quoted = manifest['name'].replace('/', '%2F')
+            # The registry's own tarball URL: the full name, then the unscoped file name.
+            tarball = f"https://registry.npmjs.org/{manifest['name']}/-/{manifest['name'].split('/')[-1]}-{manifest['version']}.tgz"
+            integrity = 'sha512-' + base64.b64encode(hashlib.sha512(path.read_bytes()).digest()).decode()
+            served[f"https://registry.npmjs.org/{quoted}/{manifest['version']}"] = json.dumps(
+                dict(name=manifest['name'], version=manifest['version'],
+                     dist=dict(integrity=integrity, tarball=tarball))).encode()
+            served[tarball] = body
+        def fetch(url):
+            requests.append(url)
+            return served.get(url)
+        return fetch, requests, served
+
+    def npm_plan(self, published, mutate=None):
+        (self.root / 'inventory.json').write_text(json.dumps(self.build()))
+        fetch, requests, served = self.npm_registry(published)
+        if mutate:
+            mutate(served)
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        output = Path(outside.name) / 'pending'
+        with unittest.mock.patch.object(self.m, 'fetch', fetch), \
+             unittest.mock.patch.dict(os.environ, {'GITHUB_OUTPUT': ''}):
+            pending = self.m.registry_plan(self.root, 'npm', output)
+        return pending, requests, output
+
+    def npm_paths(self):
+        root_tgz = self.root / 'npm/hypercast-0.10.0.tgz'
+        platforms = [self.root / f'npm/skunkwerkx-hypercast-{s}-0.10.0.tgz' for s in NODE_SUFFIXES]
+        return root_tgz, platforms
+
+    def test_npm_registry_plan_lists_exactly_the_missing_packages_platforms_first(self):
+        root_tgz, platforms = self.npm_paths()
+        everything = {p: p.read_bytes() for p in [root_tgz, *platforms]}
+        # A half-published first release: the root and seven platforms are up, one is not.
+        missing = platforms[3]
+        pending, requests, output = self.npm_plan({p: b for p, b in everything.items() if p != missing})
+        self.assertEqual(pending, [missing])
+        self.assertEqual(sorted(p.name for p in output.iterdir()), [missing.name])
+        self.assertIn(f'https://registry.npmjs.org/@skunkwerkx%2Fhypercast-{NODE_SUFFIXES[3]}/0.10.0', requests)
+        self.assertIn('https://registry.npmjs.org/hypercast/0.10.0', requests)
+        # Only the root is missing: it is pending, and last.
+        pending, _, _ = self.npm_plan({p: b for p, b in everything.items() if p != root_tgz})
+        self.assertEqual(pending, [root_tgz])
+        # Nothing published: the eight platform packages, then the root.
+        pending, _, _ = self.npm_plan({})
+        self.assertEqual(pending, [*sorted(platforms), root_tgz])
+        self.assertEqual(self.npm_plan(everything)[0], [])
+
+    def test_npm_registry_plan_rejects_different_published_bytes(self):
+        root_tgz, platforms = self.npm_paths()
+        everything = {p: p.read_bytes() for p in [root_tgz, *platforms]}
+        with self.assertRaisesRegex(ValueError, 'registry conflict'):
+            self.npm_plan({**everything, platforms[0]: b'other bytes'})
+        def integrity(served):
+            url = 'https://registry.npmjs.org/hypercast/0.10.0'
+            record = json.loads(served[url])
+            record['dist']['integrity'] = 'sha512-' + base64.b64encode(b'x' * 64).decode()
+            served[url] = json.dumps(record).encode()
+        with self.assertRaisesRegex(ValueError, 'registry conflict'):
+            self.npm_plan(everything, integrity)
+        def host(served):
+            url = 'https://registry.npmjs.org/hypercast/0.10.0'
+            record = json.loads(served[url])
+            record['dist']['tarball'] = 'https://example.com/hypercast-0.10.0.tgz'
+            served[url] = json.dumps(record).encode()
+        with self.assertRaisesRegex(ValueError, 'host'):
+            self.npm_plan(everything, host)
+        def vanished(served):
+            del served['https://registry.npmjs.org/hypercast/-/hypercast-0.10.0.tgz']
+        with self.assertRaisesRegex(ValueError, 'unavailable'):
+            self.npm_plan(everything, vanished)
+
+    def test_cli_publishes_npm_and_never_cran(self):
+        command = [sys.executable, str(Path(__file__).with_name('release_inventory.py')), 'registry-plan']
+        for registry, accepted in (('npm', True), ('cran', False)):
+            result = subprocess.run([*command, '--registry', registry, '--root', str(self.root / 'absent')],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual('invalid choice' in result.stderr, not accepted, result.stderr)
 
 
 if __name__ == '__main__': unittest.main()

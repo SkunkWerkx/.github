@@ -2,14 +2,18 @@
 the only lint they get, and the release actions' gates are what keeps a tag run from
 publishing."""
 from pathlib import Path
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 
 import yaml_lite
 
 ACTIONS = Path(__file__).resolve().parents[1] / 'actions'
-RELEASE_ACTIONS = ('release-identity', 'release-guard', 'pack-gems', 'verify-wheels', 'release-gate',
-                   'publish-nuget', 'publish-rubygems', 'publish-pypi', 'finalize-release')
+RELEASE_ACTIONS = ('release-identity', 'release-guard', 'pack-gems', 'pack-npm', 'pack-r', 'verify-wheels',
+                   'release-gate', 'publish-nuget', 'publish-rubygems', 'publish-npm', 'publish-pypi',
+                   'finalize-release')
 PREDICATE = 'https://github.com/SkunkWerkx/.github/predicates/release/v1'
 
 
@@ -185,9 +189,11 @@ class ReleaseGateTests(unittest.TestCase):
         mutations = {'publish-nuget': ['Publish the preserved package and symbols', 'Record accepted package and symbols',
                                        'Attest successful NuGet receipt', 'Attest the finalized served package',
                                        'Attest the finalized served package from the tag'],
-                     'publish-rubygems': ['Publish only missing preserved gems']}
+                     'publish-rubygems': ['Publish only missing preserved gems'],
+                     'publish-npm': ['Publish only missing preserved npm packages']}
         waits = {'publish-nuget': ['Verify the finalized repository-signed package'],
-                 'publish-rubygems': ['Verify every public gem matches the prepared bytes']}
+                 'publish-rubygems': ['Verify every public gem matches the prepared bytes'],
+                 'publish-npm': ['Verify every public npm package matches the prepared bytes']}
         for action, names in mutations.items():
             steps = {s.get('name'): s for s in self.steps(action)}
             for name in names:
@@ -207,6 +213,27 @@ class ReleaseGateTests(unittest.TestCase):
         finalized = nuget['Attest the finalized served package from the tag']
         self.assertEqual(finalized['with']['predicate-type'], PREDICATE)
         self.assertEqual(finalized['with']['predicate-path'], 'release-packages/inventory.json')
+
+    def test_gate_takes_npm_and_cran_packages_only_when_asked(self):
+        # Off by default: HyperCast and HyperTabular ship neither, and their gates must not
+        # change. On, each lands under its inventory group on the fresh path only.
+        action = yaml_lite.load((ACTIONS / 'release-gate' / 'action.yml').read_text())
+        for flag, artifact, group in (('npm_packages', 'npm-packages', 'npm'),
+                                      ('cran_packages', 'cran-packages', 'cran')):
+            with self.subTest(artifact=artifact):
+                self.assertEqual(action['inputs'][flag]['default'], 'false')
+                self.assertTrue(action['inputs'][flag]['description'])
+                download = [s for s in action['runs']['steps']
+                            if s.get('uses', '').startswith('actions/download-artifact@')
+                            and s.get('with', {}).get('name') == artifact]
+                self.assertEqual(len(download), 1)
+                self.assertEqual(download[0]['with']['path'], f'release-packages/{group}')
+                self.assertEqual(download[0]['if'], f"inputs.prepared_run_id == '' && inputs.{flag} == 'true'")
+        names = [s.get('name') or s.get('with', {}).get('name') for s in action['runs']['steps']]
+        verify = names.index('Verify every final package and create the source/run inventory')
+        self.assertLess(names.index('npm-packages'), verify)
+        self.assertLess(names.index('cran-packages'), verify)
+
 
     def test_pypi_action_prepares_and_leaves_the_upload_to_the_caller(self):
         # pypa/gh-action-pypi-publish nested in a composite action looks for its image at
@@ -237,6 +264,144 @@ class ReleaseGateTests(unittest.TestCase):
                 tail = text.split(f'      - name: {step}\n', 1)[1]
                 self.assertRegex(tail.splitlines()[0], r"^        if: inputs\.publish == true")
                 self.assertIn('\njobs:\n  publish:\n', text)
+
+
+class NpmAndCranActionTests(unittest.TestCase):
+    def action(self, name):
+        return yaml_lite.load((ACTIONS / name / 'action.yml').read_text())
+
+    def steps(self, name):
+        return self.action(name)['runs']['steps']
+
+    def uses(self, name, prefix):
+        return [s for s in self.steps(name) if s.get('uses', '').startswith(prefix)]
+
+    def test_pack_npm_verifies_every_addon_then_packs_nine_tarballs_off_the_checkout(self):
+        action = self.action('pack-npm')
+        self.assertEqual(action['inputs']['node_version']['default'], '24')
+        for name in ('run_id', 'source_sha', 'token'):
+            self.assertIs(action['inputs'][name]['required'], True)
+        download = self.uses('pack-npm', 'actions/download-artifact@')
+        self.assertEqual([d['with']['pattern'] for d in download], ['node-*'])
+        self.assertEqual(download[0]['with']['path'], 'artifacts/node')
+        self.assertEqual(download[0]['with']['run-id'], '${{ inputs.run_id }}')
+        runs = '\n'.join(s.get('run', '') for s in self.steps('pack-npm'))
+        verify = next(s for s in self.steps('pack-npm') if 'gh attestation verify' in s.get('run', ''))
+        self.assertIn('artifacts/node/node-*/*', verify['run'])
+        self.assertIn('--signer-repo SkunkWerkx/.github', verify['run'])
+        self.assertIn('--source-digest "$SOURCE_SHA"', verify['run'])
+        # Packed on a copy: `npm pkg set` must never touch the committed package.json, and
+        # napi's prepublish would publish and rewrite on its own.
+        self.assertIn('$RUNNER_TEMP/pack', runs)
+        self.assertIn('napi create-npm-dirs', runs)
+        self.assertIn('npm pkg set "optionalDependencies.', runs)
+        self.assertNotIn('prepublish', runs)
+        self.assertNotIn('npm publish', runs)
+        self.assertRegex(runs, r"grep -q optionalDependencies typescript/package\.json")
+        names = [s.get('name') or s.get('uses') for s in self.steps('pack-npm')]
+        attest = self.uses('pack-npm', 'actions/attest-build-provenance@')
+        upload = self.uses('pack-npm', 'actions/upload-artifact@')
+        self.assertEqual(len(attest), 1)
+        self.assertEqual(len(upload), 1)
+        self.assertEqual(attest[0]['with']['subject-path'], upload[0]['with']['path'])
+        self.assertTrue(attest[0]['with']['subject-path'].endswith('*.tgz'))
+        self.assertEqual(upload[0]['with']['name'], 'npm-packages')
+        self.assertEqual(upload[0]['with']['retention-days'], 90)
+        self.assertEqual(upload[0]['with']['if-no-files-found'], 'error')
+        self.assertLess(names.index(attest[0]['name']), names.index(upload[0]['uses']))
+        self.assertIn('release_package_metadata', runs)
+
+    def test_pack_r_stages_verifies_builds_and_attests_the_source_tarball(self):
+        action = self.action('pack-r')
+        self.assertEqual(action['inputs']['r_version']['default'], 'release')
+        self.assertNotIn('run_id', action['inputs'])
+        setup = self.uses('pack-r', 'r-lib/actions/setup-r@')
+        self.assertEqual(len(setup), 1)
+        self.assertEqual(setup[0]['uses'], 'r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05')
+        self.assertEqual(setup[0]['with']['use-public-rspm'], True)
+        self.assertEqual(setup[0]['with']['r-version'], '${{ inputs.r_version }}')
+        self.assertEqual(len(self.uses('pack-r', 'dtolnay/rust-toolchain@')), 1)
+        runs = '\n'.join(s.get('run', '') for s in self.steps('pack-r'))
+        self.assertIn('bash r/tools/vendor.sh\n', runs)
+        self.assertIn('bash r/tools/vendor.sh --verify', runs)
+        self.assertLess(runs.index('bash r/tools/vendor.sh\n'), runs.index('bash r/tools/vendor.sh --verify'))
+        # vendor.sh regenerates inst/AUTHORS from the vendored crates: a stale committed copy
+        # fails the pack rather than shipping, and it is checked before R CMD build packs it.
+        authors = 'git diff --exit-code -- r/inst/AUTHORS'
+        self.assertIn(authors, runs)
+        self.assertLess(runs.index('bash r/tools/vendor.sh\n'), runs.index(authors))
+        self.assertLess(runs.index(authors), runs.index('R CMD build'))
+        self.assertIn('R CMD build', runs)
+        self.assertIn("grep -c 'tests/testthat/corpus/.*\\.json$'", runs)
+        self.assertIn('r_source_tarball', runs)
+        attest = self.uses('pack-r', 'actions/attest-build-provenance@')
+        upload = self.uses('pack-r', 'actions/upload-artifact@')
+        self.assertEqual(attest[0]['with']['subject-path'], upload[0]['with']['path'])
+        self.assertTrue(upload[0]['with']['path'].endswith('.tar.gz'))
+        self.assertEqual(upload[0]['with']['name'], 'cran-packages')
+        self.assertEqual(upload[0]['with']['retention-days'], 90)
+        self.assertEqual(upload[0]['with']['if-no-files-found'], 'error')
+
+    def test_publish_npm_trusts_the_job_oidc_token_and_confirms_bytes(self):
+        action = self.action('publish-npm')
+        for name in ('version', 'source_sha', 'ci_run_id', 'forge_sha', 'token'):
+            self.assertIs(action['inputs'][name]['required'], True)
+        self.assertEqual(action['inputs']['publish']['default'], 'true')
+        self.assertEqual(action['inputs']['publication_run_id']['default'], '')
+        self.assertEqual(action['inputs']['node_version']['default'], '24')
+        steps = {s.get('name') or s.get('uses'): s for s in self.steps('publish-npm')}
+        node = self.uses('publish-npm', 'actions/setup-node@')
+        self.assertEqual(node[0]['with']['registry-url'], 'https://registry.npmjs.org')
+        plan = steps['Reconcile existing npm packages by exact public bytes']
+        self.assertEqual(plan['id'], 'pending')
+        self.assertIn('registry-plan --registry npm --output pending-npm', plan['run'])
+        self.assertIn('registry-confirm --registry npm',
+                      steps['Verify every public npm package matches the prepared bytes']['run'])
+        # npm exchanges the OIDC token itself; there is no credentials action to call.
+        self.assertFalse([s for s in self.steps('publish-npm') if 'credentials' in s.get('uses', '')])
+        self.assertNotIn('NODE_AUTH_TOKEN', (ACTIONS / 'publish-npm' / 'action.yml').read_text())
+
+    def publish_order(self, present):
+        run = next(s for s in self.steps('publish-npm')
+                   if s.get('name') == 'Publish only missing preserved npm packages')['run']
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            (work / 'bin').mkdir()
+            stub = work / 'bin' / 'npm'
+            stub.write_text('#!/bin/sh\necho "$*" >> "$NPM_LOG"\n')
+            stub.chmod(0o755)
+            (work / 'pending-npm').mkdir()
+            for name in present:
+                (work / 'pending-npm' / name).write_bytes(b'')
+            result = subprocess.run(['bash', '-c', run], cwd=work, capture_output=True, text=True,
+                                    env={**os.environ, 'PATH': f"{work / 'bin'}:{os.environ['PATH']}",
+                                         'NPM_LOG': str(work / 'log'), 'CRATE': 'hyperuuid',
+                                         'VERSION': '1.2.3'})
+            log = (work / 'log').read_text().splitlines() if (work / 'log').exists() else []
+            return result.returncode, log
+
+    def test_publish_npm_pushes_every_platform_package_before_the_root(self):
+        # registry-plan copies the pending tarballs into one flat directory, and `hyperuuid-`
+        # sorts before `skunkwerkx-`: a bare *.tgz glob would publish the root first, whose
+        # optionalDependencies would then name packages that do not exist yet.
+        suffixes = ['win32-arm64-msvc', 'darwin-arm64', 'linux-x64-gnu', 'linux-arm64-musl',
+                    'linux-x64-musl', 'linux-arm64-gnu', 'darwin-x64', 'win32-x64-msvc']
+        platforms = [f'skunkwerkx-hyperuuid-{s}-1.2.3.tgz' for s in suffixes]
+        code, log = self.publish_order(['hyperuuid-1.2.3.tgz', *platforms])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(log), 9)
+        self.assertEqual(log[-1], 'publish pending-npm/hyperuuid-1.2.3.tgz --access public')
+        self.assertEqual(sorted(log[:-1]), sorted(f'publish pending-npm/{p} --access public' for p in platforms))
+        # A half-published first release: only what is missing, platform first.
+        code, log = self.publish_order(['hyperuuid-1.2.3.tgz', platforms[3]])
+        self.assertEqual((code, log), (0, [f'publish pending-npm/{platforms[3]} --access public',
+                                           'publish pending-npm/hyperuuid-1.2.3.tgz --access public']))
+        code, log = self.publish_order(platforms[:2])
+        self.assertEqual((code, len(log)), (0, 2))
+        # Anything else in the plan is not a package this release ships: nothing is pushed.
+        code, log = self.publish_order(['hyperuuid-1.2.3.tgz', 'stray-1.2.3.tgz'])
+        self.assertNotEqual(code, 0)
+        self.assertEqual(log, [])
 
 
 if __name__ == '__main__':

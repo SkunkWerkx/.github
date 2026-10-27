@@ -30,6 +30,14 @@ inputs:
   token:
     description: "github.token"
     required: true
+  npm_packages:
+    description: "\"true\" takes pack-npm's npm-packages into release-packages/npm (a consumer with the TypeScript binding)"
+    required: false
+    default: "false"
+  cran_packages:
+    description: "\"true\" takes pack-r's cran-packages into release-packages/cran (a consumer with the R binding)"
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -67,6 +75,16 @@ runs:
       with:
         name: maven-central-package
         path: release-packages/maven
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: inputs.prepared_run_id == '' && inputs.npm_packages == 'true'
+      with:
+        name: npm-packages
+        path: release-packages/npm
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: inputs.prepared_run_id == '' && inputs.cran_packages == 'true'
+      with:
+        name: cran-packages
+        path: release-packages/cran
     - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       if: inputs.prepared_run_id != ''
       with:
@@ -140,6 +158,10 @@ runs:
           echo '```'
           cat release-checksums.txt
           echo '```'
+          if grep -q ' cran/' release-checksums.txt; then
+            echo
+            echo "The CRAN source tarball under cran/ is uploaded by no job: submit those preserved bytes by hand."
+          fi
         } >> "$GITHUB_STEP_SUMMARY"
 
     - name: Preserve the complete verified release inputs

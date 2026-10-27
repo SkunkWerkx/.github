@@ -100,6 +100,68 @@ class HyperConfigTests(unittest.TestCase):
         self.assertEqual(lines[0].split('\t')[0], 'rust/Cargo.toml')
         self.assertEqual(len(lines), 5)
 
+    CLASSIC = ['rust/Cargo.toml', 'csharp/HyperUuid/HyperUuid.csproj', 'java/build.gradle.kts',
+               'ruby/hyperuuid.gemspec', 'ruby/lib/hyperuuid.rb']
+
+    def write_classic(self):
+        contents = {'rust/Cargo.toml': 'version = "1.0.0"\n',
+                    'csharp/HyperUuid/HyperUuid.csproj': '<Version>1.0.0</Version>\n',
+                    'java/build.gradle.kts': 'version = System.getenv("HYPERUUID_VERSION") ?: "1.0.0"\n',
+                    'ruby/hyperuuid.gemspec': 'spec.version = "1.0.0"\n',
+                    'ruby/lib/hyperuuid.rb': 'VERSION = "1.0.0"\n'}
+        for relative, text in contents.items():
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+
+    def test_version_files_follow_the_binding_directories(self):
+        write_config(self.root)
+        self.assertEqual(list(hyper_config.load(self.root).version_files), self.CLASSIC)
+        (self.root / 'typescript').mkdir()
+        (self.root / 'r').mkdir()
+        files = hyper_config.load(self.root).version_files
+        self.assertEqual(list(files), self.CLASSIC + ['typescript/package.json', 'r/DESCRIPTION'])
+        self.assertEqual(files['typescript/package.json'], r'^  "version": "([^"]+)",$')
+        self.assertEqual(files['r/DESCRIPTION'], r'^Version: (.+)$')
+        # Each directory is independent.
+        (self.root / 'r').rmdir()
+        self.assertEqual(list(hyper_config.load(self.root).version_files),
+                         self.CLASSIC + ['typescript/package.json'])
+
+    def test_bump_ignores_bindings_a_consumer_lacks(self):
+        write_config(self.root)
+        self.write_classic()
+        cfg = hyper_config.load(self.root)
+        changed = hyper_config.bump(cfg, self.root, '1.1.0')
+        self.assertEqual(sorted(changed), sorted(self.CLASSIC))
+
+    def test_bump_fails_loudly_when_a_binding_lost_its_manifest(self):
+        write_config(self.root)
+        self.write_classic()
+        (self.root / 'r').mkdir()
+        cfg = hyper_config.load(self.root)
+        with self.assertRaises(FileNotFoundError):
+            hyper_config.bump(cfg, self.root, '1.1.0')
+
+    def test_node_platforms_in_shell_and_json(self):
+        cfg = hyper_config.HyperConfig(MINIMAL)
+        self.assertEqual(cfg.node_platforms, hyper_config.NODE_PLATFORMS)
+        self.assertEqual(len(cfg.node_platforms), 8)
+        self.assertEqual(cfg.node_platforms['linux-musl-arm64'], 'linux-arm64-musl')
+        override = hyper_config.HyperConfig({**MINIMAL, 'node': {'platforms': {'linux-x64': 'linux-x64-gnu'}}})
+        self.assertEqual(override.node_platforms, {'linux-x64': 'linux-x64-gnu'})
+        write_config(self.root)
+        script = subprocess.check_output([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'shell',
+                                          '--root', str(self.root)], text=True)
+        self.assertIn('declare -A NODE_PLATFORMS=([linux-arm64]=linux-arm64-gnu ', script)
+        out = subprocess.check_output(
+            ['bash', '-euo', 'pipefail', '-c', script + 'echo "${NODE_PLATFORMS[win-x64]} ${#NODE_PLATFORMS[@]}"'],
+            text=True).strip()
+        self.assertEqual(out, 'win32-x64-msvc 8')
+        data = json.loads(subprocess.check_output([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'json',
+                                                   '--root', str(self.root)], text=True))
+        self.assertEqual(data['node_platforms'], hyper_config.NODE_PLATFORMS)
+
 
 if __name__ == '__main__':
     unittest.main()

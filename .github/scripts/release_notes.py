@@ -24,11 +24,23 @@ def verifying(inventory):
     files = inventory['files']
     natives = [e for e in files if e.get('location') == 'source' and 'signer_repo' in e]
     metadata = sum(e.get('location') == 'source' for e in files) - len(natives)
+    # npm and CRAN ship only from consumers with those bindings; name what this release holds.
+    groups = {e['path'].split('/')[0] for e in files if e.get('location') == 'packages'}
+    registries = ['NuGet', 'RubyGems', 'PyPI', 'crates.io', 'Maven Central'] + ['npm'] * ('npm' in groups)
+    packages = f"({', '.join(registries[:-1])} and {registries[-1]}), "
+    if 'cran' in groups:
+        packages += 'a CRAN source tarball the maintainer submits by hand, '
+    # The napi-rs addons are built and attested by the Forge in CI like the native
+    # libraries, and npm records its own provenance at publish time beside PyPI's PEP 740.
+    npm = 'npm' in groups
+    addons = ', the Node addons inside the npm platform packages' if npm else ''
+    registry = (", and npm a provenance statement for every package, linking it to the\n"
+                "publishing run of this repository's `release.yml`") if npm else ''
     return f'''## Verifying
 
 Every file in this release verifies from the tag alone. One attestation, signed by this
 repository's `release.yml` at `v{version}`, names all {len(files)} of them: every registry
-package (NuGet, RubyGems, PyPI, crates.io and Maven Central), the {len(natives)} native
+package {packages}the {len(natives)} native
 libraries committed for Go, Swift and PHP, and the {metadata} metadata files staged beside
 them. Its predicate is the release inventory attached below.
 
@@ -37,7 +49,7 @@ gh attestation verify <file> --repo {repo} \\
   --source-ref refs/tags/v{version} --predicate-type {PREDICATE_TYPE}
 ```
 
-The native libraries, the Python wheels and the archives inside the NuGet package and the
+The native libraries, the Python wheels{addons} and the archives inside the NuGet package and the
 jar also carry build provenance from CI run [{run_id}](https://github.com/{repo}/actions/runs/{run_id})
 at commit `{source[:7]}`, the parent of the tagged commit, signed by the Forge:
 
@@ -47,7 +59,7 @@ gh attestation verify <file> --repo {repo} --signer-repo {FORGE} --source-digest
 
 `inventory.json` lists every file with its size and SHA-256 and, for each file with build
 provenance, the commit it was built from and the repository that signed it; it carries
-build provenance of its own at the tagged commit. PyPI additionally holds a PEP 740 publish attestation for every wheel.
+build provenance of its own at the tagged commit. PyPI additionally holds a PEP 740 publish attestation for every wheel{registry}.
 '''
 
 
