@@ -78,7 +78,7 @@ def create_packages(root, crate='hypercast', version='0.10.0'):
         write_zip(root / f'nuget/{crate}.{version}.{suffix}', [(f'{crate}.nuspec',
             f'<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata>'
             f'<id>{crate.title()}</id><version>{version}</version></metadata></package>')])
-    for index in range(25):
+    for index in range(17):
         write_zip(root / f'pypi/{crate}-{version}-abi{index}-none-platform.whl', [
             (f'{crate}-{version}.dist-info/METADATA',
              f'Metadata-Version: 2.3\nName: {crate}\nVersion: {version}\n\n')])

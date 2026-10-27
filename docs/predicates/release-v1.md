@@ -15,7 +15,7 @@ made in the publication gate, before anything is uploaded, and preserved with th
 
 Subjects (about 90 per release) are every file in `inventory.json`:
 
-- the registry packages: the `.nupkg` and `.snupkg`, the nine gems, the 25 wheels, the
+- the registry packages: the `.nupkg` and `.snupkg`, the nine gems, the 17 wheels, the
   `.crate` with its saved registry request, the signed Maven bundle and the repository files
   inside it (the jar, the sources and javadoc jars, the `.pom`, their signatures), and, from
   a consumer with those bindings, the nine npm tarballs (the root package and one per

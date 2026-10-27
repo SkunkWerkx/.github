@@ -15,7 +15,7 @@ with another. Optional keys: `abi_probe` (a C program compiled against the bundl
 and linked with each payload; default `.github/scripts/abi_probe.c`), `cdylib_smoke` (a
 Python script given a shared library and `rust/Cargo.toml`: each RID's in hyper-check-core.yml's
 check-cdylib, the committed linux-x64 one in release_guard.py), `wheels` (count,
-default 25), `ruby.abis` and `ruby.platforms`, `node.platforms` (RID -> napi platform
+default 17), `ruby.abis` and `ruby.platforms`, `node.platforms` (RID -> napi platform
 name), `go_targets`, `swift_targets`, `xcframework_slices`, `version_files` (path -> regex
 with one group around the version; the default list adds `typescript/package.json` and
 `r/DESCRIPTION` only when that binding's directory exists at the consumer's root).
@@ -51,7 +51,7 @@ NODE_PLATFORMS = {'linux-x64': 'linux-x64-gnu', 'linux-arm64': 'linux-arm64-gnu'
                   'linux-musl-x64': 'linux-x64-musl', 'linux-musl-arm64': 'linux-arm64-musl',
                   'osx-x64': 'darwin-x64', 'osx-arm64': 'darwin-arm64',
                   'win-x64': 'win32-x64-msvc', 'win-arm64': 'win32-arm64-msvc'}
-WHEELS = 25
+WHEELS = 17
 CONFIG_PATH = '.github/hyper.json'
 
 

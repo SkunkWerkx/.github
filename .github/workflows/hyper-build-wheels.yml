@@ -1,19 +1,21 @@
 name: HyperForge — build and install-test the PyPI wheels
 
-# The 25 wheels a Hyper* Python package publishes, built, installed and called into on
+# The 17 wheels a Hyper* Python package publishes, built, installed and called into on
 # every CI run, then uploaded as `pypi-wheels-{rid}` for the caller's release to publish
-# unchanged. Eight legs — six desktop platforms and the two musl ones — build three wheels
-# each, which between them cover every supported CPython on that platform, with the GIL or
-# without it:
+# unchanged. Eight legs — six desktop platforms and the two musl ones — build two wheels
+# each, both stable-ABI, which between them cover every supported CPython on that platform,
+# with the GIL or without it:
 #
 #   cp311-abi3         abi3-py311: every CPython 3.11+ with the GIL, one wheel rather than
 #                      one per minor
-#   cp314-cp314t       free-threaded 3.14, which has no stable ABI, so its own wheel
-#                      (python_freethreaded_version; empty once 3.14 leaves support)
 #   cp315-abi3.abi3t   PEP 803's abi3t (the crate's PyO3 `abi3t-py315`): 3.15+, free-threaded
 #                      or not
 #
-# build-pyodide-wheel adds the 25th: the same extension for Pyodide in the browser
+# Free-threaded CPython older than 3.15 has no stable ABI, so it would need a wheel bound to
+# one interpreter version (cp314-cp314t). None ships: python_freethreaded_version builds one
+# when set, and it is empty by default since 2026-10 — too narrow an ABI to carry.
+#
+# build-pyodide-wheel adds the 17th: the same extension for Pyodide in the browser
 # (`pypi-wheels-pyodide`), whose job also runs the binding's whole test suite inside Pyodide,
 # under Node and in headless Chrome.
 #
@@ -55,12 +57,13 @@ on:
         default: "3.14"
       python_freethreaded_version:
         description: >
-          The free-threaded CPython older than the abi3t floor, which has no stable ABI and so
-          gets a version-specific wheel of its own, installed and called on it. Empty builds
-          none: how a caller drops it once that CPython leaves support.
+          A free-threaded CPython older than the abi3t floor, which has no stable ABI and so
+          would get a version-specific wheel of its own (cp314-cp314t), installed and called
+          on it. Empty, the default, builds none: that wheel serves one interpreter version,
+          and the consumers dropped it in 2026-10.
         required: false
         type: string
-        default: "3.14t"
+        default: ""
       python_abi3t_version:
         description: >
           The CPython that builds the abi3t wheel: the floor the crate's PyO3 `abi3t-py3XX`

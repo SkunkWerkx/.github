@@ -40,7 +40,7 @@ class HyperConfigTests(unittest.TestCase):
         self.assertEqual(cfg.bundle, 'swift/HyperUuidCore.artifactbundle')
         self.assertEqual(cfg.xcframework, 'swift/HyperUuidCoreApple.xcframework')
         self.assertEqual(cfg.version_env, 'HYPERUUID_VERSION')
-        self.assertEqual(cfg.wheels, 25)
+        self.assertEqual(cfg.wheels, 17)
         self.assertEqual(cfg.ruby_abis, ('3.4', '4.0'))
         self.assertEqual(len(cfg.ruby_platforms), 7)
         paths = cfg.payload_paths(Path('artifacts'))
@@ -94,7 +94,7 @@ class HyperConfigTests(unittest.TestCase):
                                           '--root', str(self.root)], text=True)
         probe = script + 'echo "$CRATE ${LIB_NAMES[osx-x64]} ${PHP_LIBS[win-x64]} ${RUBY_PLATFORMS[linux-x64]} ${#RUBY_ABIS[@]} ${STATIC_TREES[go/staticlib]} $WHEELS ${PHP_LIBS[win-arm64]:-none}"\n'
         out = subprocess.check_output(['bash', '-euo', 'pipefail', '-c', probe], text=True).strip()
-        self.assertEqual(out, 'hyperuuid libhyperuuid.dylib hyperuuid.dll x86_64-linux-gnu 2 13 25 none')
+        self.assertEqual(out, 'hyperuuid libhyperuuid.dylib hyperuuid.dll x86_64-linux-gnu 2 13 17 none')
         lines = subprocess.check_output([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'version-files',
                                          '--root', str(self.root)], text=True).splitlines()
         self.assertEqual(lines[0].split('\t')[0], 'rust/Cargo.toml')
