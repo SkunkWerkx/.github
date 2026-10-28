@@ -28,6 +28,11 @@ on:
         required: false
         type: boolean
         default: true
+      java_jni:
+        description: "The Java package carries the JNI base: also stage each RID's jni-{rid} library (hyper-build-native.yml's `java_jni` input, which must have been on for the source run) and require both libraries and a Multi-Release manifest in the built jar"
+        required: false
+        type: boolean
+        default: false
       source_run_id:
         description: "Exact successful source CI run A (validated by the caller)"
         required: true
@@ -77,6 +82,7 @@ jobs:
           java_resources_dir: ${{ inputs.java_resources_dir }}
           jdk_version: ${{ inputs.jdk_version }}
           musl: ${{ inputs.musl }}
+          jni: ${{ inputs.java_jni }}
           source_run_id: ${{ inputs.source_run_id }}
           artifact_name: ${{ inputs.artifact_name }}
           signing_key: ${{ secrets.MAVEN_SIGNING_KEY }}

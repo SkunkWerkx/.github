@@ -26,6 +26,10 @@ inputs:
     description: "Also pack the linux-musl-x64 and linux-musl-arm64 libraries ('true'/'false')"
     required: false
     default: "true"
+  jni:
+    description: "Also stage each RID's JNI library (jni-{rid}) beside the core, and require both in the built jar and a Multi-Release manifest ('true'/'false')"
+    required: false
+    default: "false"
   source_run_id:
     description: "Exact successful source CI run A"
     required: true
@@ -67,6 +71,14 @@ runs:
         run-id: ${{ inputs.source_run_id }}
         github-token: ${{ inputs.github_token }}
 
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: inputs.jni == 'true'
+      with:
+        pattern: jni-*
+        path: artifacts
+        run-id: ${{ inputs.source_run_id }}
+        github-token: ${{ inputs.github_token }}
+
     - name: Stage native/{rid}/{filename} resources
       shell: bash
       env:
@@ -74,6 +86,7 @@ runs:
         SOURCE_SHA: ${{ steps.source.outputs.sha }}
         CRATE: ${{ inputs.crate }}
         MUSL: ${{ inputs.musl }}
+        JNI: ${{ inputs.jni }}
         RESOURCES_DIR: ${{ inputs.java_resources_dir }}
         FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
       run: |
@@ -96,6 +109,14 @@ runs:
           src="artifacts/native-$rid/${LIB_NAMES[$rid]}"
           verify "$src"
           cp "$src" "$dest/"
+          # The JNI shim of the same RID (hyper_config's jni_lib_names), downloaded by the
+          # step above as jni-{rid}; a RID without one is named, not skipped.
+          if [ "${JNI:-false}" = true ]; then
+            jni_src="artifacts/jni-$rid/${JNI_LIB_NAMES[$rid]}"
+            [ -f "$jni_src" ] || { echo "::error::no JNI library for $rid: $jni_src is missing"; exit 1; }
+            verify "$jni_src"
+            cp "$jni_src" "$dest/"
+          fi
         done
 
     - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
@@ -111,6 +132,38 @@ runs:
         ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ inputs.signing_key_password }}
         INIT_SCRIPT: ${{ github.action_path }}/../../scripts/release_maven.init.gradle
       run: ./gradlew --init-script "$INIT_SCRIPT" publishMavenPublicationToReleaseBundleRepository
+
+    # The jar is what consumers load from: every staged RID must hold both libraries in it,
+    # and the manifest must say Multi-Release, or the java25 tree is ignored on 25 and the
+    # base runs everywhere. Reading the built jar, not the staging directory, is the point.
+    - name: Both libraries for every RID are in the jar, and the jar is multi-release
+      if: inputs.jni == 'true'
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ inputs.java_project_dir }}
+        RESOURCES_DIR: ${{ inputs.java_resources_dir }}
+        CRATE: ${{ inputs.crate }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        crate=$CRATE
+        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
+        [ "$CRATE" = "$crate" ] || { echo "::error::crate input $crate differs from hyper.json's $CRATE"; exit 1; }
+        jars=()
+        while IFS= read -r jar; do
+          case "$jar" in *-sources.jar|*-javadoc.jar) ;; *) jars+=("$jar") ;; esac
+        done < <(find "$PROJECT_DIR/build/release-maven-repository" -name "$CRATE-*.jar" | sort)
+        [ "${#jars[@]}" -eq 1 ] || { echo "::error::expected exactly one library jar, found ${#jars[@]}: ${jars[*]:-none}"; exit 1; }
+        jar=${jars[0]}
+        listing=$(unzip -l "$jar")
+        for staged in "$RESOURCES_DIR"/*/; do
+          rid=$(basename "$staged")
+          for name in "${LIB_NAMES[$rid]}" "${JNI_LIB_NAMES[$rid]}"; do
+            awk -v p="native/$rid/$name" '$NF == p {found = 1} END {exit !found}' <<<"$listing" || { echo "::error::$jar lacks native/$rid/$name"; exit 1; }
+          done
+        done
+        unzip -p "$jar" META-INF/MANIFEST.MF | tr -d '\r' | grep -qx 'Multi-Release: true' || { echo "::error::$jar's manifest lacks Multi-Release: true"; exit 1; }
+        echo "$jar: both libraries for every staged RID, Multi-Release: true"
 
     - name: Preserve the complete signed Central bundle
       shell: bash

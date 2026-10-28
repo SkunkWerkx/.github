@@ -4,6 +4,10 @@
 #
 #   build-musl.sh <crate> <repo-root> <out-dir>
 #
+# With JNI=true (the Java binding's JNI shim) java/jni is copied in as well and built after
+# the core, under the same RUSTFLAGS and held to the same NEEDED gate; lib{crate}_jni.so
+# lands in <out-dir> beside the core.
+#
 # Runs on the host (a GitHub runner, or a developer's machine with Docker) and does the
 # work in `docker run`, so the result is the same file wherever it is produced. The
 # container's architecture is the host's unless DOCKER_PLATFORM says otherwise
@@ -46,13 +50,14 @@ repo_root=$(cd "${2:?$usage}" && pwd)
 mkdir -p "${3:?$usage}"
 out_dir=$(cd "$3" && pwd)
 
+jni=${JNI:-false}
 image=${ALPINE_IMAGE:-alpine:3.22}
 platform_args=()
 [ -n "${DOCKER_PLATFORM:-}" ] && platform_args=(--platform "$DOCKER_PLATFORM")
 
 docker run --rm "${platform_args[@]}" \
   -v "$repo_root:/src:ro" -v "$out_dir:/out" \
-  -e CRATE="$crate" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+  -e CRATE="$crate" -e JNI="$jni" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   "$image" sh -euc '
     apk add --no-cache build-base curl >/dev/null
     curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null 2>&1
@@ -60,7 +65,7 @@ docker run --rm "${platform_args[@]}" \
     rustc -vV | grep -E "^(host|release)"
 
     mkdir /work
-    (cd /src && tar cf - --exclude=./rust/target ./rust $([ -d corpus ] && echo ./corpus)) | tar xf - -C /work
+    (cd /src && tar cf - --exclude=./rust/target --exclude=./java/jni/target ./rust $([ -d corpus ] && echo ./corpus) $([ "$JNI" = true ] && echo ./java/jni)) | tar xf - -C /work
     cd /work/rust
 
     mkdir /unwind
@@ -71,21 +76,36 @@ docker run --rm "${platform_args[@]}" \
     cargo cdylib
     cargo test --release
 
-    lib="target/release/lib$CRATE.so"
-    [ -f "$lib" ] || { echo "::error::no $lib — the cdylib was not produced, is crt-static back on?"; exit 1; }
-
-    needed=$(readelf -d "$lib" | sed -n "s/.*(NEEDED).*\[\(.*\)\]/\1/p" | sort | tr "\n" " ")
-    echo "NEEDED: $needed"
     # The count as well as the name: a bare "libc.musl-"*".so.1 " pattern also matches
     # "libc.musl-aarch64.so.1 libgcc_s.so.1 ", since * spans the space (measured).
-    set -- $needed
-    case "$#:${1:-}" in
-      "1:libc.musl-"*".so.1") ;;
-      *) echo "::error::$lib must depend on musl libc and nothing else, found: $needed"; exit 1 ;;
-    esac
+    gate() {
+      f=$1
+      [ -f "$f" ] || { echo "::error::no $f — the cdylib was not produced, is crt-static back on?"; exit 1; }
+      needed=$(readelf -d "$f" | sed -n "s/.*(NEEDED).*\[\(.*\)\]/\1/p" | sort | tr "\n" " ")
+      echo "NEEDED: $needed"
+      set -- $needed
+      case "$#:${1:-}" in
+        "1:libc.musl-"*".so.1") ;;
+        *) echo "::error::$f must depend on musl libc and nothing else, found: $needed"; exit 1 ;;
+      esac
+    }
+
+    lib="target/release/lib$CRATE.so"
+    gate "$lib"
+
+    if [ "$JNI" = true ]; then
+      cd /work/java/jni
+      cargo build --release --locked --lib
+      jni_lib="target/release/lib${CRATE}_jni.so"
+      gate "$jni_lib"
+      cp "$jni_lib" /out/
+      chown "$HOST_UID:$HOST_GID" "/out/lib${CRATE}_jni.so"
+      cd /work/rust
+    fi
 
     cp "$lib" /out/
     chown "$HOST_UID:$HOST_GID" "/out/lib$CRATE.so"
   '
 
 ls -l "$out_dir/lib$crate.so"
+if [ "$jni" = true ]; then ls -l "$out_dir/lib${crate}_jni.so"; fi

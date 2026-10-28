@@ -1,6 +1,7 @@
 """Contracts for the composite actions: actionlint never reads an action.yml, so this is
 the only lint they get, and the release actions' gates are what keeps a tag run from
 publishing."""
+import json
 from pathlib import Path
 import os
 import re
@@ -402,6 +403,105 @@ class NpmAndCranActionTests(unittest.TestCase):
         code, log = self.publish_order(['hyperuuid-1.2.3.tgz', 'stray-1.2.3.tgz'])
         self.assertNotEqual(code, 0)
         self.assertEqual(log, [])
+
+
+class VerifyWheelsTests(unittest.TestCase):
+    """The step that holds the preparation run's wheels and sdist to what hyper.json expects."""
+    def step(self):
+        action = yaml_lite.load((ACTIONS / 'verify-wheels/action.yml').read_text())
+        return action, next(s for s in action['runs']['steps'] if s.get('name', '').startswith('Verify the wheels'))
+
+    def run_step(self, files, sdist):
+        action, step = self.step()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / '.github').mkdir()
+        config = {'crate': 'hypercast', 'project': 'HyperCast',
+                  'exports': {'sources': ['x'], 'patterns': ['x'], 'prefixes': ['hypercast_']}}
+        if sdist is not None:
+            config['sdist'] = sdist
+        (root / '.github/hyper.json').write_text(json.dumps(config))
+        (root / 'rust').mkdir()
+        (root / 'rust/Cargo.toml').write_text('[package]\nversion = "0.10.0"\n')
+        (root / 'dist').mkdir()
+        for name in files:
+            (root / 'dist' / name).write_bytes(b'x')
+        (root / 'bin').mkdir()
+        log = root / 'gh.log'
+        (root / 'bin/gh').write_text('#!/bin/sh\necho "$@" >> "$GH_LOG"\nexit 0\n')
+        (root / 'bin/gh').chmod(0o755)
+        env = {**os.environ, 'PATH': f"{root / 'bin'}:{os.environ['PATH']}", 'GH_LOG': str(log),
+               'FORGE_SCRIPTS': str(Path(__file__).resolve().parent), 'GH_TOKEN': 't',
+               'SOURCE_SHA': 'a' * 40, 'RUN_ID': '1', 'GITHUB_REPOSITORY': 'SkunkWerkx/HyperCast'}
+        result = subprocess.run(['bash', '-c', step['run']], cwd=root, env=env, capture_output=True, text=True)
+        logged = log.read_text().splitlines() if log.exists() else []
+        return result, logged
+
+    def wheels(self, count=17):
+        return [f'hypercast-0.10.0-abi{i}-none-platform.whl' for i in range(count)]
+
+    def test_verify_wheels_counts_names_and_verifies_the_sdist(self):
+        result, logged = self.run_step(self.wheels() + ['hypercast-0.10.0.tar.gz'], True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(logged), 18)
+        self.assertTrue(any('hypercast-0.10.0.tar.gz' in line for line in logged))
+        result, logged = self.run_step(self.wheels(), None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(logged), 17)
+        for label, files, sdist in (
+                ('sdist with the key off', self.wheels() + ['hypercast-0.10.0.tar.gz'], None),
+                ('sdist with the key false', self.wheels() + ['hypercast-0.10.0.tar.gz'], False),
+                ('key on, no sdist', self.wheels(), True),
+                ('stale sdist', self.wheels() + ['hypercast-0.9.0.tar.gz'], True),
+                ('two sdists', self.wheels() + ['hypercast-0.10.0.tar.gz', 'hypercast-0.10.0-1.tar.gz'], True)):
+            with self.subTest(label):
+                result, _ = self.run_step(files, sdist)
+                self.assertNotEqual(result.returncode, 0, label)
+        action, _ = self.step()
+        upload = next(s for s in action['runs']['steps'] if 'upload-artifact' in s.get('uses', ''))
+        self.assertIn('dist/*.whl', upload['with']['path'])
+        self.assertIn('dist/*.tar.gz', upload['with']['path'])
+
+
+class PrepareMavenPackageJniTests(unittest.TestCase):
+    """The JNI libraries are staged and checked in the jar only when `jni` is 'true'."""
+
+    def test_prepare_maven_package_stages_and_checks_jni(self):
+        action = yaml_lite.load((ACTIONS / 'prepare-maven-package' / 'action.yml').read_text())
+        self.assertEqual(action['inputs']['jni']['default'], 'false')
+        self.assertIs(action['inputs']['jni']['required'], False)
+        steps = action['runs']['steps']
+        guard = "inputs.jni == 'true'"
+        download = [s for s in steps if s.get('uses', '').startswith('actions/download-artifact@')]
+        self.assertEqual([d['with']['pattern'] for d in download], ['native-*', 'jni-*'])
+        self.assertNotIn('if', download[0])
+        self.assertEqual(download[1]['if'], guard)
+        self.assertEqual(download[1]['with']['path'], 'artifacts')
+        stage = next(s for s in steps if s.get('name', '').startswith('Stage native/'))
+        self.assertEqual(stage['env']['JNI'], '${{ inputs.jni }}')
+        self.assertIn('JNI_LIB_NAMES', stage['run'])
+        self.assertIn('artifacts/jni-$rid/${JNI_LIB_NAMES[$rid]}', stage['run'])
+        self.assertIn('::error::', stage['run'].split('JNI_LIB_NAMES', 1)[1])
+        check = next(s for s in steps if 'Multi-Release: true' in s.get('run', ''))
+        self.assertEqual(check['if'], guard)
+        self.assertIn('unzip -l', check['run'])
+        self.assertIn('META-INF/MANIFEST.MF', check['run'])
+        self.assertLess(steps.index(next(s for s in steps if 'publishMavenPublication' in s.get('run', ''))),
+                        steps.index(check))
+        for name in ('hyper-pack-maven.yml', 'hyper-publish-maven.yml'):
+            text = (ACTIONS.parent / 'workflows' / name).read_text()
+            workflow = yaml_lite.load(text)
+            with self.subTest(workflow=name):
+                spec = workflow['on']['workflow_call']['inputs']['java_jni']
+                self.assertIs(spec['default'], False)
+                self.assertEqual(spec['type'], 'boolean')
+                self.assertIn('description', spec)
+                calls = [s for j in workflow['jobs'].values() for s in j['steps']
+                         if s.get('uses', '').endswith('actions/prepare-maven-package')]
+                self.assertTrue(calls)
+                for call in calls:
+                    self.assertEqual(call['with']['jni'], '${{ inputs.java_jni }}')
 
 
 if __name__ == '__main__':

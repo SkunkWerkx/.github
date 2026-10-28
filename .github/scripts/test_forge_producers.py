@@ -430,6 +430,309 @@ class CheckCoreLintContracts(unittest.TestCase):
         self.assertIn('vendor.sh --stage', runs[install])
         self.assertEqual(r_steps[lint]['env']['R_LIBS'], '${{ runner.temp }}/rlib')
 
+    def test_big_endian_leg_is_off_by_default_and_guards_itself(self):
+        import yaml_lite
+        workflow = yaml_lite.load((WORKFLOWS / 'hyper-check-core.yml').read_text())
+        inputs = workflow['on']['workflow_call']['inputs']
+        self.assertEqual(inputs['big_endian']['default'], '')
+        self.assertEqual(inputs['big_endian']['type'], 'string')
+        jobs = workflow['jobs']
+        job = jobs['test-big-endian']
+        self.assertEqual(job['if'], "inputs.big_endian != ''")
+        self.assertEqual(list(jobs)[-1], 'test-big-endian')
+        steps = job['steps']
+        blob = ' '.join(str(s) for s in steps)
+        for value in ('--locked', 'grep -qx', 'sql_order', 'FAILED', 'qemu-user', 'libc6-dev-', '-cross', '-L /usr/',
+                      'cargo test --locked --release --target', 'sql_order.json'):
+            self.assertIn(value, blob)
+        for step in (s for s in steps if 'run' in s):
+            with self.subTest(run=step['run'][:40]):
+                self.assertIn('shell', step)
+        guard = next(s['run'] for s in steps if 'arch=' in s.get('run', ''))
+        for target, code in (('s390x-unknown-linux-gnu', 0),
+                             ('s390x-unknown-linux-musl', 1),
+                             ('x86_64-pc-windows-msvc', 1)):
+            with self.subTest(target=target):
+                done = subprocess.run(
+                    ['bash', '-c', guard], capture_output=True, text=True,
+                    env={'PATH': os.environ['PATH'], 'TARGET': target,
+                         'GITHUB_ENV': os.devnull})
+                self.assertEqual(done.returncode, code, done.stdout + done.stderr)
+
+
+class SdistContracts(unittest.TestCase):
+    """The optional Python sdist: built and proven at its floor, then the interpreters with
+    no wheel are tried against it without blocking the run."""
+
+    @classmethod
+    def setUpClass(cls):
+        import yaml_lite
+        cls.text = (WORKFLOWS / 'hyper-build-wheels.yml').read_text()
+        cls.jobs = yaml_lite.load(cls.text)['jobs']
+
+    @staticmethod
+    def blob(job):
+        return '\n'.join(
+            str(s.get('run', '')) + ' ' + ' '.join(f'{k}: {v}' for k, v in (s.get('with') or {}).items())
+            for s in job['steps'])
+
+    def test_sdist_jobs_shape(self):
+        jobs = self.jobs
+        pin = jobs['build-wheels']['steps'][0]['uses']
+        self.assertTrue(pin.startswith('actions/checkout@'))
+        for name in ('build-sdist', 'sdist-fallthrough'):
+            with self.subTest(job=name):
+                first = jobs[name]['steps'][0]
+                self.assertEqual(first['uses'], pin)
+                self.assertNotIn('with', first)
+        config = jobs['sdist-config']
+        self.assertIn('sdist', config['outputs'])
+        runs = [str(s.get('run', '')) for s in config['steps']]
+        validate = next(i for i, s in enumerate(config['steps']) if s.get('name') == 'Validate Forge workflow revision')
+        forge = next(i for i, s in enumerate(config['steps']) if s.get('with', {}).get('path') == '.hyperforge')
+        self.assertLess(validate, forge)
+        self.assertEqual(config['steps'][forge]['with']['ref'], '${{ job.workflow_sha }}')
+        self.assertTrue(any('hyper_config.py shell' in r and 'sdist=$SDIST' in r for r in runs))
+
+        build = jobs['build-sdist']
+        self.assertEqual(build['needs'], 'sdist-config')
+        self.assertEqual(build['if'], "needs.sdist-config.outputs.sdist == 'true'")
+        self.assertNotIn('inputs.mode', build['if'])
+        for value in ('command: sdist', 'twine check --strict', 'manylinux2014_x86_64',
+                      'cp311-cp311', 'python:3.11-alpine', 'requires rustc', '/v/bin/python -I -c'):
+            self.assertIn(value, self.blob(build), value)
+        self.assertIsNone(re.search(r'(?<![/\w])python -I', self.blob(build)))
+        attest = next(s for s in build['steps'] if 'attest-build-provenance' in str(s.get('uses', '')))
+        wheels_attest = next(s for s in jobs['build-wheels']['steps']
+                             if 'attest-build-provenance' in str(s.get('uses', '')))
+        self.assertEqual(attest['if'], wheels_attest['if'])
+        self.assertEqual(attest['with']['subject-path'], 'python/dist/*.tar.gz')
+        upload = next(s for s in build['steps'] if 'upload-artifact' in str(s.get('uses', '')))
+        self.assertEqual(upload['with']['name'], 'pypi-wheels-sdist')
+        self.assertEqual(upload['with']['if-no-files-found'], 'error')
+        self.assertNotIn('if', upload)
+
+        fall = jobs['sdist-fallthrough']
+        self.assertIs(fall['continue-on-error'], True)
+        self.assertEqual(fall['needs'], 'build-sdist')
+        self.assertEqual(fall['strategy']['matrix']['python'], ['3.13t', '3.14t', 'pypy3.11'])
+        for value in ('GITHUB_STEP_SUMMARY', 'cp -rL python/tests "$RUNNER_TEMP/suite/tests"',
+                      'mkdir -p "$RUNNER_TEMP/suite"', '"$RUNNER_TEMP/v/bin/pip" install pytest mypy',
+                      '"$RUNNER_TEMP/v/bin/python" -m pytest -rs', '_is_gil_enabled', '__file__'):
+            self.assertIn(value, self.blob(fall), value)
+        self.assertIsNone(re.search(r'(?<![/\w])python -I', self.blob(fall)))
+
+        for name in ('sdist-config', 'build-sdist', 'sdist-fallthrough'):
+            for step in jobs[name]['steps']:
+                if 'run' in step:
+                    with self.subTest(job=name, step=step.get('name')):
+                        self.assertIn('shell', step)
+
+        order = [m.start() for m in (re.search(rf'^  {j}:', self.text, re.M)
+                                      for j in ('sdist-config', 'build-sdist', 'sdist-fallthrough', 'build-wheels'))]
+        self.assertEqual(order, sorted(order))
+
+
+class CsharpFrameworkContracts(unittest.TestCase):
+    """csharp_aot_frameworks and csharp_extra_runtime: inert when empty, and the C# test step
+    takes an absolute project path so a multi-targeted project loads."""
+
+    @classmethod
+    def setUpClass(cls):
+        import yaml_lite
+        cls.text = (WORKFLOWS / 'hyper-build-native.yml').read_text()
+        cls.workflow = yaml_lite.load(cls.text)
+        cls.inputs = cls.workflow['on']['workflow_call']['inputs']
+        cls.steps = cls.workflow['jobs']['build-native']['steps']
+        cls.musl_dir = WORKFLOWS.parent / 'actions' / 'musl-suite'
+        cls.suite = (cls.musl_dir / 'suite-musl.sh').read_text()
+        cls.action = (cls.musl_dir / 'action.yml').read_text()
+
+    def step(self, needle):
+        found = [s for jb in self.workflow['jobs'].values() for s in jb.get('steps', [])
+                 if needle in str(s.get('name', ''))]
+        self.assertEqual(len(found), 1, needle)
+        return found[0]
+
+    def test_framework_inputs_default_empty(self):
+        for name in ('csharp_aot_frameworks', 'csharp_extra_runtime'):
+            with self.subTest(input=name):
+                self.assertIn(name, self.inputs)
+                self.assertIs(self.inputs[name]['required'], False)
+                self.assertEqual(self.inputs[name]['default'], '')
+                self.assertEqual(self.inputs[name]['type'], 'string')
+                self.assertIn('description', self.inputs[name])
+        self.assertIn('NETSDK1129', self.inputs['csharp_aot_frameworks']['description'])
+        self.assertIn('every target framework', self.inputs['csharp_extra_runtime']['description'])
+
+    def test_setup_dotnet_adds_the_extra_runtime_only_when_asked(self):
+        steps = [s for s in self.steps if 'actions/setup-dotnet' in str(s.get('uses', ''))]
+        self.assertEqual(len(steps), 1)
+        with_ = steps[0]['with']
+        self.assertEqual(with_['global-json-file'], 'global.json')
+        self.assertEqual(
+            with_['dotnet-version'],
+            "${{ inputs.csharp_extra_runtime != '' && format('{0}.x', inputs.csharp_extra_runtime) || '' }}")
+
+    def test_aot_steps_loop_over_frameworks(self):
+        publish = self.step('Native AOT publish')['run']
+        self.assertIn('${{ inputs.csharp_aot_frameworks }}', publish)
+        self.assertIn('-f "$tfm"', publish)
+        self.assertIn('aot-out/$tfm', publish)
+        self.assertIn('out=aot-out\n', publish)  # the empty list keeps today's single publish
+        self.assertIn('-o "$out"', publish)
+        self.assertIn('tee -a aot-publish.log', publish)
+        self.assertIn('ls "$out" |', publish)
+        run = self.step('Run the AOT-published binary')['run']
+        self.assertIn('${{ inputs.csharp_aot_frameworks }}', run)
+        self.assertIn('aot-out/$tfm/$name', run)
+        self.assertIn('exe="aot-out/$name"', run)
+
+    def test_csharp_test_step_uses_an_absolute_project_path(self):
+        step = self.step('Test C# bindings')
+        self.assertEqual(step['shell'], 'bash')
+        self.assertEqual(step['env']['CSHARP_TEST_PROJECT'], '${{ inputs.csharp_test_project }}')
+        self.assertIn('--project "$GITHUB_WORKSPACE/$CSHARP_TEST_PROJECT"', step['run'])
+        self.assertNotIn('inputs.', step['run'])
+        # the musl suite does the same, from /work
+        self.assertIn('dotnet test --project "/work/$TEST_PROJECT"', self.suite)
+
+    def test_musl_suite_passes_both_inputs(self):
+        step = self.step('C# on Alpine')
+        self.assertEqual(step['with']['csharp_aot_frameworks'], '${{ inputs.csharp_aot_frameworks }}')
+        self.assertEqual(step['with']['csharp_extra_runtime'], '${{ inputs.csharp_extra_runtime }}')
+        for name in ('csharp_aot_frameworks', 'csharp_extra_runtime'):
+            self.assertIn(f'  {name}:', self.action)
+        self.assertIn('CSHARP_AOT_FRAMEWORKS: ${{ inputs.csharp_aot_frameworks }}', self.action)
+        self.assertIn('CSHARP_EXTRA_RUNTIME: ${{ inputs.csharp_extra_runtime }}', self.action)
+        self.assertIn('extra_mounts=()', self.suite)
+        self.assertIn('for tfm in ${AOT_FRAMEWORKS:--}', self.suite)
+        self.assertIn('/work/aot-out/$tfm', self.suite)
+        self.assertIn('/extra-runtime', self.suite)
+        self.assertIn('mcr.microsoft.com/dotnet/runtime:${CSHARP_EXTRA_RUNTIME}-alpine', self.suite)
+
+
+class JniContracts(unittest.TestCase):
+    """java_jni: off by default, ahead of TypeScript in every job, and the FFM Java steps
+    step aside for it."""
+    ATTEST = ("inputs.attest_native && inputs.mode != 'pr'", 'github.event.pull_request.head.repo.full_name == github.repository')
+
+    @classmethod
+    def setUpClass(cls):
+        import yaml_lite
+        cls.workflow = yaml_lite.load((WORKFLOWS / 'hyper-build-native.yml').read_text())
+        cls.inputs = cls.workflow['on']['workflow_call']['inputs']
+        cls.jobs = cls.workflow['jobs']
+        cls.core = yaml_lite.load((WORKFLOWS / 'hyper-check-core.yml').read_text())
+        cls.maven = [yaml_lite.load((WORKFLOWS / n).read_text())
+                     for n in ('hyper-pack-maven.yml', 'hyper-publish-maven.yml')]
+
+    def steps(self, job):
+        return self.jobs[job]['steps']
+
+    @staticmethod
+    def index(steps, predicate):
+        return next(i for i, s in enumerate(steps) if predicate(s))
+
+    def test_jni_inputs_default_off(self):
+        for spec, name, default, kind in ((self.inputs, 'java_jni', False, 'boolean'),
+                                          (self.inputs, 'jdk_floor_version', '', 'string'),
+                                          (self.core['on']['workflow_call']['inputs'], 'lint_java_jni', False, 'boolean')):
+            with self.subTest(input=name):
+                self.assertIn(name, spec)
+                self.assertIs(spec[name]['required'], False)
+                self.assertEqual(spec[name]['default'], default)
+                self.assertEqual(spec[name]['type'], kind)
+                self.assertTrue(spec[name]['description'])
+        for workflow in self.maven:
+            self.assertIs(workflow['on']['workflow_call']['inputs']['java_jni']['default'], False)
+
+    def test_jni_steps_lead_typescript_in_every_job(self):
+        def jni(s):
+            return 'inputs.java_jni' in str(s.get('if', ''))
+        def node(s):
+            return s.get('uses', '').startswith('actions/setup-node@')
+        steps = self.steps('build-native')
+        first = self.index(steps, jni)
+        self.assertGreater(first, self.index(steps, lambda s: s.get('name') == "Build this leg's static libraries"))
+        self.assertLess(first, self.index(steps, node))
+        steps = self.steps('build-native-osx-x64')
+        first = self.index(steps, jni)
+        self.assertGreater(first, self.index(steps, lambda s: s.get('name') == 'Attest native build provenance'))
+        self.assertLess(first, self.index(steps, node))
+        steps = self.steps('build-native-musl')
+        suite = self.index(steps, lambda s: s.get('with', {}).get('binding') == 'java-jni')
+        self.assertLess(suite, self.index(steps, lambda s: str(s.get('name', '')).startswith('Node on Alpine')))
+        self.assertGreater(suite, self.index(steps, lambda s: s.get('name') == "Build this leg's static library"))
+        self.assertEqual(steps[suite]['with']['image'], 'eclipse-temurin:${{ inputs.jdk_version }}-jdk-alpine')
+        self.assertEqual(steps[suite]['with']['jdk_floor_version'], '${{ inputs.jdk_floor_version }}')
+        self.assertIn('inputs.java && inputs.java_jni', steps[suite]['if'])
+        native = next(s for s in steps if s.get('uses', '').endswith('actions/musl-native'))
+        self.assertEqual(native['with']['jni'], '${{ inputs.java && inputs.java_jni }}')
+
+    def test_ffm_java_steps_step_aside_for_jni(self):
+        old = []
+        for job in ('build-native', 'build-native-musl'):
+            for s in self.steps(job):
+                name = str(s.get('name', ''))
+                if (s.get('uses', '').startswith('actions/setup-java@') or name.startswith('Place native lib for Java')
+                        or name.startswith('Test Java bindings') or name.startswith('Java on Alpine')) \
+                        and 'inputs.java_jni' not in str(s.get('if', '')).replace('!inputs.java_jni', ''):
+                    old.append(s)
+        self.assertEqual(len(old), 4, old)
+        for s in old:
+            with self.subTest(step=s.get('name') or s.get('uses')):
+                self.assertIn('!inputs.java_jni', s['if'])
+                self.assertNotIn('steps.jdk_floor', str(s))
+
+    def test_jni_attestations_follow_the_cores_condition(self):
+        found = 0
+        for job in ('build-native', 'build-native-osx-x64'):
+            for s in self.steps(job):
+                if s.get('uses', '').startswith('actions/attest-build-provenance@') and 'jni' in str(s.get('with', '')):
+                    found += 1
+                    for part in self.ATTEST:
+                        self.assertIn(part, s['if'], s)
+                    self.assertIn('inputs.java_jni', s['if'])
+        self.assertEqual(found, 2)
+        action = (WORKFLOWS.parent / 'actions' / 'musl-native' / 'action.yml').read_text()
+        import yaml_lite
+        steps = yaml_lite.load(action)['runs']['steps']
+        attest = [s for s in steps if s.get('uses', '').startswith('actions/attest-build-provenance@') and 'jni' in str(s.get('with', ''))]
+        self.assertEqual(len(attest), 1)
+        self.assertIn("inputs.attest == 'true'", attest[0]['if'])
+        self.assertIn("inputs.jni == 'true'", attest[0]['if'])
+
+    def test_jni_build_steps_carry_the_gradle_floor_and_the_export_check(self):
+        text = '\n'.join(str(s) for s in self.steps('build-native'))
+        for value in ('cargo build --release --locked --lib', 'GLIBC_2.34', 'nm -D --defined-only', 'JNI_OnLoad',
+                      'core_exports()', './gradlew test testFloor checkSuiteParity javadoc --console=plain',
+                      '-Porg.gradle.java.installations.auto-detect=false', 'jni-${{ matrix.rid }}'):
+            self.assertIn(value, text)
+        osx = '\n'.join(str(s) for s in self.steps('build-native-osx-x64'))
+        for value in ('--target x86_64-apple-darwin', 'lipo -archs', 'os.arch = x86_64', 'jni-osx-x64',
+                      './gradlew test testFloor checkSuiteParity javadoc'):
+            self.assertIn(value, osx)
+
+    def test_lint_java_jni_runs_the_std_tests_and_the_no_std_build(self):
+        job = self.core['jobs']['lint-java-jni']
+        self.assertEqual(job['if'], 'inputs.lint_java_jni')
+        self.assertEqual(job['runs-on'], 'ubuntu-26.04')
+        steps = job['steps']
+        runs = [s for s in steps if 'run' in s]
+        blob = '\n'.join(s['run'] for s in runs)
+        for value in ('cargo fmt --check', 'cargo clippy --release --locked --all-targets -- -D warnings',
+                      'cargo test --locked', 'cargo build --release --locked --lib', 'readelf -d', 'libc.so.6',
+                      'CARGO_PROFILE_RELEASE_PANIC=unwind cargo build --release --locked --example no_panic --features no-panic',
+                      'nm -D --defined-only', 'JNI_OnLoad', "hyper_config.load('../..').core_exports()"):
+            self.assertIn(value, blob)
+        for s in runs:
+            with self.subTest(run=s['run'][:40]):
+                self.assertEqual(s['shell'], 'bash')
+                self.assertEqual(s['working-directory'], 'java/jni')
+        toolchain = next(s for s in steps if s.get('uses', '').startswith('dtolnay/rust-toolchain@'))
+        self.assertEqual(toolchain['with']['components'], 'rustfmt, clippy')
+
 
 if __name__ == '__main__':
     unittest.main()

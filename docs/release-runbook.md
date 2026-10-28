@@ -92,11 +92,11 @@ failed only on the real registries.
   Run it on at least a wheel and a Go archive from the module cache (the two that fail
   without the predicate type), the served `.nupkg` and a gem. Build provenance is the
   second check: the gems, the inventory and the pre-push `.nupkg` verify with `--repo` alone
-  (signed at the tag by the consumer's `release.yml`); the wheels, the committed natives and
+  (signed at the tag by the consumer's `release.yml`); the wheels and the sdist, the committed natives and
   the natives inside the `.nupkg` and the jar were built at A by the Forge's workflows and
   need `--signer-repo SkunkWerkx/.github --source-digest <A>`. `--owner SkunkWerkx` also
   accepts them, with less said. PyPI additionally holds a PEP 740 publish attestation per
-  wheel, filed by the publish action, visible on each file's PyPI page. It must name
+  wheel and sdist, filed by the publish action, visible on each file's PyPI page. It must name
   `release.yml`, as every earlier release's does; PyPI flags a release whose publishing
   workflow differs from the one before as a change of provenance.
 - `gh attestation verify` prints nothing on success when stdout is not a TTY: check the exit

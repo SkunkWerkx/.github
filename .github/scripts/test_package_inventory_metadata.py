@@ -72,7 +72,17 @@ def write_cran(root, crate, version, **changes):
     write_tar(root / f'cran/{crate}_{version}.tar.gz', r_entries(crate, version, **changes))
 
 
-def create_packages(root, crate='hypercast', version='0.10.0'):
+def sdist_entries(crate, version, lock=True, cargo_version=None, cargo=True):
+    top = f'{crate}-{version}'
+    entries = [(f'{top}/PKG-INFO', f'Metadata-Version: 2.3\nName: {crate}\nVersion: {version}\n'.encode())]
+    if cargo:
+        entries.append((f'{top}/rust/Cargo.toml', f'[package]\nname = "{crate}"\nversion = "{cargo_version or version}"\n'.encode()))
+    if lock:
+        entries.append((f'{top}/rust/Cargo.lock', b'version = 4\n'))
+    return entries
+
+
+def create_packages(root, crate='hypercast', version='0.10.0', sdist=False):
     """Populate the exact package layout used by release_inventory tests."""
     for suffix in ('nupkg', 'snupkg'):
         write_zip(root / f'nuget/{crate}.{version}.{suffix}', [(f'{crate}.nuspec',
@@ -88,6 +98,8 @@ def create_packages(root, crate='hypercast', version='0.10.0'):
         metadata = f'--- !ruby/object:Gem::Specification\nname: {name}\nversion: !ruby/object:Gem::Version\n  version: {version}\nplatform: ruby\n'
         write_tar(root / f'ruby/{filename}', [('metadata.gz', gzip.compress(metadata.encode())),
                                             ('data.tar.gz', gzip.compress(b''))], 'w')
+    if sdist:
+        write_tar(root / f'pypi/{crate}-{version}.tar.gz', sdist_entries(crate, version))
     crate_file = root / f'crate/{crate}-{version}.crate'
     write_tar(crate_file, [(f'{crate}-{version}/Cargo.toml',
                            f'[package]\nname="{crate}"\nversion="{version}"\n'.encode())])
@@ -305,8 +317,53 @@ class PackageMetadataTests(unittest.TestCase):
         write_cran(self.root, 'hypercast', '0.10.0')
         self.validate()
 
+    def sdist_cfg(self, sdist=True):
+        return SimpleNamespace(**vars(self.m.DEFAULTS) | {'sdist': sdist})
+
+    def validate_sdist(self):
+        self.m.validate_package_metadata(self.root, 'hypercast', '0.10.0', self.sdist_cfg())
+
+    def test_accepts_an_sdist_when_the_config_says_so(self):
+        create_packages(self.root, sdist=True)
+        self.validate_sdist()
+
+    def test_sdist_count_is_exact(self):
+        with self.assertRaisesRegex(ValueError, 'expected 17 wheels and 1 sdist'):
+            self.validate_sdist()
+        create_packages(self.root, sdist=True)
+        with self.assertRaisesRegex(ValueError, 'expected 17 wheels and 0 sdist'):
+            self.m.validate_package_metadata(self.root, 'hypercast', '0.10.0', self.sdist_cfg(False))
+        write_tar(self.root / 'pypi/hypercast-0.10.0-1.tar.gz', sdist_entries('hypercast', '0.10.0'))
+        with self.assertRaisesRegex(ValueError, 'expected 17 wheels and 1 sdist'):
+            self.validate_sdist()
+
+    def test_sdist_rejects_wrong_identity(self):
+        path = self.root / 'pypi/hypercast-0.10.0.tar.gz'
+        top = 'hypercast-0.10.0'
+        stale = [(n, d.replace(b'Version: 0.10.0', b'Version: 0.9.0')) for n, d in sdist_entries('hypercast', '0.10.0')]
+        wrong_name = [(n, d.replace(b'Name: hypercast', b'Name: other')) for n, d in sdist_entries('hypercast', '0.10.0')]
+        two_tops = sdist_entries('hypercast', '0.10.0') + [('other-0.10.0/README', b'x')]
+        wrong_top = [(n.replace(top, 'hypercast-0.9.0', 1), d) for n, d in sdist_entries('hypercast', '0.10.0')]
+        for label, entries in (('stale PKG-INFO', stale), ('wrong Name', wrong_name),
+                               ('two top directories', two_tops), ('wrong top directory', wrong_top)):
+            with self.subTest(label):
+                create_packages(self.root, sdist=False)
+                write_tar(path, entries)
+                with self.assertRaises(ValueError):
+                    self.validate_sdist()
+
+    def test_sdist_must_carry_the_crate_and_its_lock(self):
+        path = self.root / 'pypi/hypercast-0.10.0.tar.gz'
+        for label, entries in (('no Cargo.toml', sdist_entries('hypercast', '0.10.0', cargo=False)),
+                               ('stale Cargo.toml', sdist_entries('hypercast', '0.10.0', cargo_version='0.9.0')),
+                               ('no Cargo.lock', sdist_entries('hypercast', '0.10.0', lock=False))):
+            with self.subTest(label):
+                write_tar(path, entries)
+                with self.assertRaises(ValueError):
+                    self.validate_sdist()
+
     def test_counts_follow_the_consumer_config(self):
-        cfg = SimpleNamespace(wheels=24, ruby_platforms=dict(list(RUBY_PLATFORMS.items())[:6]),
+        cfg = SimpleNamespace(wheels=24, sdist=False, ruby_platforms=dict(list(RUBY_PLATFORMS.items())[:6]),
                               node_platforms=NODE_PLATFORMS)
         with self.assertRaisesRegex(ValueError, '24 wheels'):
             self.m.validate_package_metadata(self.root, 'hypercast', '0.10.0', cfg)

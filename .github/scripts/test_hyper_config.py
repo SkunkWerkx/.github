@@ -30,6 +30,26 @@ class HyperConfigTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_sdist_is_off_by_default_and_reaches_shell_and_json(self):
+        self.assertIs(hyper_config.HyperConfig(MINIMAL).sdist, False)
+        self.assertIs(hyper_config.HyperConfig({**MINIMAL, 'sdist': True}).sdist, True)
+        write_config(self.root, {**MINIMAL, 'sdist': True})
+        shell = subprocess.run(['bash', '-c', f'eval "$(python3 {SCRIPTS / "hyper_config.py"} shell --root {self.root})"; echo $SDIST'],
+                               capture_output=True, text=True, check=True)
+        self.assertEqual(shell.stdout.strip(), 'true')
+        data = json.loads(subprocess.run([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'json', '--root', str(self.root)],
+                                         capture_output=True, text=True, check=True).stdout)
+        self.assertIs(data['sdist'], True)
+        write_config(self.root)
+        off = subprocess.run(['bash', '-c', f'eval "$(python3 {SCRIPTS / "hyper_config.py"} shell --root {self.root})"; echo $SDIST'],
+                             capture_output=True, text=True, check=True)
+        self.assertEqual(off.stdout.strip(), 'false')
+
+    def test_sdist_must_be_a_boolean(self):
+        for bad in ('false', 1, None):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'sdist must be true or false'):
+                hyper_config.HyperConfig({**MINIMAL, 'sdist': bad})
+
     def test_defaults_derive_every_layout_name_from_crate_and_project(self):
         cfg = hyper_config.HyperConfig(MINIMAL)
         self.assertEqual(cfg.lib_name('linux-x64'), 'libhyperuuid.so')
@@ -161,6 +181,25 @@ class HyperConfigTests(unittest.TestCase):
         data = json.loads(subprocess.check_output([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'json',
                                                    '--root', str(self.root)], text=True))
         self.assertEqual(data['node_platforms'], hyper_config.NODE_PLATFORMS)
+
+    def test_jni_lib_names(self):
+        cfg = hyper_config.HyperConfig(MINIMAL)
+        names = cfg.jni_lib_names
+        self.assertEqual(sorted(names), sorted(hyper_config.RIDS))
+        self.assertEqual(len(names), 8)
+        crate = cfg.crate
+        self.assertEqual(cfg.jni_lib_name('win-arm64'), f'{crate}_jni.dll')
+        self.assertEqual(cfg.jni_lib_name('osx-x64'), f'lib{crate}_jni.dylib')
+        self.assertEqual(cfg.jni_lib_name('linux-musl-arm64'), f'lib{crate}_jni.so')
+        write_config(self.root)
+        script = subprocess.check_output([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'shell',
+                                          '--root', str(self.root)], text=True)
+        self.assertIn('declare -A JNI_LIB_NAMES=(', script)
+        out = subprocess.check_output(
+            ['bash', '-euo', 'pipefail', '-c',
+             script + 'echo "${JNI_LIB_NAMES[win-x64]} ${JNI_LIB_NAMES[osx-arm64]} ${#JNI_LIB_NAMES[@]}"'],
+            text=True).strip()
+        self.assertEqual(out, f'{crate}_jni.dll lib{crate}_jni.dylib 8')
 
 
 if __name__ == '__main__':

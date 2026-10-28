@@ -436,6 +436,36 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
                 with self.assertRaisesRegex(ValueError, message):
                     self.m.build_inventory(self.root, self.identity, natives, self.workspace)
 
+    def test_sdist_layout_is_exact(self):
+        create_packages(self.root, sdist=True)
+        self.workspace, natives = self.natives()
+        base = dict(crate='hypercast', project='HyperCast',
+                    exports=dict(sources=['rust/src/ffi.rs'], patterns=['x'], prefixes=['hypercast_']))
+        path = self.workspace / '.github/hyper.json'
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({**base, 'sdist': True}))
+        sdist = self.root / 'pypi/hypercast-0.10.0.tar.gz'
+        body = sdist.read_bytes()
+        build = lambda: self.m.build_inventory(self.root, self.identity, natives, self.workspace)
+        result = build()
+        self.assertEqual(len([e for e in result['files'] if e['path'].startswith('pypi/')]), 18)
+        sdist.unlink()
+        with self.assertRaisesRegex(ValueError, 'sdist'):
+            build()
+        sdist.write_bytes(body)
+        extra = self.root / 'pypi/hypercast-0.10.0-1.tar.gz'
+        extra.write_bytes(body)
+        with self.assertRaisesRegex(ValueError, 'sdist'):
+            build()
+        extra.unlink()
+        sdist.rename(self.root / 'pypi/hypercast-0.9.0.tar.gz')
+        with self.assertRaisesRegex(ValueError, 'sdist'):
+            build()
+        (self.root / 'pypi/hypercast-0.9.0.tar.gz').rename(sdist)
+        path.write_text(json.dumps(base))
+        with self.assertRaisesRegex(ValueError, 'sdist'):
+            build()
+
     def npm_registry(self, published):
         """A fake fetch over registry.npmjs.org holding `published` (local tarball -> served bytes)."""
         served, requests = {}, []

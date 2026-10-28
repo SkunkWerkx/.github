@@ -30,7 +30,7 @@ NPM_SCOPE = '@skunkwerkx'
 # The corpus members every R source tarball must carry (tests/testthat/corpus/), so a
 # tarball missing one fails the tag run, not the CRAN check weeks later.
 R_CORPUS_FILES = ('v5.json', 'sql_order.json', 'sql_order_refused.json', 'timestamp.json', 'inspect.json')
-DEFAULTS = SimpleNamespace(wheels=hyper_config.WHEELS, ruby_platforms=hyper_config.RUBY_PLATFORMS,
+DEFAULTS = SimpleNamespace(wheels=hyper_config.WHEELS, sdist=False, ruby_platforms=hyper_config.RUBY_PLATFORMS,
                            node_platforms=hyper_config.NODE_PLATFORMS)
 
 
@@ -123,6 +123,26 @@ def wheel(path, crate, version):
     normalize = lambda value: re.sub(r'[-_.]+', '-', str(value)).lower()
     if normalize(name) != normalize(crate) or str(actual_version) != version:
         raise ValueError(f'wheel embedded package name/version differs: {path.name}')
+
+
+def sdist(path, crate, version):
+    """The Python source distribution: PEP 625 name, one top directory, the crate and its lock."""
+    entries = tar_entries(path)
+    top = f'{crate}-{version}'
+    if {name.split('/', 1)[0] for name in entries} != {top}:
+        raise ValueError(f'sdist must have exactly one top directory, {top}: {path.name}')
+    metadata = BytesParser(policy=policy.default).parsebytes(
+        one((data for name, data in entries.items() if name == f'{top}/PKG-INFO'), 'sdist PKG-INFO'))
+    name = one(metadata.get_all('Name', []), 'sdist Name')
+    actual_version = one(metadata.get_all('Version', []), 'sdist Version')
+    normalize = lambda value: re.sub(r'[-_.]+', '-', str(value)).lower()
+    if normalize(name) != normalize(crate) or str(actual_version) != version:
+        raise ValueError(f'sdist embedded package name/version differs: {path.name}')
+    manifest = entries.get(f'{top}/rust/Cargo.toml')
+    if manifest is None or tomllib.loads(manifest.decode()).get('package', {}).get('version') != version:
+        raise ValueError(f'sdist rust/Cargo.toml is missing or not at {version}: {path.name}')
+    if f'{top}/rust/Cargo.lock' not in entries:
+        raise ValueError(f'sdist rust/Cargo.lock is missing: {path.name}')
 
 
 def yaml_scalar(value):
@@ -264,10 +284,14 @@ def validate_package_metadata(root: Path, crate: str, version: str, cfg=None) ->
             nuget(path, crate, version)
         wheels = list((root / 'pypi').rglob('*.whl'))
         gems = list((root / 'ruby').rglob('*.gem'))
-        if len(wheels) != cfg.wheels or len(gems) != gem_count:
-            raise ValueError(f'expected {cfg.wheels} wheels and {gem_count} RubyGems')
+        sdists = list((root / 'pypi').rglob('*.tar.gz'))
+        if len(wheels) != cfg.wheels or len(sdists) != int(cfg.sdist) or len(gems) != gem_count:
+            raise ValueError(f'expected {cfg.wheels} wheels and {int(cfg.sdist)} sdist, '
+                             f'and {gem_count} RubyGems')
         for path in wheels:
             wheel(path, crate, version)
+        for path in sdists:
+            sdist(path, crate, version)
         for path in gems:
             gem(path, crate, version)
         rust_crate(one((root / 'crate').rglob('*.crate'), 'crate package'), crate, version)

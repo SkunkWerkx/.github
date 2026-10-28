@@ -3,8 +3,15 @@
 #
 #   suite-musl.sh <binding> <crate> <rid> <repo-root> <musl-lib-dir>
 #
-# <binding> is one of: csharp, go, java, node, php, python, ruby. <rid> is linux-musl-x64 or linux-musl-arm64 and has to match
+# <binding> is one of: csharp, go, java, java-jni, node, php, python, ruby. <rid> is linux-musl-x64 or linux-musl-arm64 and has to match
 # the container's architecture (DOCKER_PLATFORM overrides the host's, as in build-musl.sh).
+# The csharp suite reads CSHARP_TEST_PROJECT, CSHARP_RUNTIMES_DIR and CSHARP_AOT_PROJECT, plus
+# two optional ones for a multi-targeted project: CSHARP_AOT_FRAMEWORKS (space-separated TFMs,
+# one `-f` AOT publish and run each; empty keeps the single publish) and CSHARP_EXTRA_RUNTIME
+# (a runtime channel such as 10.0, copied from its runtime image into the SDK image so
+# `dotnet test` can run the older target frameworks; empty adds none).
+# The java-jni suite reads JDK_FLOOR_VERSION (the floor JDK's Temurin major) and needs the
+# JNI shim, lib<crate>_jni.so, beside the core in <musl-lib-dir>.
 # SUITE_IMAGE overrides the binding's default image, which is how the same suite runs a
 # second time on the oldest runtime the binding claims: `php:8.2-cli-alpine` beside
 # `php:8.5-cli-alpine`, `ruby:3.3-alpine` beside `ruby:4.0-alpine`. A floor nothing runs is
@@ -40,9 +47,10 @@ platform_args=()
 # the two things outside a binding's own directory its tests read. A suite that needs more
 # of the caller's environment inside the container names it in extra_env first.
 extra_env=()
+extra_mounts=()
 in_alpine() {
   docker run --rm "${platform_args[@]}" \
-    -v "$repo_root:/src:ro" -v "$lib_dir:/musl:ro" \
+    -v "$repo_root:/src:ro" -v "$lib_dir:/musl:ro" "${extra_mounts[@]}" \
     -e CRATE="$crate" -e RID="$rid" "${extra_env[@]}" \
     "$1" sh -euc '
       mkdir -p /work/rust
@@ -62,7 +70,20 @@ case "$binding" in
   # pipefail, and a pipe would report tee's exit status and hide a failed publish.
   csharp)
     : "${CSHARP_TEST_PROJECT:?the C# suite needs CSHARP_TEST_PROJECT}" "${CSHARP_RUNTIMES_DIR:?the C# suite needs CSHARP_RUNTIMES_DIR}"
-    extra_env=(-e TEST_PROJECT="$CSHARP_TEST_PROJECT" -e RUNTIMES_DIR="$CSHARP_RUNTIMES_DIR" -e AOT_PROJECT="${CSHARP_AOT_PROJECT:-}")
+    extra_env=(-e TEST_PROJECT="$CSHARP_TEST_PROJECT" -e RUNTIMES_DIR="$CSHARP_RUNTIMES_DIR" -e AOT_PROJECT="${CSHARP_AOT_PROJECT:-}" -e AOT_FRAMEWORKS="${CSHARP_AOT_FRAMEWORKS:-}")
+    # An older target framework's runtime: the SDK image carries only its own, and Alpine has
+    # no apt-style second install, so the runtime image's shared framework is copied out on
+    # the host and mounted in.
+    if [ -n "${CSHARP_EXTRA_RUNTIME:-}" ]; then
+      runtime_tmp=$(mktemp -d)
+      cid=
+      trap 'rm -rf "$runtime_tmp"; [ -z "$cid" ] || docker rm "$cid" >/dev/null 2>&1 || true' EXIT
+      cid=$(docker create "${platform_args[@]}" "mcr.microsoft.com/dotnet/runtime:${CSHARP_EXTRA_RUNTIME}-alpine")
+      docker cp "$cid:/usr/share/dotnet/shared/Microsoft.NETCore.App/." "$runtime_tmp/"
+      docker rm "$cid" >/dev/null
+      cid=
+      extra_mounts=(-v "$runtime_tmp:/extra-runtime:ro")
+    fi
     in_alpine "${SUITE_IMAGE:-mcr.microsoft.com/dotnet/sdk:11.0-alpine-aot}" '
       (cd /src && tar --exclude=bin --exclude=obj --exclude=runtimes --exclude=TestResults \
           --exclude=BenchmarkDotNet.Artifacts -cf - csharp global.json LICENSE) | tar -C /work -xf -
@@ -70,23 +91,32 @@ case "$binding" in
       mkdir -p "$RUNTIMES_DIR/$RID/native"
       cp "/musl/lib$CRATE.so" "$RUNTIMES_DIR/$RID/native/"
       echo "== .NET SDK $(dotnet --version), Alpine $(cat /etc/alpine-release), $RID"
-      dotnet test --project "$TEST_PROJECT" -c Release
+      if [ -d /extra-runtime ]; then
+        cp -a /extra-runtime/. /usr/share/dotnet/shared/Microsoft.NETCore.App/
+      fi
+      # An absolute project path: a multi-targeted project fails to load a relative one
+      # (the path is re-resolved against the project directory and doubles).
+      dotnet test --project "/work/$TEST_PROJECT" -c Release
       if [ -n "$AOT_PROJECT" ]; then
-        dotnet publish "$AOT_PROJECT" -c Release -r "$RID" -p:PublishAot=true -o /work/aot-out \
-          > /tmp/aot.log 2>&1 || { cat /tmp/aot.log; echo "::error::Native AOT publish failed for $RID"; exit 1; }
-        cat /tmp/aot.log
-        if grep -nE "warning (IL|AOT)[0-9]{4}" /tmp/aot.log; then
-          echo "::error::Native AOT publish emitted trim/AOT warnings on $RID"; exit 1
-        fi
-        # Where the package has a static library for this RID the core is linked into
-        # the executable, and the shared library must not have been published beside it.
-        if ls "$(dirname "$RUNTIMES_DIR")/staticlibs/$RID"/* >/dev/null 2>&1; then
-          if ls /work/aot-out | grep -E "^lib$CRATE\.so$"; then
-            echo "::error::lib$CRATE.so was published beside an executable that should have it linked in"; exit 1
+        # No frameworks named: today'"'"'s single publish into aot-out.
+        for tfm in ${AOT_FRAMEWORKS:--}; do
+          if [ "$tfm" = "-" ]; then out=/work/aot-out; set --; else out="/work/aot-out/$tfm"; set -- -f "$tfm"; fi
+          dotnet publish "$AOT_PROJECT" -c Release -r "$RID" -p:PublishAot=true "$@" -o "$out" \
+            > /tmp/aot.log 2>&1 || { cat /tmp/aot.log; echo "::error::Native AOT publish failed for $RID $tfm"; exit 1; }
+          cat /tmp/aot.log
+          if grep -nE "warning (IL|AOT)[0-9]{4}" /tmp/aot.log; then
+            echo "::error::Native AOT publish emitted trim/AOT warnings on $RID"; exit 1
           fi
-          echo "core linked into the executable: no lib$CRATE.so in the publish output"
-        fi
-        "/work/aot-out/$(basename "$AOT_PROJECT" .csproj)"
+          # Where the package has a static library for this RID the core is linked into
+          # the executable, and the shared library must not have been published beside it.
+          if ls "$(dirname "$RUNTIMES_DIR")/staticlibs/$RID"/* >/dev/null 2>&1; then
+            if ls "$out" | grep -E "^lib$CRATE\.so$"; then
+              echo "::error::lib$CRATE.so was published beside an executable that should have it linked in"; exit 1
+            fi
+            echo "core linked into the executable: no lib$CRATE.so in the publish output"
+          fi
+          "$out/$(basename "$AOT_PROJECT" .csproj)"
+        done
       fi
     '
     ;;
@@ -137,6 +167,34 @@ case "$binding" in
       cp "/musl/lib$CRATE.so" "src/main/resources/native/$RID/"
       chmod +x gradlew
       ./gradlew test :aot-smoke-test:run --console=plain
+    '
+    ;;
+
+  # The JNI base: both musl libraries on the classpath, then `test` on the image's JDK (25),
+  # `testFloor` on the floor JDK and the smoke program. The floor JDK is the one in the
+  # eclipse-temurin:<floor>-jdk-alpine image, copied out on the host and visible at
+  # /musl/jdk-floor (the read-only library mount), because Gradle is told to use exactly
+  # that install and nothing else (auto-detect off), as the other legs are.
+  java-jni)
+    [ -f "$lib_dir/lib${crate}_jni.so" ] || { echo "::error::no $lib_dir/lib${crate}_jni.so — run build-musl.sh with JNI=true first"; exit 1; }
+    : "${JDK_FLOOR_VERSION:?the java-jni suite needs JDK_FLOOR_VERSION}"
+    rm -rf "$lib_dir/jdk-floor"
+    cid=
+    trap 'rm -rf "$lib_dir/jdk-floor"; [ -z "$cid" ] || docker rm "$cid" >/dev/null 2>&1 || true' EXIT
+    cid=$(docker create "${platform_args[@]}" "eclipse-temurin:$JDK_FLOOR_VERSION-jdk-alpine")
+    docker cp "$cid:/opt/java/openjdk" "$lib_dir/jdk-floor"
+    docker rm "$cid" >/dev/null
+    cid=
+    in_alpine "${SUITE_IMAGE:-eclipse-temurin:25-jdk-alpine}" '
+      cp -r /src/java /work/java
+      cp /src/LICENSE /work/
+      cd /work/java
+      rm -rf build .gradle aot-smoke-test/build benchmarks/build jni/target src/main/resources/native
+      mkdir -p "src/main/resources/native/$RID"
+      cp "/musl/lib$CRATE.so" "/musl/lib${CRATE}_jni.so" "src/main/resources/native/$RID/"
+      chmod +x gradlew
+      ./gradlew test testFloor checkSuiteParity :aot-smoke-test:run --console=plain \
+        -Porg.gradle.java.installations.paths=/musl/jdk-floor -Porg.gradle.java.installations.auto-detect=false
     '
     ;;
 

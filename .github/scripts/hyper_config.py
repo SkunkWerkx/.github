@@ -15,7 +15,8 @@ with another. Optional keys: `abi_probe` (a C program compiled against the bundl
 and linked with each payload; default `.github/scripts/abi_probe.c`), `cdylib_smoke` (a
 Python script given a shared library and `rust/Cargo.toml`: each RID's in hyper-check-core.yml's
 check-cdylib, the committed linux-x64 one in release_guard.py), `wheels` (count,
-default 17), `ruby.abis` and `ruby.platforms`, `node.platforms` (RID -> napi platform
+default 17), `sdist` (boolean, default false: also publish the Python source
+distribution), `ruby.abis` and `ruby.platforms`, `node.platforms` (RID -> napi platform
 name), `go_targets`, `swift_targets`, `xcframework_slices`, `version_files` (path -> regex
 with one group around the version; the default list adds `typescript/package.json` and
 `r/DESCRIPTION` only when that binding's directory exists at the consumer's root).
@@ -76,6 +77,9 @@ class HyperConfig:
         self.abi_probe = data.get('abi_probe', '.github/scripts/abi_probe.c')
         self.cdylib_smoke = data.get('cdylib_smoke')
         self.wheels = int(data.get('wheels', WHEELS))
+        self.sdist = data.get('sdist', False)
+        if not isinstance(self.sdist, bool):
+            raise ValueError('sdist must be true or false')
         ruby = data.get('ruby', {})
         self.ruby_abis = tuple(ruby.get('abis', RUBY_ABIS))
         self.ruby_platforms = dict(ruby.get('platforms', RUBY_PLATFORMS))
@@ -102,6 +106,16 @@ class HyperConfig:
     @property
     def lib_names(self):
         return {rid: self.lib_name(rid) for rid in RIDS}
+
+    def jni_lib_name(self, rid):
+        """The Java binding's JNI shim, beside the core: {crate}_jni."""
+        if rid.startswith('win'):
+            return f'{self.crate}_jni.dll'
+        return f'lib{self.crate}_jni.dylib' if rid.startswith('osx') else f'lib{self.crate}_jni.so'
+
+    @property
+    def jni_lib_names(self):
+        return {rid: self.jni_lib_name(rid) for rid in RIDS}
 
     def archive_name(self, target):
         return f'{self.crate}.lib' if 'windows' in target else f'lib{self.crate}.a'
@@ -212,10 +226,12 @@ def shell(cfg):
         pairs = ' '.join(f'[{key}]={value}' for key, value in sorted(mapping.items()))
         return f'declare -A {name}=({pairs})'
     lines = [f'CRATE={cfg.crate}', f'PROJECT={cfg.project}', f'WHEELS={cfg.wheels}',
+             f'SDIST={"true" if cfg.sdist else "false"}',
              f'BUNDLE={cfg.bundle}', f'XCFRAMEWORK={cfg.xcframework}', f'HEADER={cfg.header}',
              f'NATIVE_EXTENSION={cfg.native_extension}',
              'RUBY_ABIS=(' + ' '.join(cfg.ruby_abis) + ')',
-             assoc('LIB_NAMES', cfg.lib_names), assoc('PHP_LIBS', cfg.php_libs),
+             assoc('LIB_NAMES', cfg.lib_names), assoc('JNI_LIB_NAMES', cfg.jni_lib_names),
+             assoc('PHP_LIBS', cfg.php_libs),
              assoc('RUBY_PLATFORMS', cfg.ruby_platforms), assoc('NODE_PLATFORMS', cfg.node_platforms),
              assoc('STATIC_TREES', {cfg.bundle: len(cfg.swift_targets),
                                     cfg.xcframework: len(cfg.xcframework_slices),
@@ -260,7 +276,7 @@ def main():
         for path in bump(cfg, args.root, args.version):
             print(path)
     else:
-        print(json.dumps(dict(crate=cfg.crate, project=cfg.project, wheels=cfg.wheels,
+        print(json.dumps(dict(crate=cfg.crate, project=cfg.project, wheels=cfg.wheels, sdist=cfg.sdist,
                               ruby_abis=cfg.ruby_abis, ruby_platforms=cfg.ruby_platforms,
                               node_platforms=cfg.node_platforms,
                               go_targets=cfg.go_targets, swift_targets=cfg.swift_targets,

@@ -15,7 +15,7 @@ made in the publication gate, before anything is uploaded, and preserved with th
 
 Subjects (about 90 per release) are every file in `inventory.json`:
 
-- the registry packages: the `.nupkg` and `.snupkg`, the nine gems, the 17 wheels, the
+- the registry packages: the `.nupkg` and `.snupkg`, the nine gems, the 17 wheels (and the sdist, from a consumer that sets `sdist`), the
   `.crate` with its saved registry request, the signed Maven bundle and the repository files
   inside it (the jar, the sources and javadoc jars, the `.pom`, their signatures), and, from
   a consumer with those bindings, the nine npm tarballs (the root package and one per
@@ -41,12 +41,12 @@ the push.
 | `schema` | `2` |
 | `repository` | `SkunkWerkx/<Repo>` |
 | `crate`, `version`, `tag` | the lowercase core name, the bare version, `v<version>` |
-| `source_sha` | A, the preparation commit the natives and wheels were built from |
+| `source_sha` | A, the preparation commit the natives, wheels and sdist were built from |
 | `staging_sha` | B, the tagged commit: A plus the committed natives |
 | `ci_run_id` | the release-mode `ci.yml` run at A |
 | `package_run_id` | the `release.yml` run that packed and attested |
 | `forge_sha` | the Forge commit that run used |
-| `files[]` | `path`, `size`, `sha256`, `location` (`packages` or `source`), `source_sha` (A for wheels and native libraries, B for packages assembled at the tag), `signer_repo` (the repository whose workflow signed the file's build provenance: `SkunkWerkx/.github` for Forge-built files, the consumer for the gems, the npm tarballs and the CRAN tarball). Both are absent for the staged metadata, which carries no build provenance; the release attestation is its only binding |
+| `files[]` | `path`, `size`, `sha256`, `location` (`packages` or `source`), `source_sha` (A for wheels, the sdist and native libraries, B for packages assembled at the tag), `signer_repo` (the repository whose workflow signed the file's build provenance: `SkunkWerkx/.github` for Forge-built files, the consumer for the gems, the npm tarballs and the CRAN tarball). Both are absent for the staged metadata, which carries no build provenance; the release attestation is its only binding |
 
 `inventory.json` itself carries SLSA build provenance at B, made in the same gate.
 

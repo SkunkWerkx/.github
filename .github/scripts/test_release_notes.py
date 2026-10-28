@@ -38,6 +38,19 @@ class ReleaseNotesTests(unittest.TestCase):
                       ' '.join(body.split()))
         self.assertIn('PEP 740', body)
 
+    def test_sdist_is_named_when_pypi_holds_one(self):
+        files = INVENTORY['files'] + [dict(path='pypi/x-1.0.0.tar.gz', location='packages')]
+        body = ' '.join(notes.notes(CHANGELOG, {**INVENTORY, 'files': files}).split())
+        self.assertIn('the Python wheels and sdist', body)
+        self.assertIn('every wheel and the sdist', body)
+
+    def test_cran_tarball_is_not_an_sdist(self):
+        files = INVENTORY['files'] + [dict(path='cran/x_1.0.0.tar.gz', location='packages')]
+        body = ' '.join(notes.notes(CHANGELOG, {**INVENTORY, 'files': files}).split())
+        self.assertIn('the Python wheels and the archives', body)
+        self.assertNotIn('sdist', body)
+        self.assertIn('for every wheel.', body)
+
     def test_missing_section_and_schema_one_are_errors(self):
         with self.assertRaisesRegex(ValueError, 'no "## \\[1.0.1\\]"'):
             notes.notes(CHANGELOG, {**INVENTORY, 'version': '1.0.1'})

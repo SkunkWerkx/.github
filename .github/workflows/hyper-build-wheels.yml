@@ -19,6 +19,12 @@ name: HyperForge — build and install-test the PyPI wheels
 # (`pypi-wheels-pyodide`), whose job also runs the binding's whole test suite inside Pyodide,
 # under Node and in headless Chrome.
 #
+# A caller that sets `"sdist": true` in .github/hyper.json also gets the source distribution
+# (`pypi-wheels-sdist`, `{crate}-{version}.tar.gz`), for the platforms and interpreters with
+# no wheel: build-sdist installs it at the crate's declared `rust-version` on manylinux2014
+# and on Alpine and proves one minor lower fails, and sdist-fallthrough reports, without
+# blocking, what a build from it does on free-threaded 3.13, 3.14 and PyPy.
+#
 # It runs in CI rather than only at the tag: the native libraries embed the crate version,
 # and a release reuses the CI run that built the version-bump commit (the caller's
 # find-ci-run refuses any other), so the version CI sees is the version being released.
@@ -83,6 +89,255 @@ on:
         default: true
 
 jobs:
+  # The optional sdist (`"sdist": true` in the caller's .github/hyper.json): `pip install`
+  # on a platform with no wheel — PyPy, a free-threaded 3.13, Alpine on s390x — attempts
+  # a source build instead of failing with "no matching distribution". A job's `if` cannot read the
+  # caller's file, so this job reads the Forge's view of it; the two after skip when it is
+  # off. Neither reads `inputs.mode`: the fall-through job needs the sdist in `pr` mode too.
+  sdist-config:
+    runs-on: ubuntu-26.04
+    outputs:
+      sdist: ${{ steps.config.outputs.sdist }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      - name: Read the sdist switch
+        id: config
+        shell: bash
+        run: |
+          set -euo pipefail
+          eval "$(python3 .hyperforge/.github/scripts/hyper_config.py shell)"
+          echo "sdist=$SDIST" >> "$GITHUB_OUTPUT"
+
+  # The source distribution, built once and held to its promise: it installs at exactly the
+  # Rust the crate declares (`rust-version`, read from the sdist's own rust/Cargo.toml), on
+  # glibc (the oldest manylinux image, CPython 3.11) and on musl (Alpine), and one minor
+  # lower must fail with cargo's "requires rustc" message, so the floor is the real one.
+  # `/v/bin/python -I`, never a bare `python`: in manylinux2014 the bare one is 2.7, which
+  # rejects `-I`, and on Alpine it is outside the venv. Attested in release mode only and
+  # uploaded in every mode, as the Pyodide wheel is; release reads release-mode runs only.
+  build-sdist:
+    needs: sdist-config
+    if: needs.sdist-config.outputs.sdist == 'true'
+    runs-on: ubuntu-26.04
+    env:
+      CRATE: ${{ inputs.crate }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build the sdist
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          working-directory: python
+          command: sdist
+          args: --out dist
+
+      - name: Check the sdist's name and metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          want=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)
+          found=$(ls python/dist)
+          if [[ "$found" != "$CRATE-$want.tar.gz" ]]; then
+            echo "::error::python/dist holds [$found], expected only $CRATE-$want.tar.gz"
+            exit 1
+          fi
+          pipx run twine check --strict "python/dist/$CRATE-$want.tar.gz"
+          echo "WANT=$want" >> "$GITHUB_ENV"
+
+      # The floor is what the sdist says, not what this workflow believes.
+      - name: Read the Rust floor from the sdist
+        shell: bash
+        run: |
+          set -euo pipefail
+          msrv=$(tar xzOf "python/dist/$CRATE-$WANT.tar.gz" "$CRATE-$WANT/rust/Cargo.toml" | sed -n 's/^rust-version = "\(.*\)"/\1/p')
+          if [[ ! "$msrv" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::rust-version in the sdist is [$msrv], expected major.minor"
+            exit 1
+          fi
+          below="${msrv%%.*}.$(( ${msrv#*.} - 1 ))"
+          echo "rust floor $msrv, one below $below"
+          echo "MSRV=$msrv" >> "$GITHUB_ENV"
+          echo "BELOW=$below" >> "$GITHUB_ENV"
+
+      - name: Install the sdist at the floor on manylinux2014, and one minor below
+        shell: bash
+        run: |
+          set -euo pipefail
+          in_image() { docker run --rm -v "$PWD/python/dist:/dist:ro" "$1" sh -euc "$2"; }
+          rustup_at() {
+            echo "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain $1 && . \"\$HOME/.cargo/env\""
+          }
+          # HyperUuid's entry points below; a sibling opting in must generalise this smoke.
+          check="import uuid, $CRATE as h; assert h.native_version() == '$WANT', h.native_version(); h.new_v4(); h.new_v7(); h.new_v5(uuid.NAMESPACE_DNS, 'hyperuuid'); print('built from source:', h.native_version())"
+          image=quay.io/pypa/manylinux2014_x86_64
+          script() {
+            echo "$(rustup_at "$1") && /opt/python/cp311-cp311/bin/python -m venv /v && /v/bin/pip install -q /dist/$CRATE-$WANT.tar.gz && /v/bin/python -I -c \"$check\""
+          }
+          in_image "$image" "$(script "$MSRV")"
+          set +e
+          out=$(in_image "$image" "$(script "$BELOW")" 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$out" | tail -n 25
+          if [[ "$status" -eq 0 ]] || ! grep -q "requires rustc $MSRV" <<<"$out"; then
+            echo "::error::$BELOW built the sdist, so $MSRV is not the floor"
+            exit 1
+          fi
+
+      - name: Install the sdist at the floor on Alpine
+        shell: bash
+        run: |
+          set -euo pipefail
+          in_image() { docker run --rm -v "$PWD/python/dist:/dist:ro" "$1" sh -euc "$2"; }
+          rustup_at() {
+            echo "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain $1 && . \"\$HOME/.cargo/env\""
+          }
+          # HyperUuid's entry points below; a sibling opting in must generalise this smoke.
+          check="import uuid, $CRATE as h; assert h.native_version() == '$WANT', h.native_version(); h.new_v4(); h.new_v7(); h.new_v5(uuid.NAMESPACE_DNS, 'hyperuuid'); print('built from source:', h.native_version())"
+          in_image python:3.11-alpine "apk add --no-cache gcc musl-dev curl >/dev/null && $(rustup_at "$MSRV") && python -m venv /v && /v/bin/pip install -q /dist/$CRATE-$WANT.tar.gz && /v/bin/python -I -c \"$check\""
+
+      - name: Attest sdist build provenance
+        if: >-
+          inputs.attest && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: python/dist/*.tar.gz
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pypi-wheels-sdist
+          path: python/dist/*.tar.gz
+          if-no-files-found: error
+
+  # What `pip install` does on the interpreters this package has no wheel for. Never blocks
+  # the run (`continue-on-error`), and tells the three outcomes apart in the step summary:
+  # the build failed; it built and the suite failed; it built and the suite passed. The
+  # suite runs from a copy of python/tests, because conftest.py puts the checkout's source
+  # first on sys.path, and the venv's own `__file__` is asserted so a pass cannot be the
+  # checkout. A skip only counts as expected when its reason string says the interpreter
+  # is the kind it is about: free-threading tests on a GIL interpreter (PyPy), and
+  # `uuid.uuid7()` parity below 3.14 (3.13t, PyPy 3.11).
+  sdist-fallthrough:
+    needs: build-sdist
+    continue-on-error: true
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13t", "3.14t", "pypy3.11"]
+    env:
+      CRATE: ${{ inputs.crate }}
+      PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pypi-wheels-sdist
+          path: ${{ runner.temp }}/sdist
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: py
+        with:
+          python-version: ${{ matrix.python }}
+          update-environment: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - name: Make a fresh venv
+        shell: bash
+        env:
+          PYTHON_PATH: ${{ steps.py.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          "$PYTHON_PATH" -m venv "$RUNNER_TEMP/v"
+
+      - name: Install the sdist and run the suite against the install
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/fallthrough.log"
+          skips="$RUNNER_TEMP/skips.log"
+          : > "$skips"
+          report() {
+            {
+              echo "$PYTHON: $1"
+              echo
+              if [[ -s "$skips" ]]; then
+                echo 'Skips:'
+                echo '```'
+                cat "$skips"
+                echo '```'
+              fi
+              echo '```'
+              tail -n 20 "$log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "$PYTHON: $1"
+          }
+          sdist=$(ls "$RUNNER_TEMP"/sdist/*.tar.gz)
+          if ! "$RUNNER_TEMP/v/bin/pip" install "$sdist" > "$log" 2>&1; then
+            report "build failed"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/suite"
+          cp -rL python/tests "$RUNNER_TEMP/suite/tests"
+          if ! "$RUNNER_TEMP/v/bin/pip" install pytest mypy > "$log" 2>&1; then
+            report "built, suite failed (pytest would not install)"
+            exit 1
+          fi
+          cd "$RUNNER_TEMP/suite"
+          where=$("$RUNNER_TEMP/v/bin/python" -c "import $CRATE; print($CRATE.__file__)" 2> "$log") || {
+            report "built, suite failed (import)"; exit 1; }
+          if [[ "$where" != "$RUNNER_TEMP/v/"* ]]; then
+            echo "$where is not inside the venv" > "$log"
+            report "built, suite failed (imported from outside the venv)"
+            exit 1
+          fi
+          read -r gil_on before_314 < <("$RUNNER_TEMP/v/bin/python" -c "import sys; import $CRATE; print(getattr(sys, '_is_gil_enabled', lambda: True)(), sys.version_info < (3, 14))")
+          if [[ "$PYTHON" == *t && "$gil_on" != False ]]; then
+            echo "the GIL is on after importing $CRATE on $PYTHON" > "$log"
+            report "built, suite failed (GIL enabled)"
+            exit 1
+          fi
+          cd tests
+          if ! "$RUNNER_TEMP/v/bin/python" -m pytest -rs > "$log" 2>&1; then
+            report "built, suite failed"
+            exit 1
+          fi
+          grep '^SKIPPED' "$log" > "$skips" || true
+          unexpected=0
+          while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            # HyperUuid's skip reasons; a sibling opting in must generalise these two.
+            if [[ "$gil_on" == True && "$line" == *"needs a free-threaded CPython"* ]]; then continue; fi
+            if [[ "$before_314" == True && "$line" == *"stdlib uuid.uuid7() was added in Python 3.14"* ]]; then continue; fi
+            unexpected=1
+          done < "$skips"
+          if [[ "$unexpected" -ne 0 ]]; then
+            report "built, suite failed (unexpected skip)"
+            exit 1
+          fi
+          report "built, suite passed"
+
   build-wheels:
     if: inputs.mode != 'pr'
     strategy:
@@ -97,11 +352,12 @@ jobs:
             rid: linux-arm64
             target: aarch64-unknown-linux-gnu
             manylinux: "2_28"
-          # musl (Alpine): a separate wheel tag, not a variant of manylinux — pip on Alpine
-          # ignores every manylinux wheel, and with no sdist published that means no install
-          # at all. maturin turns crt-static off for an extension module itself and bundles
-          # the extension's libgcc_s into the wheel, which the smoke test below holds it to
-          # by importing the wheel on an image that has no libgcc.
+          # musl (Alpine): a separate wheel tag, not a variant of manylinux. pip on Alpine
+          # ignores every manylinux wheel, so without this wheel it can only build the sdist
+          # (the caller's `sdist` key), if one is published. maturin turns crt-static off for
+          # an extension module itself and bundles the extension's libgcc_s into the wheel;
+          # the smoke test below holds it to that by importing the wheel on an image with
+          # no libgcc.
           - os: ubuntu-26.04
             rid: linux-musl-x64
             target: x86_64-unknown-linux-musl

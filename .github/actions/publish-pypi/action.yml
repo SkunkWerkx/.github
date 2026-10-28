@@ -1,6 +1,6 @@
 name: Prepare the PyPI upload
 description: >
-  Rechecks the preserved inventory and reconciles the wheels PyPI already serves by exact
+  Rechecks the preserved inventory and reconciles the wheels and sdist PyPI already serves by exact
   bytes, leaving only the missing ones in pending-pypi and reporting `pending`. The upload and
   the wait are the consumer's next two steps, not this action's: pypa/gh-action-pypi-publish
   finds its own container image only as a step of the workflow itself (nested in a composite
@@ -33,7 +33,7 @@ inputs:
 
 outputs:
   pending:
-    description: "\"true\" when pending-pypi holds wheels PyPI does not serve yet"
+    description: "\"true\" when pending-pypi holds files PyPI does not serve yet"
     value: ${{ steps.pending.outputs.pending }}
 
 runs:

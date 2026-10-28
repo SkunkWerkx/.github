@@ -93,9 +93,11 @@ name: HyperForge — build native core, test every binding
 #     Apple stopped selling in 2023 and runners GitHub winds down by Fall 2027; osx-x64 is
 #     cross-built on macos-latest instead (build-native-osx-x64). windows-11-arm is GA and
 #     free for public repos.
-#   - JDK 25, with one leg on a different vendor. 25 is the Java bindings' floor: the first
-#     LTS still in upstream support that has the final FFM API (22, 23 and 24 are all
-#     end-of-life, and this file pinned 23 until 2026-09 for the reason that follows).
+#   - JDK 25, with one leg on a different vendor. 25 is the primary, and the floor for a caller
+#     without `java_jni`: the first LTS still in upstream support that has the final FFM
+#     API (22, 23 and 24 are all end-of-life, and this file pinned 23 until 2026-09 for the
+#     reason that follows). A `java_jni` caller's floor is Temurin `jdk_floor_version` on
+#     every leg, win-arm64 included (Temurin 21 ships win-arm64), beside the 25 leg.
 #     Temurin ships Windows ARM64 builds for 21 and 23 only — a fresh Adoptium API query
 #     (assets/latest/{v}/hotspot?architecture=aarch64&os=windows) still returns zero
 #     win-arm64 assets for 25 and for 27 — so the win-arm64 leg alone installs Microsoft's
@@ -171,6 +173,25 @@ on:
         required: false
         type: string
         default: ""
+      csharp_aot_frameworks:
+        description: >
+          Space-separated target frameworks (e.g. "net10.0 net11.0") to Native-AOT-publish
+          csharp_aot_project for, one `-f` publish and one run each, into aot-out/<tfm>/.
+          Needed when that project multi-targets: a multi-targeted publish without `-f` fails
+          NETSDK1129. Empty (the default) keeps the single publish into aot-out/. The one
+          aot-report-{rid} artifact holds every framework's log.
+        required: false
+        type: string
+        default: ""
+      csharp_extra_runtime:
+        description: >
+          A .NET runtime channel (e.g. "10.0") to install beside global.json's SDK, and to
+          copy into the Alpine suite. `dotnet test` on a multi-targeted test project runs
+          every target framework, so the SDK's own runtime is not enough: each older TFM
+          needs its runtime present. Empty (the default) installs nothing extra.
+        required: false
+        type: string
+        default: ""
       attest_native:
         description: >
           Emit a signed SLSA build-provenance attestation binding each shippable compiled
@@ -194,6 +215,16 @@ on:
         default: "25"
       java_resources_dir:
         description: "If set, place the native lib at {dir}/{rid}/ before gradlew test (repos whose Gradle stages from rust/target/release leave this empty)"
+        required: false
+        type: string
+        default: ""
+      java_jni:
+        description: "The Java binding is a JNI base on the floor JDK plus an FFM tree: build java/jni beside the core on every leg (osx-x64 cross-built, both musl RIDs in Alpine), place both libraries under java_resources_dir, run `gradlew test testFloor checkSuiteParity javadoc` (on Alpine, the same without javadoc plus the smoke program), and upload and attest each shim as `jni-{rid}`. Replaces the FFM-only Java steps; needs java and jdk_floor_version.\n"
+        required: false
+        type: boolean
+        default: false
+      jdk_floor_version:
+        description: "The Temurin major of the Java binding's floor (java_jni): the suite runs on it a second time (testFloor), on every leg and on Alpine. Temurin 21 ships win-arm64, so one vendor serves every leg. Empty with java_jni on is a failed run, not a skipped floor.\n"
         required: false
         type: string
         default: ""
@@ -391,6 +422,7 @@ jobs:
           - os: ubuntu-26.04
             rid: linux-x64
             lib_name: lib${{ inputs.crate }}.so
+            jni_lib_name: lib${{ inputs.crate }}_jni.so
             target: x86_64-unknown-linux-gnu
             manylinux: "2_28"
             jdk_distribution: temurin
@@ -399,6 +431,7 @@ jobs:
           - os: ubuntu-26.04-arm
             rid: linux-arm64
             lib_name: lib${{ inputs.crate }}.so
+            jni_lib_name: lib${{ inputs.crate }}_jni.so
             target: aarch64-unknown-linux-gnu
             manylinux: "2_28"
             jdk_distribution: temurin
@@ -407,6 +440,7 @@ jobs:
           - os: macos-latest
             rid: osx-arm64
             lib_name: lib${{ inputs.crate }}.dylib
+            jni_lib_name: lib${{ inputs.crate }}_jni.dylib
             target: aarch64-apple-darwin
             manylinux: ""
             jdk_distribution: temurin
@@ -415,6 +449,7 @@ jobs:
           - os: windows-latest
             rid: win-x64
             lib_name: ${{ inputs.crate }}.dll
+            jni_lib_name: ${{ inputs.crate }}_jni.dll
             target: x86_64-pc-windows-msvc
             manylinux: ""
             jdk_distribution: temurin
@@ -423,6 +458,7 @@ jobs:
           - os: windows-latest
             rid: win-x64
             lib_name: ${{ inputs.crate }}.dll
+            jni_lib_name: ${{ inputs.crate }}_jni.dll
             target: x86_64-pc-windows-msvc
             manylinux: ""
             jdk_distribution: temurin
@@ -431,6 +467,7 @@ jobs:
           - os: windows-11-arm
             rid: win-arm64
             lib_name: ${{ inputs.crate }}.dll
+            jni_lib_name: ${{ inputs.crate }}_jni.dll
             target: aarch64-pc-windows-msvc
             manylinux: ""
             jdk_distribution: microsoft
@@ -439,6 +476,7 @@ jobs:
           - os: windows-11-arm
             rid: win-arm64
             lib_name: ${{ inputs.crate }}.dll
+            jni_lib_name: ${{ inputs.crate }}_jni.dll
             target: aarch64-pc-windows-msvc
             manylinux: ""
             jdk_distribution: microsoft
@@ -565,6 +603,102 @@ jobs:
           crate: ${{ inputs.crate }}
           project: ${{ inputs.project }}
           targets: ${{ matrix.static_targets }}
+
+      # Java (JNI): the binding is a JNI base on the floor JDK plus an FFM tree, so the shim
+      # java/jni is built beside the core and the suite runs on the primary JDK and, again, on
+      # the floor (`testFloor`). They sit ahead of TypeScript for the fail-fast rule: the newest
+      # code is where a run fails, and a failure in the first minutes lets the owner cancel the
+      # rest. The floor JDK is Temurin on every leg, win-arm64 included (21 ships it), and
+      # Gradle is told to use exactly that install, never to go looking for another.
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        id: jdk_floor
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java && inputs.java_jni }}
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.jdk_floor_version }}
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java && inputs.java_jni }}
+        with:
+          distribution: ${{ matrix.jdk_distribution }}
+          java-version: ${{ inputs.jdk_version }}
+
+      - name: Build the JNI library
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java && inputs.java_jni }}
+        working-directory: java/jni
+        shell: bash
+        env:
+          CRATE: ${{ inputs.crate }}
+          JNI_LIB: ${{ matrix.jni_lib_name }}
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --lib
+          lib="target/release/$JNI_LIB"
+          [ -f "$lib" ] || { echo "::error::no $lib was produced"; exit 1; }
+          # The core's glibc floor is the shim's: it links the same libc and nothing else.
+          if [ "$RUNNER_OS" = Linux ]; then
+            newest=$(objdump -T "$lib" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+            echo "newest glibc symbol version referenced: $newest"
+            if [ "$(printf '%s\n' GLIBC_2.34 "$newest" | sort -V | tail -1)" != GLIBC_2.34 ]; then
+              echo "::error::$JNI_LIB references $newest; the documented floor is glibc 2.34"
+              objdump -T "$lib" | grep -F "$newest"
+              exit 1
+            fi
+            # JNI_OnLoad plus the core's C exports, and nothing else.
+            nm -D --defined-only "$lib" | awk '$2 == "T" {print $3}' | python3 -c '
+          import sys
+          sys.path.insert(0, "../../.hyperforge/.github/scripts")
+          import hyper_config
+          want = {"JNI_OnLoad"} | hyper_config.load("../..").core_exports()
+          have = set(sys.stdin.read().split())
+          if have != want:
+              sys.exit(f"::error::exports differ from JNI_OnLoad plus the core C ABI: missing {sorted(want - have)}, extra {sorted(have - want)}")
+          print(f"{len(have)} exports, all expected")
+          '
+          fi
+
+      - name: Place both libraries for the Java suites
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java && inputs.java_jni }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${RESOURCES_DIR:?java_jni needs java_resources_dir}"
+          dest="$RESOURCES_DIR/${{ matrix.rid }}"
+          mkdir -p "$dest"
+          cp "out/${{ matrix.lib_name }}" "$dest/"
+          cp "java/jni/target/release/$JNI_LIB" "$dest/"
+        env:
+          RESOURCES_DIR: ${{ inputs.java_resources_dir }}
+          JNI_LIB: ${{ matrix.jni_lib_name }}
+
+      # `javadoc` rides along for the reason the FFM step below gives. The floor JDK is the
+      # install Gradle is told to use for testFloor; auto-detect is off so a runner's other
+      # JDKs can never stand in for it.
+      - name: Test Java (JNI) on the primary JDK and the floor
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java && inputs.java_jni }}
+        working-directory: java
+        shell: bash
+        env:
+          JDK_FLOOR_PATH: ${{ steps.jdk_floor.outputs.path }}
+        run: |
+          chmod +x gradlew
+          ./gradlew test testFloor checkSuiteParity javadoc --console=plain -Porg.gradle.java.installations.paths="$JDK_FLOOR_PATH" -Porg.gradle.java.installations.auto-detect=false
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java && inputs.java_jni }}
+        with:
+          name: jni-${{ matrix.rid }}
+          path: java/jni/target/release/${{ matrix.jni_lib_name }}
+          if-no-files-found: error
+
+      - name: Attest the JNI library's build provenance
+        if: >-
+          matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java && inputs.java_jni && inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: java/jni/target/release/${{ matrix.jni_lib_name }}
 
       # TypeScript (napi-rs): the addon built for this leg's own target — every runner here is
       # native, so napi's --platform picks the host triple — then the suite on Node and on Bun.
@@ -830,6 +964,9 @@ jobs:
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp }}
         with:
           global-json-file: global.json
+          # An extra runtime for the older target frameworks of a multi-targeted test project
+          # (see csharp_extra_runtime); the empty string installs nothing.
+          dotnet-version: ${{ inputs.csharp_extra_runtime != '' && format('{0}.x', inputs.csharp_extra_runtime) || '' }}
 
       - name: Place native lib for C# in-repo testing
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_runtimes_dir != '' && inputs.csharp }}
@@ -840,7 +977,14 @@ jobs:
 
       - name: Test C# bindings against this platform's native lib
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp }}
-        run: dotnet test --project ${{ inputs.csharp_test_project }} -c Release
+        shell: bash
+        env:
+          CSHARP_TEST_PROJECT: ${{ inputs.csharp_test_project }}
+        # An absolute project path: for a multi-targeted project `dotnet test` re-resolves a
+        # relative --project against the project's own directory and fails with a doubled
+        # path (.../HyperUuid.Tests/csharp/HyperUuid.Tests/HyperUuid.Tests.csproj). A
+        # single-TFM project loads either way.
+        run: dotnet test --project "$GITHUB_WORKSPACE/$CSHARP_TEST_PROJECT" -c Release
 
       # The bar here is "zero warnings, exit 0" on every platform, not "the csproj sets
       # PublishAot". Three separate things get proven per leg: the publish emits no
@@ -861,28 +1005,43 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          dotnet publish "${{ inputs.csharp_aot_project }}" \
-            -c Release -r ${{ matrix.rid }} -p:PublishAot=true \
-            -o aot-out 2>&1 | tee aot-publish.log
-          status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            echo "::error::Native AOT publish failed for ${{ matrix.rid }} (exit $status)"
-            exit "$status"
-          fi
-          if grep -nE 'warning (IL|AOT)[0-9]{4}' aot-publish.log; then
-            echo "::error::Native AOT publish emitted trim/AOT warnings on ${{ matrix.rid }}"
-            exit 1
-          fi
-          echo "No ILxxxx/AOTxxxx diagnostics on ${{ matrix.rid }}." | tee -a aot-publish.log
-          # Where the package has a static library for this RID the core is linked into the
-          # executable, and the shared library must not have been published beside it.
-          if ls "csharp/${{ inputs.project }}/staticlibs/${{ matrix.rid }}"/* >/dev/null 2>&1; then
-            if ls aot-out | grep -E '^(lib${{ inputs.crate }}\.(so|dylib)|${{ inputs.crate }}\.dll)$'; then
-              echo "::error::the shared library was published beside an executable that should have the core linked in"
+          # Empty list: today's single publish into aot-out. Otherwise one -f publish per
+          # target framework into aot-out/<tfm> (a multi-targeted project needs -f).
+          frameworks="${{ inputs.csharp_aot_frameworks }}"
+          [ -n "$frameworks" ] || frameworks=-
+          : > aot-publish.log
+          for tfm in $frameworks; do
+            if [ "$tfm" = "-" ]; then
+              out=aot-out
+              fargs=()
+            else
+              out="aot-out/$tfm"
+              fargs=(-f "$tfm")
+              echo "== Native AOT, $tfm" | tee -a aot-publish.log
+            fi
+            dotnet publish "${{ inputs.csharp_aot_project }}" \
+              -c Release -r ${{ matrix.rid }} -p:PublishAot=true \
+              ${fargs[@]+"${fargs[@]}"} -o "$out" 2>&1 | tee -a aot-publish.log
+            status=${PIPESTATUS[0]}
+            if [ "$status" -ne 0 ]; then
+              echo "::error::Native AOT publish failed for ${{ matrix.rid }} $tfm (exit $status)"
+              exit "$status"
+            fi
+            if grep -nE 'warning (IL|AOT)[0-9]{4}' aot-publish.log; then
+              echo "::error::Native AOT publish emitted trim/AOT warnings on ${{ matrix.rid }}"
               exit 1
             fi
-            echo "Core linked into the executable: no shared library in the publish output." | tee -a aot-publish.log
-          fi
+            echo "No ILxxxx/AOTxxxx diagnostics on ${{ matrix.rid }}." | tee -a aot-publish.log
+            # Where the package has a static library for this RID the core is linked into the
+            # executable, and the shared library must not have been published beside it.
+            if ls "csharp/${{ inputs.project }}/staticlibs/${{ matrix.rid }}"/* >/dev/null 2>&1; then
+              if ls "$out" | grep -E '^(lib${{ inputs.crate }}\.(so|dylib)|${{ inputs.crate }}\.dll)$'; then
+                echo "::error::the shared library was published beside an executable that should have the core linked in"
+                exit 1
+              fi
+              echo "Core linked into the executable: no shared library in the publish output." | tee -a aot-publish.log
+            fi
+          done
 
       - name: Run the AOT-published binary (must exit 0)
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' && inputs.csharp }}
@@ -890,10 +1049,14 @@ jobs:
         run: |
           set -euo pipefail
           name=$(basename "${{ inputs.csharp_aot_project }}" .csproj)
-          exe="aot-out/$name"
-          if [ "$RUNNER_OS" = "Windows" ]; then exe="$exe.exe"; fi
-          ls -l "$exe" | tee -a aot-publish.log
-          "./$exe" 2>&1 | tee -a aot-publish.log
+          frameworks="${{ inputs.csharp_aot_frameworks }}"
+          [ -n "$frameworks" ] || frameworks=-
+          for tfm in $frameworks; do
+            if [ "$tfm" = "-" ]; then exe="aot-out/$name"; else exe="aot-out/$tfm/$name"; fi
+            if [ "$RUNNER_OS" = "Windows" ]; then exe="$exe.exe"; fi
+            ls -l "$exe" | tee -a aot-publish.log
+            "./$exe" 2>&1 | tee -a aot-publish.log
+          done
 
       - name: Upload the AOT report
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp_aot_project != '' && inputs.csharp }}
@@ -904,13 +1067,13 @@ jobs:
 
       # Java: the real FFM downcall path per OS.
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java && !inputs.java_jni }}
         with:
           distribution: ${{ matrix.jdk_distribution }}
           java-version: ${{ inputs.jdk_version }}
 
       - name: Place native lib for Java in-repo testing
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java_resources_dir != '' && inputs.java }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java_resources_dir != '' && inputs.java && !inputs.java_jni }}
         shell: bash
         run: |
           mkdir -p "${{ inputs.java_resources_dir }}/${{ matrix.rid }}"
@@ -932,7 +1095,7 @@ jobs:
       # it. It needs compileJava's classpath but not the native library, so it adds no
       # dependency this step didn't already have.
       - name: Test Java bindings against this platform's native lib
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java }}
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java && !inputs.java_jni }}
         working-directory: java
         shell: bash
         run: |
@@ -1399,6 +1562,76 @@ jobs:
         with:
           subject-path: out/lib${{ inputs.crate }}.dylib
 
+      # The Java (JNI) shim for this RID, cross-built like the core, then the suites on an x64
+      # JDK under Rosetta: the primary and the floor. Ahead of TypeScript (fail fast), and the
+      # same steps the matrix legs run, so the osx-x64 jar entries are tested, not just built.
+      - name: Cross-build the JNI library for x86_64
+        if: ${{ inputs.java && inputs.java_jni }}
+        working-directory: java/jni
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --lib --target x86_64-apple-darwin
+          archs="$(lipo -archs "target/x86_64-apple-darwin/release/lib${{ inputs.crate }}_jni.dylib")"
+          echo "architectures: $archs"
+          [ "$archs" = x86_64 ] || { echo "::error::expected an x86_64 JNI library, got: $archs"; exit 1; }
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        id: jdk_floor
+        if: ${{ inputs.java && inputs.java_jni }}
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.jdk_floor_version }}
+          architecture: x64
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        if: ${{ inputs.java && inputs.java_jni }}
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.jdk_version }}
+          architecture: x64
+
+      - name: Place both libraries for the Java suites
+        if: ${{ inputs.java && inputs.java_jni }}
+        shell: bash
+        env:
+          RESOURCES_DIR: ${{ inputs.java_resources_dir }}
+        run: |
+          set -euo pipefail
+          : "${RESOURCES_DIR:?java_jni on osx-x64 needs java_resources_dir}"
+          mkdir -p "$RESOURCES_DIR/osx-x64"
+          cp "out/lib${{ inputs.crate }}.dylib" "java/jni/target/x86_64-apple-darwin/release/lib${{ inputs.crate }}_jni.dylib" "$RESOURCES_DIR/osx-x64/"
+
+      # Gradle picks the library directory from the JVM's own os.arch: an arm64 JVM here would
+      # look for osx-arm64 and the x86_64 libraries would never load.
+      - name: Test Java (JNI) on an x64 JDK, primary and floor
+        if: ${{ inputs.java && inputs.java_jni }}
+        working-directory: java
+        shell: bash
+        env:
+          JDK_FLOOR_PATH: ${{ steps.jdk_floor.outputs.path }}
+        run: |
+          set -euo pipefail
+          java -XshowSettings:properties -version 2>&1 | grep 'os.arch = x86_64'
+          chmod +x gradlew
+          ./gradlew test testFloor checkSuiteParity javadoc --console=plain -Porg.gradle.java.installations.paths="$JDK_FLOOR_PATH" -Porg.gradle.java.installations.auto-detect=false
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ inputs.java && inputs.java_jni }}
+        with:
+          name: jni-osx-x64
+          path: java/jni/target/x86_64-apple-darwin/release/lib${{ inputs.crate }}_jni.dylib
+          if-no-files-found: error
+
+      - name: Attest the JNI library's build provenance
+        if: >-
+          inputs.java && inputs.java_jni && inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: java/jni/target/x86_64-apple-darwin/release/lib${{ inputs.crate }}_jni.dylib
+
       # The TypeScript addon, cross-built the same way: npm ci and the napi CLI run on the
       # arm64 Node, and --target names the x86_64 triple. Then an x64 Node, which runs under
       # Rosetta, loads it and runs the suite, the one binding whose own runtime is tested on
@@ -1522,6 +1755,7 @@ jobs:
         with:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
+          jni: ${{ inputs.java && inputs.java_jni }}
           attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
       # The musl static library, for the two suites that link the core in (Go under cgo, and
@@ -1537,6 +1771,19 @@ jobs:
           crate: ${{ inputs.crate }}
           project: ${{ inputs.project }}
           targets: ${{ matrix.static_target }}
+
+      # Java (JNI) first, ahead of every other binding's Alpine run (fail fast). The suite
+      # copies the floor JDK out of its own Alpine image, so the floor runs on musl too; only
+      # the shim and the core are on the classpath, and the smoke program runs as well.
+      - name: Java (JNI) on Alpine (JDK 21 and 25, plus the smoke program)
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java && inputs.java_jni }}
+        uses: ./.hyperforge/.github/actions/musl-suite
+        with:
+          binding: java-jni
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: eclipse-temurin:${{ inputs.jdk_version }}-jdk-alpine
+          jdk_floor_version: ${{ inputs.jdk_floor_version }}
 
       # Every suite below carries `!cancelled()` for the same reason the matrix job's do:
       # one binding's failure must not mask the others, and a red step names its binding.
@@ -1623,10 +1870,12 @@ jobs:
           image: ${{ steps.images.outputs.dotnet }}
           csharp_test_project: ${{ inputs.csharp_test_project }}
           csharp_aot_project: ${{ inputs.csharp_aot_project }}
+          csharp_aot_frameworks: ${{ inputs.csharp_aot_frameworks }}
+          csharp_extra_runtime: ${{ inputs.csharp_extra_runtime }}
           csharp_runtimes_dir: ${{ inputs.csharp_runtimes_dir }}
 
       - name: Java on Alpine (FFM suite + smoke program)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java }}
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java && !inputs.java_jni }}
         uses: ./.hyperforge/.github/actions/musl-suite
         with:
           binding: java

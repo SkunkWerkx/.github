@@ -128,6 +128,10 @@ class ReleaseGuardTests(unittest.TestCase):
         a, b = self.prepared_with('## [0.9.0]\n\n## [0.8.0]\n- old\n')
         with self.assertRaisesRegex(ValueError, 'no "## '):
             self.gate(commit=b)
+        a, b = self.prepared_with(CHANGELOG.replace('- A thing.', '- Grows by \u27e8n\u27e9 KB.'))
+        with self.assertRaisesRegex(ValueError, 'still holds a .placeholder'):
+            self.gate(commit=b)
+        self.assertEqual(self.gate(commit=b, tag=''), (a, '42'))
         a, b = self.prepared_with(None)
         with self.assertRaisesRegex(ValueError, 'CHANGELOG.md is missing'):
             self.gate(commit=b)

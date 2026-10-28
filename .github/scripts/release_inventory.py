@@ -109,12 +109,18 @@ def validate_layout(paths, crate, version, cfg=None):
     gems.update(f'ruby/{crate}-{version}-{platform}.gem' for platform in cfg.ruby_platforms.values())
     if set(groups['ruby']) != gems:
         raise ValueError('Ruby platform/version inventory is incomplete')
-    wheels = groups['pypi']
+    wheels = [p for p in groups['pypi'] if p.endswith('.whl')]
+    sdists = [p for p in groups['pypi'] if p.endswith('.tar.gz')]
+    if len(wheels) + len(sdists) != len(groups['pypi']):
+        raise ValueError(f'pypi holds a file that is neither a wheel nor an sdist: {groups["pypi"]}')
     if len(wheels) != cfg.wheels:
         raise ValueError(f'expected {cfg.wheels} wheels, got {len(wheels)}')
     for p in wheels:
-        if not Path(p).name.startswith(f'{crate}-{version}-') or not p.endswith('.whl'):
+        if not Path(p).name.startswith(f'{crate}-{version}-'):
             raise ValueError(f'wheel version/name mismatch: {p}')
+    if sdists != ([f'pypi/{crate}-{version}.tar.gz'] if cfg.sdist else []):
+        raise ValueError(f'sdist inventory is wrong: expected '
+                         f'{"only " + crate + "-" + version + ".tar.gz" if cfg.sdist else "none"}, got {sdists}')
     crates = groups['crate']
     if len([p for p in crates if p.endswith('.crate')]) != 1 or not any(p.endswith(f'{crate}-{version}.crate') for p in crates):
         raise ValueError('crate version/package missing')

@@ -19,12 +19,24 @@ inputs:
     description: "Container image to run in, overriding the binding's default — how the same suite runs again on the binding's floor version"
     required: false
     default: ""
+  jdk_floor_version:
+    description: "java-jni only: the Temurin major of the floor JDK, copied out of eclipse-temurin:<major>-jdk-alpine and handed to Gradle for testFloor"
+    required: false
+    default: ""
   csharp_test_project:
     description: "csharp only: path to the test csproj"
     required: false
     default: ""
   csharp_aot_project:
     description: "csharp only: path to the Native AOT smoke-test csproj; empty skips the AOT publish"
+    required: false
+    default: ""
+  csharp_aot_frameworks:
+    description: "csharp only: space-separated target frameworks to Native-AOT-publish and run, one -f publish each into aot-out/<tfm>; empty keeps the single publish"
+    required: false
+    default: ""
+  csharp_extra_runtime:
+    description: "csharp only: a .NET runtime channel (e.g. 10.0) copied into the SDK image so the older target frameworks of a multi-targeted test project can run; empty adds none"
     required: false
     default: ""
   csharp_runtimes_dir:
@@ -42,7 +54,10 @@ runs:
         CRATE: ${{ inputs.crate }}
         RID: ${{ inputs.rid }}
         SUITE_IMAGE: ${{ inputs.image }}
+        JDK_FLOOR_VERSION: ${{ inputs.jdk_floor_version }}
         CSHARP_TEST_PROJECT: ${{ inputs.csharp_test_project }}
         CSHARP_AOT_PROJECT: ${{ inputs.csharp_aot_project }}
+        CSHARP_AOT_FRAMEWORKS: ${{ inputs.csharp_aot_frameworks }}
+        CSHARP_EXTRA_RUNTIME: ${{ inputs.csharp_extra_runtime }}
         CSHARP_RUNTIMES_DIR: ${{ inputs.csharp_runtimes_dir }}
       run: '"$GITHUB_ACTION_PATH/suite-musl.sh" "$BINDING" "$CRATE" "$RID" . out-musl'

@@ -126,6 +126,10 @@ def require_changelog(root, commit, version):
     section = changelog_section(text, version)
     if not section:
         raise ValueError(f'CHANGELOG.md has no "## [{version}]" section; rename [Unreleased] before preparing')
+    if '\u27e8' in section:
+        # A ⟨placeholder⟩ is a figure the owner still has to measure and fill in; the
+        # finalizer would publish it verbatim into the Release notes.
+        raise ValueError(f'CHANGELOG.md "## [{version}]" still holds a \u27e8placeholder\u27e9; fill it in before tagging')
     return section
 
 

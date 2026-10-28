@@ -5,7 +5,8 @@ name: HyperForge — check the core and lint every binding
 # every RID, the corpus oracle, the crate's test suite under wasmtime, rustfmt and clippy, the MSRV, the SemVer check against the
 # last crates.io release, each binding's doc linter and formatter, and actionlint over the
 # caller's own workflows. None of it depends on build-native; every job here is static
-# analysis or a single-platform build. Every tool pin lives here, so the three repositories
+# analysis or a single-platform build, but for the opt-in big-endian leg, which runs the
+# crate's tests under qemu-user. Every tool pin lives here, so the three repositories
 # cannot drift one version at a time. Names come from the caller's .github/hyper.json.
 #
 # Each job has a toggle so a repository can say, in its ci.yml and with a reason, why a
@@ -127,6 +128,11 @@ on:
         required: false
         type: boolean
         default: false
+      lint_java_jni:
+        description: "The Java binding's JNI shim (java/jni): rustfmt, clippy, its std test suite, the no_std release build held to one NEEDED (libc.so.6) and to JNI_OnLoad plus the core's exports, and the no-panic proof built with unwind"
+        required: false
+        type: boolean
+        default: false
       format_csharp:
         required: false
         type: boolean
@@ -153,6 +159,11 @@ on:
         required: false
         type: string
         default: "6.4"
+      big_endian:
+        description: "A big-endian `<arch>-unknown-linux-gnu` target: the crate's default-feature cargo test suite, corpus included, cross-compiled and run under qemu-user; empty for none"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   check-no-std:
@@ -226,7 +237,7 @@ jobs:
         run: ${{ inputs.no_panic_command }}
 
   check-core:
-    if: inputs.core_script != ''
+    if: inputs.core_script != '' || inputs.extra_features != ''
     strategy:
       fail-fast: false
       matrix:
@@ -242,6 +253,7 @@ jobs:
           components: rustfmt, clippy, llvm-tools
           targets: thumbv7em-none-eabi, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, wasm32-unknown-unknown
       - name: The repository's own core checks
+        if: inputs.core_script != ''
         run: ../${{ inputs.core_script }}
       - name: cargo test with the extra feature set
         if: inputs.extra_features != ''
@@ -599,6 +611,67 @@ jobs:
         shell: bash
         run: cargo clippy --release -- -D warnings
 
+  # The JNI shim is its own cdylib in java/jni, path-depending on rust/ with `cdylib` and no
+  # std: the release build must link libc and nothing else, and export JNI_OnLoad beside the
+  # core's C ABI. The shim's tests link std (a dev-dependency), so they run here, in the same
+  # job as the proofs that it does not. The no-panic proof alone builds with unwind: under
+  # the shipping profile's panic = "abort" no-panic cannot see a panic path (measured).
+  lint-java-jni:
+    if: inputs.lint_java_jni
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out the exact executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy
+      - working-directory: java/jni
+        shell: bash
+        run: cargo fmt --check
+      - working-directory: java/jni
+        shell: bash
+        run: cargo clippy --release --locked --all-targets -- -D warnings
+      - working-directory: java/jni
+        shell: bash
+        run: cargo test --locked
+      - name: The release build links libc and nothing else
+        working-directory: java/jni
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --lib
+          lib=$(ls target/release/lib*_jni.so)
+          needed=$(readelf -d "$lib" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort | tr '\n' ' ')
+          echo "NEEDED: $needed"
+          [ "$needed" = "libc.so.6 " ] || { echo "::error::$lib must depend on libc.so.6 and nothing else, found: $needed"; exit 1; }
+      - name: JNI_OnLoad plus the core's exports, and nothing else
+        working-directory: java/jni
+        shell: bash
+        run: |
+          set -euo pipefail
+          lib=$(ls target/release/lib*_jni.so)
+          nm -D --defined-only "$lib" | awk '$2 == "T" {print $3}' > "$RUNNER_TEMP/exports.txt"
+          python3 - "$RUNNER_TEMP/exports.txt" <<'PY'
+          import sys
+          sys.path.insert(0, '../../.hyperforge/.github/scripts')
+          import hyper_config
+          want = {'JNI_OnLoad'} | hyper_config.load('../..').core_exports()
+          have = set(open(sys.argv[1]).read().split())
+          if have != want:
+              sys.exit(f'::error::exports differ from JNI_OnLoad plus the core C ABI: missing {sorted(want - have)}, extra {sorted(have - want)}')
+          print(f'{len(have)} exports, all expected')
+          PY
+      - name: No panic path survives in a release build of every native
+        working-directory: java/jni
+        shell: bash
+        run: CARGO_PROFILE_RELEASE_PANIC=unwind cargo build --release --locked --example no_panic --features no-panic
+
   # lintr reads r/.lintr. The Rust half's manifest depends on the core by a path the package
   # copies in (src/rust/core, untracked), and cargo fmt resolves the manifest, so the core is
   # staged first.
@@ -755,3 +828,69 @@ jobs:
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Validate workflow syntax, interfaces and dependency graph
         run: actionlint -shellcheck= -ignore 'property "workflow_(sha|repository)" is not defined'
+
+  # The corpus pins bytes in other people's indexes, so the crate's whole default-feature suite
+  # runs on a big-endian target: cross-compiled, executed under qemu-user. The last step proves
+  # the corpus is read there by corrupting one vector and requiring conformance to fail.
+  test-big-endian:
+    if: inputs.big_endian != ''
+    runs-on: ubuntu-26.04
+    env:
+      TARGET: ${{ inputs.big_endian }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: ${{ inputs.big_endian }}
+      - name: Only a gnu Linux target
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch=${TARGET%%-*}
+          if [[ "$TARGET" != "$arch-unknown-linux-gnu" ]]; then
+            echo "::error::big_endian must be <arch>-unknown-linux-gnu, got $TARGET"
+            exit 1
+          fi
+          echo "ARCH=$arch" >> "$GITHUB_ENV"
+      - name: Install qemu-user and the cross toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y qemu-user "gcc-$ARCH-linux-gnu" "libc6-dev-$ARCH-cross"
+      - name: cargo test on the big-endian target
+        shell: bash
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          v=CARGO_TARGET_$(tr a-z- A-Z_ <<<"$TARGET")
+          export "${v}_LINKER=$ARCH-linux-gnu-gcc"
+          export "${v}_RUNNER=qemu-$ARCH -L /usr/$ARCH-linux-gnu"
+          cargo test --locked --release --target "$TARGET"
+      - name: Negative control, a corrupted corpus vector must fail conformance
+        shell: bash
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          v=CARGO_TARGET_$(tr a-z- A-Z_ <<<"$TARGET")
+          export "${v}_LINKER=$ARCH-linux-gnu-gcc"
+          export "${v}_RUNNER=qemu-$ARCH -L /usr/$ARCH-linux-gnu"
+          # HyperUuid's vector and test name; a sibling opting in must generalise both.
+          sed -i '0,/"sql": "00000000000000808000000000000000"/s//"sql": "01000000000000808000000000000000"/' ../corpus/sql_order.json
+          if git diff --quiet -- ../corpus; then
+            echo "::error::the negative control did not change the corpus"
+            exit 1
+          fi
+          out=$(mktemp)
+          status=0
+          cargo test --locked --release --target "$TARGET" --test conformance >"$out" 2>&1 || status=$?
+          cat "$out"
+          git checkout -- ../corpus
+          if [[ "$status" -eq 0 ]]; then
+            echo "::error::the corpus is not read on $TARGET"
+            exit 1
+          fi
+          if ! grep -qx 'test sql_order \.\.\. FAILED' "$out"; then
+            echo "::error::conformance failed on $TARGET, but not in the sql_order test that reads the corpus"
+            exit 1
+          fi

@@ -33,6 +33,7 @@ def verifying(inventory):
     # The napi-rs addons are built and attested by the Forge in CI like the native
     # libraries, and npm records its own provenance at publish time beside PyPI's PEP 740.
     npm = 'npm' in groups
+    sdist = any(e['path'].startswith('pypi/') and e['path'].endswith('.tar.gz') for e in files)
     addons = ', the Node addons inside the npm platform packages' if npm else ''
     registry = (", and npm a provenance statement for every package, linking it to the\n"
                 "publishing run of this repository's `release.yml`") if npm else ''
@@ -49,7 +50,7 @@ gh attestation verify <file> --repo {repo} \\
   --source-ref refs/tags/v{version} --predicate-type {PREDICATE_TYPE}
 ```
 
-The native libraries, the Python wheels{addons} and the archives inside the NuGet package and the
+The native libraries, the Python wheels{' and sdist' if sdist else ''}{addons} and the archives inside the NuGet package and the
 jar also carry build provenance from CI run [{run_id}](https://github.com/{repo}/actions/runs/{run_id})
 at commit `{source[:7]}`, the parent of the tagged commit, signed by the Forge:
 
@@ -59,7 +60,7 @@ gh attestation verify <file> --repo {repo} --signer-repo {FORGE} --source-digest
 
 `inventory.json` lists every file with its size and SHA-256 and, for each file with build
 provenance, the commit it was built from and the repository that signed it; it carries
-build provenance of its own at the tagged commit. PyPI additionally holds a PEP 740 publish attestation for every wheel{registry}.
+build provenance of its own at the tagged commit. PyPI additionally holds a PEP 740 publish attestation for every wheel{' and the sdist' if sdist else ''}{registry}.
 '''
 
 

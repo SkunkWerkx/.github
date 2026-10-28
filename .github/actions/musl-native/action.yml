@@ -16,6 +16,10 @@ inputs:
     description: "Sign SLSA build provenance for the library ('true'/'false'); the calling job must hold id-token and attestations write"
     required: false
     default: "false"
+  jni:
+    description: "Also build java/jni (the Java binding's JNI shim) and upload and attest it as `jni-{rid}` ('true'/'false')"
+    required: false
+    default: "false"
 
 outputs:
   lib:
@@ -32,6 +36,7 @@ runs:
       shell: bash
       env:
         CRATE: ${{ inputs.crate }}
+        JNI: ${{ inputs.jni }}
       run: '"$GITHUB_ACTION_PATH/build-musl.sh" "$CRATE" . out-musl'
 
     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -47,3 +52,16 @@ runs:
       uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
       with:
         subject-path: out-musl/lib${{ inputs.crate }}.so
+
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      if: inputs.jni == 'true'
+      with:
+        name: jni-${{ inputs.rid }}
+        path: out-musl/lib${{ inputs.crate }}_jni.so
+        if-no-files-found: error
+
+    - name: Attest the JNI library's build provenance — ${{ inputs.rid }}
+      if: inputs.attest == 'true' && inputs.jni == 'true'
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      with:
+        subject-path: out-musl/lib${{ inputs.crate }}_jni.so
