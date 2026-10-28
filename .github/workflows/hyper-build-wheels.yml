@@ -242,7 +242,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.13t", "3.14t", "pypy3.11"]
+        # No 3.13t: PyO3 0.30 refuses free-threaded CPython below 3.14, so its build can only fail.
+        python: ["3.14t", "pypy3.11"]
     env:
       CRATE: ${{ inputs.crate }}
       PYTHON: ${{ matrix.python }}
@@ -292,6 +293,8 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
             echo "$PYTHON: $1"
+            # The summary is not readable through the API; the job log is.
+            tail -n 20 "$log"
           }
           sdist=$(ls "$RUNNER_TEMP"/sdist/*.tar.gz)
           if ! "$RUNNER_TEMP/v/bin/pip" install "$sdist" > "$log" 2>&1; then
@@ -327,9 +330,10 @@ jobs:
           unexpected=0
           while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            # HyperUuid's skip reasons; a sibling opting in must generalise these two.
+            # HyperUuid's skip reasons; a sibling opting in must generalise these three.
             if [[ "$gil_on" == True && "$line" == *"needs a free-threaded CPython"* ]]; then continue; fi
             if [[ "$before_314" == True && "$line" == *"stdlib uuid.uuid7() was added in Python 3.14"* ]]; then continue; fi
+            if [[ "$PYTHON" == pypy* && "$line" == *"mypy does not run on PyPy"* ]]; then continue; fi
             unexpected=1
           done < "$skips"
           if [[ "$unexpected" -ne 0 ]]; then

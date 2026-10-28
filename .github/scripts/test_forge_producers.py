@@ -515,7 +515,7 @@ class SdistContracts(unittest.TestCase):
         fall = jobs['sdist-fallthrough']
         self.assertIs(fall['continue-on-error'], True)
         self.assertEqual(fall['needs'], 'build-sdist')
-        self.assertEqual(fall['strategy']['matrix']['python'], ['3.13t', '3.14t', 'pypy3.11'])
+        self.assertEqual(fall['strategy']['matrix']['python'], ['3.14t', 'pypy3.11'])
         for value in ('GITHUB_STEP_SUMMARY', 'cp -rL python/tests "$RUNNER_TEMP/suite/tests"',
                       'mkdir -p "$RUNNER_TEMP/suite"', '"$RUNNER_TEMP/v/bin/pip" install pytest mypy',
                       '"$RUNNER_TEMP/v/bin/python" -m pytest -rs', '_is_gil_enabled', '__file__'):
