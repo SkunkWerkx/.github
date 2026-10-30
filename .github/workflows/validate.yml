@@ -19,8 +19,10 @@ jobs:
         with:
           python-version: "3.14"
       # llvm-nm, clang and lld-link: the release guard's cross-format symbol and staging
-      # fixtures (test_release_guard.py) skip without them.
-      - name: Install the object-format readers the release guard tests need
+      # fixtures (test_release_guard.py) skip without them. clang, llvm-ar and llvm-objcopy
+      # build the wasm archive guard's fixtures and llvm-objdump is the guard's own reader
+      # (test_wasm_archive_guard.py); those tests fail rather than skip without them.
+      - name: Install the object-format tools the guard tests need
         run: sudo apt-get update && sudo apt-get install -y llvm clang lld
       - name: Exercise provenance, exact package bytes and recovery contracts
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v

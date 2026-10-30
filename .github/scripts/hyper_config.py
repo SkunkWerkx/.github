@@ -16,7 +16,8 @@ and linked with each payload; default `.github/scripts/abi_probe.c`), `cdylib_sm
 Python script given a shared library and `rust/Cargo.toml`: each RID's in hyper-check-core.yml's
 check-cdylib, the committed linux-x64 one in release_guard.py), `wheels` (count,
 default 17), `sdist` (boolean, default false: also publish the Python source
-distribution), `ruby.abis` and `ruby.platforms`, `node.platforms` (RID -> napi platform
+distribution), `wasm.toolchain` (`stable`, the default, or a dated `nightly-YYYY-MM-DD`
+that builds the emscripten archive with build-std), `ruby.abis` and `ruby.platforms`, `node.platforms` (RID -> napi platform
 name), `go_targets`, `swift_targets`, `xcframework_slices`, `version_files` (path -> regex
 with one group around the version; the default list adds `typescript/package.json` and
 `r/DESCRIPTION` only when that binding's directory exists at the consumer's root).
@@ -80,6 +81,13 @@ class HyperConfig:
         self.sdist = data.get('sdist', False)
         if not isinstance(self.sdist, bool):
             raise ValueError('sdist must be true or false')
+        wasm = data.get('wasm', {})
+        if not isinstance(wasm, dict) or set(wasm) - {'toolchain'}:
+            raise ValueError('wasm must be an object with only a toolchain key')
+        self.wasm_toolchain = wasm.get('toolchain', 'stable')
+        if not (isinstance(self.wasm_toolchain, str)
+                and re.fullmatch(r'stable|nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}', self.wasm_toolchain)):
+            raise ValueError('wasm.toolchain must be stable or nightly-YYYY-MM-DD')
         ruby = data.get('ruby', {})
         self.ruby_abis = tuple(ruby.get('abis', RUBY_ABIS))
         self.ruby_platforms = dict(ruby.get('platforms', RUBY_PLATFORMS))
@@ -226,7 +234,7 @@ def shell(cfg):
         pairs = ' '.join(f'[{key}]={value}' for key, value in sorted(mapping.items()))
         return f'declare -A {name}=({pairs})'
     lines = [f'CRATE={cfg.crate}', f'PROJECT={cfg.project}', f'WHEELS={cfg.wheels}',
-             f'SDIST={"true" if cfg.sdist else "false"}',
+             f'SDIST={"true" if cfg.sdist else "false"}', f'WASM_TOOLCHAIN={cfg.wasm_toolchain}',
              f'BUNDLE={cfg.bundle}', f'XCFRAMEWORK={cfg.xcframework}', f'HEADER={cfg.header}',
              f'NATIVE_EXTENSION={cfg.native_extension}',
              'RUBY_ABIS=(' + ' '.join(cfg.ruby_abis) + ')',
@@ -277,6 +285,7 @@ def main():
             print(path)
     else:
         print(json.dumps(dict(crate=cfg.crate, project=cfg.project, wheels=cfg.wheels, sdist=cfg.sdist,
+                              wasm_toolchain=cfg.wasm_toolchain,
                               ruby_abis=cfg.ruby_abis, ruby_platforms=cfg.ruby_platforms,
                               node_platforms=cfg.node_platforms,
                               go_targets=cfg.go_targets, swift_targets=cfg.swift_targets,
