@@ -94,6 +94,16 @@ MINORS = ('8.3', '8.4', '8.5')
 # The Visual Studio each minor's php.net Windows build is compiled with, the `vsNN` PIE reads from
 # `php -i` and puts in the name: VS16 for 8.3, VS17 from 8.4 on.
 WINDOWS_COMPILERS = {'8.3': 'vs16'}
+# The MSVC toolset a Windows leg links with, and the installer component that carries it, per
+# compiler. PHP refuses an extension linked with a newer toolset than its own core: it compares
+# the PE linker versions' minor tens digit (win32/winutil.c, is_compatible), so the 8.3 core
+# (14.29) refuses a 14.3x or newer DLL, and the 8.4 and 8.5 cores (14.44) refuse 14.5x, which is
+# what the runner's newest Visual Studio links with. Each is its compiler's last toolset, which
+# php.net's builds use, so neither pin moves.
+WINDOWS_TOOLSETS = {
+    'vs16': ('14.29', 'Microsoft.VisualStudio.Component.VC.14.29.16.11.x86.x64'),
+    'vs17': ('14.44', 'Microsoft.VisualStudio.Component.VC.14.44.17.14.x86.x64'),
+}
 LIBCS = {'glibc': 'glibc', 'musl': 'musl', 'macos': 'bsdlibc'}
 
 
@@ -103,8 +113,9 @@ def minor_key(minor):
 
 def matrix(mode, versions, floor):
     """The build legs. `release`: every platform on every minor, the zips a release ships.
-    `pr`: every platform on the newest minor, plus linux-x64 on the floor. The stub diff runs on
-    one leg, linux-x64 on the newest minor."""
+    `pr`: every platform on the newest minor, plus linux-x64 and win-x64 on the floor (win-x64
+    because the floor's Windows build can take another toolset). The stub diff runs on one leg,
+    linux-x64 on the newest minor. A Windows leg names its MSVC toolset and component."""
     minors = versions.split()
     if not minors or len(set(minors)) != len(minors) or not all(MINOR.match(m) for m in minors):
         raise ValueError(f'php_versions must be distinct X.Y minors, space-separated, not {versions!r}')
@@ -116,12 +127,18 @@ def matrix(mode, versions, floor):
     elif mode == 'pr':
         pairs = [(platform, newest) for platform in PLATFORMS]
         if floor and floor != newest:
-            pairs.append((PLATFORMS[0], floor))
+            pairs += [(platform, floor) for platform in PLATFORMS if platform[0] in ('linux-x64', 'win-x64')]
     else:
         raise ValueError(f'mode is pr or release, not {mode!r}')
-    return {'include': [{'rid': rid, 'os': runner, 'kind': kind, 'minor': minor,
-                         'stubs': rid == 'linux-x64' and minor == newest}
+    return {'include': [leg(rid, runner, kind, minor, rid == 'linux-x64' and minor == newest)
                         for (rid, runner, kind), minor in pairs]}
+
+
+def leg(rid, runner, kind, minor, stubs):
+    entry = {'rid': rid, 'os': runner, 'kind': kind, 'minor': minor, 'stubs': stubs}
+    if kind == 'windows':
+        entry['msvc_toolset'], entry['msvc_component'] = WINDOWS_TOOLSETS[windows_compiler(minor)]
+    return entry
 
 
 def windows_compiler(minor):

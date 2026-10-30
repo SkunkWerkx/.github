@@ -7,7 +7,8 @@ name: HyperForge — build, test and pack the PHP extension for PIE
 #
 #   * `release`: the seven platforms, linux-x64, linux-arm64, linux-musl-x64, linux-musl-arm64,
 #     osx-x64, osx-arm64 and win-x64, on every minor in php_versions; the zips a release ships.
-#   * `pr`: the seven platforms on the newest minor, plus linux-x64 on php_floor_version.
+#   * `pr`: the seven platforms on the newest minor, plus linux-x64 and win-x64 on
+#     php_floor_version (win-x64 because the floor's Windows build can take another toolset).
 #
 # NTS only. There is no win-arm64 leg: PHP has never shipped a native Windows ARM64 build, and an
 # x64 PHP running under emulation there loads the win-x64 zip.
@@ -38,6 +39,10 @@ name: HyperForge — build, test and pack the PHP extension for PIE
 #     more and the Intel runner is in its sunset. Composer runs on the tap's arm64 PHP of the
 #     same minor; the extension is cross-built for x86_64-apple-darwin and tested on the x86_64
 #     PHP.
+#
+# A Windows leg links with the MSVC toolset its minor's php.net build used (php_ext_package.py's
+# WINDOWS_TOOLSETS: 14.29 for vs16, 14.44 for vs17), never the runner's newest: PHP refuses an
+# extension linked with a newer toolset than its core.
 on:
   workflow_call:
     inputs:
@@ -363,24 +368,74 @@ jobs:
         shell: bash
         run: cargo clippy --features php -- -D warnings
 
+      # The toolset this minor's php.net build was linked with, added to the runner's Visual
+      # Studio when the image lacks it (14.29 is on none today), with the bootstrapper of that
+      # Visual Studio's own channel, as php/php-windows-builder does.
+      - name: MSVC toolset of this minor's PHP build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSVC_TOOLSET: ${{ matrix.msvc_toolset }}
+          MSVC_COMPONENT: ${{ matrix.msvc_component }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -format json | ConvertFrom-Json | Select-Object -First 1
+          $msvc = Join-Path $vs.installationPath 'VC\Tools\MSVC'
+          $have = { Get-ChildItem $msvc -Directory | Where-Object Name -like "$env:MSVC_TOOLSET.*" }
+          if (-not (& $have)) {
+            $channel = [int]$vs.installationVersion.Split('.')[0]
+            $edition = if ($vs.catalog.productId -match '(Enterprise|Professional|Community)$') { $Matches[1].ToLower() } else { 'buildtools' }
+            $release = if ($channel -ge 18) { 'stable' } else { 'release' }
+            $bootstrapper = Join-Path $env:RUNNER_TEMP "vs_$edition.exe"
+            Invoke-WebRequest "https://aka.ms/vs/$channel/$release/vs_$edition.exe" -OutFile $bootstrapper
+            $install = Start-Process $bootstrapper -Wait -PassThru -ArgumentList @(
+              'modify', '--installPath', "`"$($vs.installationPath)`"", '--add', $env:MSVC_COMPONENT,
+              '--quiet', '--wait', '--norestart', '--nocache')
+            if ($install.ExitCode -notin 0, 3010) { throw "adding $env:MSVC_COMPONENT exited $($install.ExitCode)" }
+            if (-not (& $have)) { throw "$env:MSVC_COMPONENT installed no MSVC $env:MSVC_TOOLSET under $msvc" }
+          }
+          "MSVC $env:MSVC_TOOLSET`: $((& $have).Name -join ', ')"
+          "MSVC_VS_PATH=$($vs.installationPath)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
       # ext-php-rs fetches the PHP devel pack matching `php -i` (version, NTS, compiler) and links
       # its php8.lib. Its Windows path needs `#![feature(abi_vectorcall)]`, which is unstable
       # (rust-lang/rust#124485, open); stable rustc accepts a nightly feature only with the
       # bootstrap variable set, so it is set on this step alone, never wider. Each stable bump is
-      # re-proven here.
+      # re-proven here. vcvarsall selects the leg's toolset for this step only; with its
+      # environment set, rustc and the cc crate take link.exe and cl.exe from PATH rather than
+      # the newest installed. The DLL's PE header then has to name that toolset.
       - name: Build the extension (Windows)
         if: runner.os == 'Windows'
         working-directory: rust
-        shell: bash
+        shell: pwsh
         env:
           RUSTC_BOOTSTRAP: "1"
           LIBCLANG_PATH: C:\Program Files\LLVM\bin
+          MSVC_TOOLSET: ${{ matrix.msvc_toolset }}
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = 'Stop'
+          $vcvars = Join-Path $env:MSVC_VS_PATH 'VC\Auxiliary\Build\vcvarsall.bat'
+          $script = Join-Path $env:RUNNER_TEMP 'msvc-env.cmd'
+          "@call `"$vcvars`" x64 -vcvars_ver=$env:MSVC_TOOLSET >nul || exit /b 1`r`n@set" | Set-Content -Encoding ascii $script
+          $vars = cmd /c $script
+          if ($LASTEXITCODE) { throw "vcvarsall could not select MSVC $env:MSVC_TOOLSET" }
+          foreach ($line in $vars) {
+            if ($line -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2]) }
+          }
+          $link = (Get-Command link.exe).Source
+          if ($link -notlike "*\MSVC\$env:MSVC_TOOLSET.*") { throw "link.exe is $link, not MSVC $env:MSVC_TOOLSET's" }
           cargo php-ext
-          mkdir -p ../php-ext
-          cp "target/php/release/$CRATE.dll" "../php-ext/$CRATE.dll"
-          echo "EXTENSION=$GITHUB_WORKSPACE/php-ext/$CRATE.dll" >> "$GITHUB_ENV"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $dll = "target/php/release/$env:CRATE.dll"
+          $pe = [IO.File]::ReadAllBytes((Resolve-Path $dll))
+          $optional = [BitConverter]::ToInt32($pe, 0x3c) + 24
+          $linker = '{0}.{1}' -f $pe[$optional + 2], $pe[$optional + 3]
+          if ($linker -ne $env:MSVC_TOOLSET) { throw "$dll is linked with $linker, not MSVC $env:MSVC_TOOLSET" }
+          "$dll is linked with $linker"
+          New-Item -ItemType Directory -Force ../php-ext | Out-Null
+          Copy-Item $dll "../php-ext/$env:CRATE.dll"
+          "EXTENSION=$env:GITHUB_WORKSPACE/php-ext/$env:CRATE.dll" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
       # Every binding's README promises linux-x64 and linux-arm64 load on glibc 2.34 or newer;
       # the image's own glibc (2.43 on 26.04) is not that floor.

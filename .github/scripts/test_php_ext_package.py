@@ -253,9 +253,9 @@ class Matrix(unittest.TestCase):
         self.assertEqual(len(pairs), 21)
         self.assertEqual(set(pairs), {(rid, minor) for rid in self.RIDS for minor in ('8.3', '8.4', '8.5')})
 
-    def test_pr_is_every_platform_on_the_newest_plus_the_floor_on_linux_x64(self):
+    def test_pr_is_every_platform_on_the_newest_plus_the_floor_on_linux_x64_and_win_x64(self):
         pairs = [(leg['rid'], leg['minor']) for leg in self.legs('pr')]
-        self.assertEqual(pairs, [(rid, '8.5') for rid in self.RIDS] + [('linux-x64', '8.3')])
+        self.assertEqual(pairs, [(rid, '8.5') for rid in self.RIDS] + [('linux-x64', '8.3'), ('win-x64', '8.3')])
         # A floor that is the newest minor adds no second leg.
         self.assertEqual(len(self.legs('pr', floor='8.5')), 7)
         self.assertEqual(len(self.legs('pr', floor='')), 7)
@@ -272,6 +272,19 @@ class Matrix(unittest.TestCase):
             'linux-musl-x64': ('ubuntu-26.04', 'musl'), 'linux-musl-arm64': ('ubuntu-26.04-arm', 'musl'),
             'osx-x64': ('macos-latest', 'macos'), 'osx-arm64': ('macos-latest', 'macos'),
             'win-x64': ('windows-latest', 'windows')})
+
+    def test_windows_legs_link_with_their_php_builds_toolset(self):
+        # php.net's 8.3 is linked with 14.29, 8.4 and 8.5 with 14.44; PHP refuses a DLL whose
+        # linker minor has a higher tens digit than its core's.
+        toolsets = {leg['minor']: (leg['msvc_toolset'], leg['msvc_component'])
+                    for leg in self.legs('release') if leg['kind'] == 'windows'}
+        self.assertEqual(toolsets, {
+            '8.3': ('14.29', 'Microsoft.VisualStudio.Component.VC.14.29.16.11.x86.x64'),
+            '8.4': ('14.44', 'Microsoft.VisualStudio.Component.VC.14.44.17.14.x86.x64'),
+            '8.5': ('14.44', 'Microsoft.VisualStudio.Component.VC.14.44.17.14.x86.x64')})
+        for leg in self.legs('release'):
+            if leg['kind'] != 'windows':
+                self.assertNotIn('msvc_toolset', leg, leg['rid'])
 
     def test_newest_is_by_number_not_by_text(self):
         pairs = {(leg['rid'], leg['minor']) for leg in self.legs('pr', versions='8.9 8.10', floor='')}
