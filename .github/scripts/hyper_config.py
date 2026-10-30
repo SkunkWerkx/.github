@@ -20,8 +20,7 @@ distribution), `swift_remote` (boolean, default false: the Swift core ships as t
 on the GitHub Release, named by URL and checksum in the root Package.swift, instead of being
 committed under swift/; see swift_release.py), `c_assets` (boolean, default false: the
 release attaches one C archive per platform to the GitHub Release, from the consumer's `c/`;
-see c_package.py), `wasm.toolchain` (`stable`, the default, or a dated `nightly-YYYY-MM-DD`
-that builds the emscripten archive with build-std), `ruby.abis` and `ruby.platforms`, `node.platforms` (RID -> napi platform
+see c_package.py), `ruby.abis` and `ruby.platforms`, `node.platforms` (RID -> napi platform
 name), `go_targets`, `swift_targets`, `xcframework_slices`, `version_files` (path -> regex
 with one group around the version; the default list adds `typescript/package.json` and
 `r/DESCRIPTION` only when that binding's directory exists at the consumer's root).
@@ -91,13 +90,6 @@ class HyperConfig:
         self.c_assets = data.get('c_assets', False)
         if not isinstance(self.c_assets, bool):
             raise ValueError('c_assets must be true or false')
-        wasm = data.get('wasm', {})
-        if not isinstance(wasm, dict) or set(wasm) - {'toolchain'}:
-            raise ValueError('wasm must be an object with only a toolchain key')
-        self.wasm_toolchain = wasm.get('toolchain', 'stable')
-        if not (isinstance(self.wasm_toolchain, str)
-                and re.fullmatch(r'stable|nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}', self.wasm_toolchain)):
-            raise ValueError('wasm.toolchain must be stable or nightly-YYYY-MM-DD')
         ruby = data.get('ruby', {})
         self.ruby_abis = tuple(ruby.get('abis', RUBY_ABIS))
         self.ruby_platforms = dict(ruby.get('platforms', RUBY_PLATFORMS))
@@ -260,7 +252,7 @@ def shell(cfg):
         pairs = ' '.join(f'[{key}]={value}' for key, value in sorted(mapping.items()))
         return f'declare -A {name}=({pairs})'
     lines = [f'CRATE={cfg.crate}', f'PROJECT={cfg.project}', f'WHEELS={cfg.wheels}',
-             f'SDIST={"true" if cfg.sdist else "false"}', f'WASM_TOOLCHAIN={cfg.wasm_toolchain}',
+             f'SDIST={"true" if cfg.sdist else "false"}',
              f'SWIFT_REMOTE={"true" if cfg.swift_remote else "false"}',
              f'C_ASSETS={"true" if cfg.c_assets else "false"}',
              f'BUNDLE={cfg.bundle}', f'XCFRAMEWORK={cfg.xcframework}', f'HEADER={cfg.header}',
@@ -315,7 +307,6 @@ def main():
     else:
         print(json.dumps(dict(crate=cfg.crate, project=cfg.project, wheels=cfg.wheels, sdist=cfg.sdist,
                               swift_remote=cfg.swift_remote, c_assets=cfg.c_assets,
-                              wasm_toolchain=cfg.wasm_toolchain,
                               ruby_abis=cfg.ruby_abis, ruby_platforms=cfg.ruby_platforms,
                               node_platforms=cfg.node_platforms,
                               go_targets=cfg.go_targets, swift_targets=cfg.swift_targets,

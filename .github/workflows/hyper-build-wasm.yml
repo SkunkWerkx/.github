@@ -28,12 +28,12 @@ name: HyperForge — build the Rust core as a wasm32-unknown-emscripten static l
 #    build keeps it from coming back.
 #
 # The crate's .cargo/config.toml also sets panic=abort for this target, which a no_std
-# artifact requires. A consumer that pins a nightly in .github/hyper.json (`wasm.toolchain`)
-# builds with it, and its alias adds -Zbuild-std: Rust's prebuilt core and
+# artifact requires, and its alias adds -Zbuild-std: Rust's prebuilt core and
 # compiler_builtins carry legacy exception handling and features .NET 10's toolchain
 # rejects, and rebuilding them leaves both out, so the archive needs no consumer-side
-# translation. The guard after the build holds that. A consumer without a pin builds on
-# stable exactly as before, with no guard.
+# translation. The guard after the build holds that. The build runs on stable with
+# RUSTC_BOOTSTRAP=1, which admits the -Z flag, for that one step; every other build here
+# stays on plain stable.
 
 on:
   workflow_call:
@@ -123,8 +123,6 @@ jobs:
       contents: read
       id-token: write
       attestations: write
-    outputs:
-      toolchain: ${{ steps.config.outputs.toolchain }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -143,19 +141,9 @@ jobs:
           path: .hyperforge
           persist-credentials: false
 
-      # `stable` unless the consumer's .github/hyper.json pins a dated nightly.
-      - name: Read the wasm toolchain
-        id: config
-        shell: bash
-        run: |
-          set -euo pipefail
-          eval "$(python3 .hyperforge/.github/scripts/hyper_config.py shell)"
-          echo "toolchain=$WASM_TOOLCHAIN" >> "$GITHUB_OUTPUT"
-
-      # rust-src is what -Zbuild-std rebuilds core from; on stable it is installed and unused.
+      # rust-src is what -Zbuild-std rebuilds core from.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          toolchain: ${{ steps.config.outputs.toolchain }}
           components: rust-src
           targets: wasm32-unknown-emscripten
 
@@ -169,13 +157,17 @@ jobs:
           ./emsdk install latest
           ./emsdk activate latest
 
+      # RUSTC_BOOTSTRAP=1 lets stable cargo take the alias's -Zbuild-std. It is set for this
+      # one step, so nothing else here is built with nightly features unlocked. -Zbuild-std
+      # carries no stability promise: the guard below and the Blazor legs are what catch a
+      # stable release that breaks it.
       - name: Build as a wasm32-unknown-emscripten static library
         working-directory: ${{ inputs.working_directory }}
         env:
-          WASM_TOOLCHAIN: ${{ steps.config.outputs.toolchain }}
+          RUSTC_BOOTSTRAP: "1"
         run: |
           source "$HOME/emsdk/emsdk_env.sh"
-          cargo +"$WASM_TOOLCHAIN" wasm-staticlib
+          cargo wasm-staticlib
 
       # The reason the library is built without std, held as a check rather than a comment:
       # a static library that defines rust_eh_personality carries its own copy of Rust's
@@ -194,7 +186,7 @@ jobs:
           fi
           echo "no rust_eh_personality in $lib"
 
-      # What a pinned build exists for, held as a check: no exception-handling instruction in
+      # What -Zbuild-std is there for, held as a check: no exception-handling instruction in
       # any member (a browser refuses a module that mixes the legacy encoding with .NET 11's
       # new one) and no declared feature but sign-ext and mutable-globals, Binaryen's defaults,
       # which every wasm-opt run in a .NET 10 publish accepts with no flag (its Binaryen 117 refuses bulk-memory-opt and
@@ -202,7 +194,6 @@ jobs:
       # rejects, among others, nontrapping-fptoint's saturating conversions). Members are read
       # one by one, and anything the script cannot inspect fails it.
       - name: The static library carries no exception handling and no feature .NET rejects
-        if: steps.config.outputs.toolchain != 'stable'
         working-directory: ${{ inputs.working_directory }}
         run: |
           set -euo pipefail
@@ -234,8 +225,8 @@ jobs:
 
   # C#: the archive above, linked into the binding's Blazor WebAssembly smoke app through the
   # package's own targets file, published, served, and loaded. The native relink needs the
-  # wasm-tools workload; a consumer that pins a nightly ships an archive .NET 10 links too,
-  # and its check script runs .NET 10 legs, which need the .NET 10 runtime and its workload.
+  # wasm-tools workload; the build-std archive links on .NET 10 too, and the check script
+  # runs .NET 10 legs, which need the .NET 10 runtime and its workload.
   test-blazor:
     if: inputs.blazor_check != ''
     needs: build-wasm
@@ -250,13 +241,11 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
-          # .NET 10 beside the pinned SDK, for the net10.0 Blazor legs a pinned archive serves;
-          # the empty string installs nothing.
-          dotnet-version: ${{ needs.build-wasm.outputs.toolchain != 'stable' && '10.0.x' || '' }}
+          # .NET 10 beside the pinned SDK, for the net10.0 Blazor legs.
+          dotnet-version: 10.0.x
       - name: wasm-tools workload
         run: dotnet workload install wasm-tools
       - name: wasm-tools-net10 workload
-        if: needs.build-wasm.outputs.toolchain != 'stable'
         run: dotnet workload install wasm-tools-net10
       - name: Blazor WebAssembly app in headless Chrome
         env:

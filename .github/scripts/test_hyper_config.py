@@ -45,32 +45,6 @@ class HyperConfigTests(unittest.TestCase):
                              capture_output=True, text=True, check=True)
         self.assertEqual(off.stdout.strip(), 'false')
 
-    def test_wasm_toolchain_defaults_to_stable_and_reaches_shell_and_json(self):
-        self.assertEqual(hyper_config.HyperConfig(MINIMAL).wasm_toolchain, 'stable')
-        pinned = {**MINIMAL, 'wasm': {'toolchain': 'nightly-2026-10-27'}}
-        self.assertEqual(hyper_config.HyperConfig(pinned).wasm_toolchain, 'nightly-2026-10-27')
-        write_config(self.root, pinned)
-        shell = subprocess.run(['bash', '-c', f'eval "$(python3 {SCRIPTS / "hyper_config.py"} shell --root {self.root})"; echo $WASM_TOOLCHAIN'],
-                               capture_output=True, text=True, check=True)
-        self.assertEqual(shell.stdout.strip(), 'nightly-2026-10-27')
-        data = json.loads(subprocess.run([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'json', '--root', str(self.root)],
-                                         capture_output=True, text=True, check=True).stdout)
-        self.assertEqual(data['wasm_toolchain'], 'nightly-2026-10-27')
-
-    def test_wasm_toolchain_must_be_stable_or_a_dated_nightly(self):
-        for bad in ('nightly', 'beta', 'nightly-2026-1-2', 1, None):
-            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'wasm.toolchain must be stable or nightly-YYYY-MM-DD'):
-                hyper_config.HyperConfig({**MINIMAL, 'wasm': {'toolchain': bad}})
-
-    def test_wasm_must_be_an_object_holding_only_toolchain(self):
-        for bad in (None, 'nightly-2026-10-27', ['toolchain'], {'toolchian': 'nightly-2026-10-27'}):
-            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'wasm must be an object with only a toolchain key'):
-                hyper_config.HyperConfig({**MINIMAL, 'wasm': bad})
-
-    def test_wasm_toolchain_date_digits_are_ascii(self):
-        with self.assertRaisesRegex(ValueError, 'wasm.toolchain must be stable or nightly-YYYY-MM-DD'):
-            hyper_config.HyperConfig({**MINIMAL, 'wasm': {'toolchain': 'nightly-\u0662026-10-27'}})
-
     def test_sdist_must_be_a_boolean(self):
         for bad in ('false', 1, None):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'sdist must be true or false'):

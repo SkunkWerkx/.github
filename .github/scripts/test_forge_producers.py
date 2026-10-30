@@ -735,8 +735,8 @@ class JniContracts(unittest.TestCase):
 
 
 class WasmToolchainContracts(unittest.TestCase):
-    """hyper-build-wasm.yml builds on a consumer's pinned nightly and guards the archive, and
-    stays as it was for a consumer without a pin."""
+    """hyper-build-wasm.yml builds the archive with build-std on stable, guards it, and links it
+    on .NET 10 and 11."""
 
     @classmethod
     def setUpClass(cls):
@@ -746,34 +746,31 @@ class WasmToolchainContracts(unittest.TestCase):
     def steps(self, job):
         return {step.get('name'): step for step in self.workflow['jobs'][job]['steps']}
 
-    def test_build_reads_the_pin_from_the_executing_forge(self):
-        job = self.workflow['jobs']['build-wasm']
-        steps = self.steps('build-wasm')
-        names = list(steps)
+    def test_build_checks_out_the_executing_forge_for_the_guard(self):
+        names = list(self.steps('build-wasm'))
         self.assertLess(names.index('Validate Forge workflow revision'), names.index('Check out the executing Forge revision'))
-        self.assertLess(names.index('Check out the executing Forge revision'), names.index('Read the wasm toolchain'))
-        config = steps['Read the wasm toolchain']
-        self.assertEqual(config['id'], 'config')
-        self.assertIn('hyper_config.py shell', config['run'])
-        self.assertIn('toolchain=$WASM_TOOLCHAIN', config['run'])
-        self.assertEqual(job['outputs']['toolchain'], '${{ steps.config.outputs.toolchain }}')
+        self.assertNotIn('outputs', self.workflow['jobs']['build-wasm'])
 
-    def test_build_installs_and_uses_the_pinned_toolchain(self):
+    def test_build_runs_build_std_on_stable_for_one_step(self):
         steps = self.steps('build-wasm')
         install = next(step for step in self.workflow['jobs']['build-wasm']['steps']
                        if str(step.get('uses', '')).startswith('dtolnay/rust-toolchain@'))
-        self.assertEqual(install['with']['toolchain'], '${{ steps.config.outputs.toolchain }}')
+        self.assertNotIn('toolchain', install['with'])
         self.assertEqual(install['with']['components'], 'rust-src')
         self.assertEqual(install['with']['targets'], 'wasm32-unknown-emscripten')
         build = steps['Build as a wasm32-unknown-emscripten static library']
-        self.assertIn('cargo +"$WASM_TOOLCHAIN" wasm-staticlib', build['run'])
-        self.assertEqual(build['env']['WASM_TOOLCHAIN'], '${{ steps.config.outputs.toolchain }}')
+        self.assertIn('cargo wasm-staticlib', build['run'])
+        self.assertNotIn('cargo +', build['run'])
+        self.assertEqual(build['env'], {'RUSTC_BOOTSTRAP': '1'})
+        others = [step.get('name') for job in self.workflow['jobs'].values() for step in job['steps']
+                  if 'RUSTC_BOOTSTRAP' in str(step) and step is not build]
+        self.assertEqual(others, [])
 
-    def test_guard_runs_only_with_a_pin(self):
+    def test_guard_runs_on_every_toolchain(self):
         steps = self.steps('build-wasm')
         names = list(steps)
         guard = steps['The static library carries no exception handling and no feature .NET rejects']
-        self.assertEqual(guard['if'], "steps.config.outputs.toolchain != 'stable'")
+        self.assertNotIn('if', guard)
         self.assertIn('python3 "$GITHUB_WORKSPACE/.hyperforge/.github/scripts/wasm_archive_guard.py"', guard['run'])
         self.assertIn('--llvm-bin "$EMSDK/upstream/bin"', guard['run'])
         self.assertLess(names.index('The static library carries no copy of Rust\'s standard library'),
@@ -781,15 +778,14 @@ class WasmToolchainContracts(unittest.TestCase):
         self.assertLess(names.index('The static library carries no exception handling and no feature .NET rejects'),
                         names.index('Attest the static library'))
 
-    def test_blazor_adds_dotnet_10_only_with_a_pin(self):
+    def test_blazor_adds_dotnet_10_on_every_toolchain(self):
         steps = self.steps('test-blazor')
-        pinned = "needs.build-wasm.outputs.toolchain != 'stable'"
         sdks = steps['The .NET SDKs']
         self.assertEqual(sdks['with']['global-json-file'], 'global.json')
-        self.assertEqual(sdks['with']['dotnet-version'], f"${{{{ {pinned} && '10.0.x' || '' }}}}")
+        self.assertEqual(sdks['with']['dotnet-version'], '10.0.x')
         self.assertNotIn('The .NET 10 runtime', steps)
         workload = steps['wasm-tools-net10 workload']
-        self.assertEqual(workload['if'], pinned)
+        self.assertNotIn('if', workload)
         self.assertEqual(workload['run'], 'dotnet workload install wasm-tools-net10')
         self.assertNotIn('if', steps['wasm-tools workload'])
 
