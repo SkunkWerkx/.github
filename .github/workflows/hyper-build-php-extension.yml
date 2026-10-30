@@ -1,7 +1,43 @@
-name: HyperForge — build and load-check PHP extensions
+name: HyperForge — build, test and pack the PHP extension for PIE
 
-# Matches the existing three unix native legs. The separate Intel macOS core-only job
-# has never produced a PHP extension. PHP ext-ffi suites and floor checks stay in native.
+# The PHP binding is a Zend extension, the core crate's `php` feature built with ext-php-rs, and
+# it ships the way PIE installs one: a pre-packaged zip per platform and PHP minor, attached to
+# the GitHub Release (php_ext_package.py has the names). This workflow builds those zips, one job
+# per (platform, minor), each against the PHP it is named for:
+#
+#   * `release`: the seven platforms, linux-x64, linux-arm64, linux-musl-x64, linux-musl-arm64,
+#     osx-x64, osx-arm64 and win-x64, on every minor in php_versions; the zips a release ships.
+#   * `pr`: the seven platforms on the newest minor, plus linux-x64 on php_floor_version.
+#
+# NTS only. There is no win-arm64 leg: PHP has never shipped a native Windows ARM64 build, and an
+# x64 PHP running under emulation there loads the win-x64 zip.
+#
+# Each leg, in order: build; on glibc, hold the library to the glibc floor; load-check it into
+# its PHP, which is where an extension built for the wrong ABI is refused; run the binding's
+# suite through it (`composer test`); pack and verify the zip against PIE's own naming code;
+# attest it (release mode); upload it as php-ext-<rid>-<minor>. The suite runs on every leg.
+# The stub diff runs on one leg, linux-x64 on the newest minor, where cargo-php is installed and
+# StubTest regenerates the stubs and compares them with the committed file; clippy runs over the
+# `php` feature there too, the one feature set check-core can't build.
+#
+# Two version values, never mixed. `package_version` is the crate's bare X.Y.Z at this commit,
+# what phpversion() reports and the load check asserts. `release_tag` is "v" + it, the version
+# segment PIE puts in a zip's name and so the packer's --version. The version job derives both
+# once; nothing types either by hand.
+#
+# How each platform gets its PHP:
+#   * linux glibc and win-x64: setup-php, which serves every minor on Ubuntu and Windows.
+#   * musl: Alpine's php8X-dev for the build, php:<minor>-cli-alpine for the load check, the
+#     suite and the pack (php_ext_musl.sh says why two).
+#   * osx-arm64: the shivammathur/php tap (its newest minor is `php`, older ones `php@X.Y`),
+#     installed with brew directly: setup-php installs from the same tap but discards brew's
+#     output, and on 2026-10-08 failed there with nothing but "Could not setup PHP 8.5"
+#     (HyperUuid run 37710502986).
+#   * osx-x64: an x86_64 PHP built from php.net's source and run under Rosetta 2 on the Apple
+#     silicon runner (php_macos_x86_64.sh), because Homebrew bottles nothing for Intel macOS any
+#     more and the Intel runner is in its sunset. Composer runs on the tap's arm64 PHP of the
+#     same minor; the extension is cross-built for x86_64-apple-darwin and tested on the x86_64
+#     PHP.
 on:
   workflow_call:
     inputs:
@@ -10,63 +46,258 @@ on:
         type: string
         required: true
       mode:
-        description: "Extensions run in release mode only"
+        description: "`release` builds every platform on every minor in php_versions and attests the zips; `pr` builds every platform on the newest minor plus linux-x64 on php_floor_version, and attests nothing"
         type: string
         default: release
-      php_version:
-        description: "Current PHP version; macOS uses Homebrew core's PHP"
+      php_versions:
+        description: "The PHP minors the extension is built for, space-separated; the newest is the pr-mode minor"
         type: string
-        default: "8.5"
+        default: "8.3 8.4 8.5"
+      php_floor_version:
+        description: "The oldest minor the package declares: pr mode adds it on linux-x64. Empty adds nothing."
+        type: string
+        default: ""
       attest_native:
-        description: "Sign build provenance (requires id-token and attestations write)"
+        description: "Sign build provenance for each zip in release mode (the calling job must grant id-token and attestations write)"
         type: boolean
         default: true
 
 jobs:
-  build-php-extension:
-    if: inputs.mode != 'pr'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-26.04
-            rid: linux-x64
-          - os: ubuntu-26.04-arm
-            rid: linux-arm64
-          - os: macos-latest
-            rid: osx-arm64
-    runs-on: ${{ matrix.os }}
+  version:
+    runs-on: ubuntu-26.04
+    outputs:
+      package_version: ${{ steps.version.outputs.package_version }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      env_prefix: ${{ steps.version.outputs.env_prefix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
-      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
-        if: runner.os == 'Linux'
-        with:
-          php-version: ${{ inputs.php_version }}
-          extensions: ffi
-          tools: composer
+      # The crate's [package] version at this commit, the one prepare-release bumped. The suite's
+      # environment variables are named for the crate (<CRATE>_PHP_EXTENSION,
+      # <CRATE>_CHECK_STUBS), as hyper_config.py names <CRATE>_VERSION; php_ext_musl.sh derives
+      # the same prefix the same way.
+      - name: Read the crate version, and derive the release tag from it
+        id: version
+        working-directory: rust
+        env:
+          CRATE: ${{ inputs.crate }}
+        run: |
+          set -euo pipefail
+          package_version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r --arg crate "$CRATE" '.packages[] | select(.name == $crate) | .version')
+          if ! [[ "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::rust/Cargo.toml's $CRATE version is '$package_version', not a bare X.Y.Z"
+            exit 1
+          fi
+          echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v$package_version" >> "$GITHUB_OUTPUT"
+          env_prefix=$(printf '%s' "$CRATE" | tr '[:lower:]-' '[:upper:]_')
+          if ! [[ "$env_prefix" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+            echo "::error::crate '$CRATE' gives '$env_prefix', not an environment variable prefix"
+            exit 1
+          fi
+          echo "env_prefix=$env_prefix" >> "$GITHUB_OUTPUT"
 
-      - name: PHP and Composer from Homebrew (macOS)
-        if: runner.os == 'macOS'
+      - name: The legs this mode builds
+        id: matrix
+        env:
+          MODE: ${{ inputs.mode }}
+          PHP_VERSIONS: ${{ inputs.php_versions }}
+          PHP_FLOOR_VERSION: ${{ inputs.php_floor_version }}
+        run: |
+          set -euo pipefail
+          matrix=$(python3 ".hyperforge/.github/scripts/php_ext_package.py" matrix --mode "$MODE" --versions "$PHP_VERSIONS" --floor "$PHP_FLOOR_VERSION")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix" | jq -r '.include[] | "\(.rid) PHP \(.minor)"'
+
+  build:
+    needs: version
+    name: ${{ matrix.rid }} PHP ${{ matrix.minor }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.version.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    env:
+      FORGE_SCRIPTS: .hyperforge/.github/scripts
+      CRATE: ${{ inputs.crate }}
+      RID: ${{ matrix.rid }}
+      MINOR: ${{ matrix.minor }}
+      PACKAGE_VERSION: ${{ needs.version.outputs.package_version }}
+      RELEASE_TAG: ${{ needs.version.outputs.release_tag }}
+      ENV_PREFIX: ${{ needs.version.outputs.env_prefix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      # The musl legs build inside Alpine with a toolchain of their own. The stub leg adds clippy.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: matrix.kind != 'musl'
+        with:
+          targets: ${{ matrix.rid == 'osx-x64' && 'x86_64-apple-darwin' || '' }}
+          components: ${{ matrix.stubs && 'clippy' || '' }}
+
+      # The phar the packer runs PIE's own naming code from: the version and sha256 are
+      # php_ext_package.py's, and the attestation is PIE's release workflow's, so the bytes are
+      # both the pinned ones and php/pie's.
+      - name: Fetch PIE, and verify its checksum and attestation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          py=python3
+          if [ "$RUNNER_OS" = Windows ]; then py=python; fi
+          pin=$("$py" "$FORGE_SCRIPTS/php_ext_package.py" pie-pin | tr -d '\r')
+          version=${pin% *}
+          sha256=${pin#* }
+          tmp=$RUNNER_TEMP
+          if command -v cygpath >/dev/null; then tmp=$(cygpath -m "$tmp"); fi
+          phar="$tmp/pie.phar"
+          curl -fsSL --retry 3 -o "$phar" "https://github.com/php/pie/releases/download/$version/pie.phar"
+          got=$("$py" -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$phar" | tr -d '\r')
+          if [ "$got" != "$sha256" ]; then
+            echo "::error::pie.phar $version has sha256 $got, not the pinned $sha256"
+            exit 1
+          fi
+          gh attestation verify "$phar" --owner php
+          echo "PIE_PHAR=$phar" >> "$GITHUB_ENV"
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        if: matrix.kind == 'glibc' || matrix.kind == 'windows'
+        env:
+          phpts: nts
+        with:
+          php-version: ${{ matrix.minor }}
+          tools: composer
+          coverage: none
+
+      # On osx-arm64 this is the leg's PHP. On osx-x64 it only runs Composer, which resolves
+      # for its minor; the suite runs on the x86_64 PHP built below.
+      - name: PHP from the shivammathur/php tap (macOS)
+        if: matrix.kind == 'macos'
         shell: bash
         env:
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
-          WANT: ${{ inputs.php_version }}
         run: |
           set -euo pipefail
-          brew install php composer
-          php -v
-          php -r 'exit(extension_loaded("ffi") ? 0 : 1);' \
-            || { echo "::error::Homebrew's php has no ffi extension loaded"; exit 1; }
-          got=$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')
-          if [ "$got" != "$WANT" ]; then
-            echo "::notice::macOS is testing PHP $got (Homebrew core's newest); php_version is $WANT — bump the forge's default to match."
+          brew tap shivammathur/php
+          formula="shivammathur/php/php@$MINOR"
+          if ! brew info --formula "$formula" >/dev/null 2>&1; then
+            formula=shivammathur/php/php
+            # The image's Homebrew core php shares the tap formula's name.
+            brew uninstall --ignore-dependencies --force php >/dev/null 2>&1 || true
           fi
+          brew install "$formula"
+          bin="$(brew --prefix "$formula")/bin"
+          got=$("$bin/php" -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')
+          if [ "$got" != "$MINOR" ]; then
+            echo "::error::$formula is PHP $got, not $MINOR"
+            exit 1
+          fi
+          "$bin/php" -v
+          echo "COMPOSER_PHP=$bin/php" >> "$GITHUB_ENV"
+          if [ "$RID" = osx-arm64 ]; then echo "$bin" >> "$GITHUB_PATH"; fi
 
+      - name: Resolve the x86_64 PHP release (osx-x64)
+        id: php_x64
+        if: matrix.rid == 'osx-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r version sha256 < <("$FORGE_SCRIPTS/php_macos_x86_64.sh" resolve "$MINOR")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the x86_64 PHP (osx-x64)
+        id: php_x64_cache
+        if: matrix.rid == 'osx-x64'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/php-x86_64
+          key: php-x86_64-macos-${{ steps.php_x64.outputs.version }}-${{ hashFiles('.hyperforge/.github/scripts/php_macos_x86_64.sh') }}
+
+      - name: Build the x86_64 PHP (osx-x64)
+        if: matrix.rid == 'osx-x64' && steps.php_x64_cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.php_x64.outputs.version }}
+          SHA256: ${{ steps.php_x64.outputs.sha256 }}
+        run: '"$FORGE_SCRIPTS/php_macos_x86_64.sh" build "$VERSION" "$SHA256" "$RUNNER_TEMP/php-x86_64"'
+
+      - name: Save the x86_64 PHP (osx-x64)
+        if: matrix.rid == 'osx-x64' && steps.php_x64_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/php-x86_64
+          key: ${{ steps.php_x64_cache.outputs.cache-primary-key }}
+
+      - name: Put the x86_64 PHP first on PATH (osx-x64)
+        if: matrix.rid == 'osx-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          file "$RUNNER_TEMP/php-x86_64/bin/php"
+          echo "$RUNNER_TEMP/php-x86_64/bin" >> "$GITHUB_PATH"
+
+      # Composer from its installer, checked against the published signature, run by the
+      # leg's (on osx-x64, the tap's arm64) PHP.
+      - name: Composer (macOS)
+        if: matrix.kind == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/composer"
+          mkdir -p "$dir"
+          "$COMPOSER_PHP" -r 'copy("https://getcomposer.org/installer", $argv[1]);' "$dir/setup.php"
+          sig=$(curl -fsSL --retry 3 https://composer.github.io/installer.sig)
+          if [ "$("$COMPOSER_PHP" -r 'echo hash_file("sha384", $argv[1]);' "$dir/setup.php")" != "$sig" ]; then
+            echo "::error::the Composer installer does not match its published signature"
+            exit 1
+          fi
+          "$COMPOSER_PHP" "$dir/setup.php" --quiet --install-dir="$dir" --filename=composer.phar
+          printf '#!/bin/sh\nexec "%s" "%s" "$@"\n' "$COMPOSER_PHP" "$dir/composer.phar" > "$dir/composer"
+          chmod +x "$dir/composer"
+          echo "$dir" >> "$GITHUB_PATH"
+
+      # The Ubuntu image's Swift toolchain puts a `clang` of its own first on PATH. bindgen,
+      # which ext-php-rs runs, loads the newest system libclang but asks the first `clang` on
+      # PATH for the compiler's headers; on Ubuntu 26.04 with Swift 6.4 those are two compilers,
+      # and the build failed on x64 in `xmmintrin.h` (HyperUuid run 36893952091). CLANG_PATH and
+      # LIBCLANG_PATH, clang-sys's own overrides, name one system LLVM for both.
       - name: Point bindgen at one system LLVM, not at Swift's clang
-        if: runner.os == 'Linux'
+        if: matrix.kind == 'glibc'
         shell: bash
         run: |
           set -euo pipefail
@@ -80,64 +311,152 @@ jobs:
           done
           echo "::warning::No /usr/lib/llvm-*/ carries both clang and libclang; bindgen is left to find its own, which is how the mismatch above happens."
 
-      - name: Build PHP (ext-php-rs) extension
-        working-directory: rust
-        run: cargo rustc --release --crate-type cdylib --features php
-
-      # This is a Zend extension, not another FFI cdylib: the `--features php` build exports
-      # `get_module`, so PHP loads it via `extension=` in php.ini rather than `FFI::cdef`.
-      # PHP names extension modules `.so` on macOS too, so the Darwin .dylib is copied to a
-      # .so name rather than kept as one.
-      #
-      # It is a strict superset of the plain cdylib rather than an alternative to it — the
-      # same build still exports every C symbol the ext-ffi backend calls (measured on
-      # HyperUuid when it had twelve: 12 of 12 present, at 689,448 bytes against the plain
-      # build's 431,840 on linux-x64). It still gets its own artifact instead of replacing `native-{rid}`,
-      # because byte-identical native libraries across a caller's php/, go/ and swift/ trees
-      # are what let one committed git blob serve three bindings under one attestation.
-      - name: Stage PHP (ext-php-rs) extension
-        shell: bash
-        run: |
-          mkdir -p php-ext
-          case "${{ runner.os }}" in
-            macOS) cp "rust/target/release/lib${{ inputs.crate }}.dylib" "php-ext/${{ inputs.crate }}.so" ;;
-            Linux) cp "rust/target/release/lib${{ inputs.crate }}.so"    "php-ext/${{ inputs.crate }}.so" ;;
-          esac
-
-      # The check that makes attesting this binary worth anything: a Zend extension that
-      # compiled can still be refused at load time. PHP matches a module's build ID exactly
-      # — `API<number>,<NTS|ZTS>` — and rejects every mismatch, so unlike the FFI library
-      # these bytes are pinned to one PHP ABI, not just one platform. This proves they load
-      # and records which ABI they are pinned to, since the artifact carries no metadata of
-      # its own saying so. The module name ext-php-rs registers is CARGO_PKG_NAME, which is
-      # what `crate` already is.
-      - name: Load-check the PHP extension, and record the ABI it is pinned to
+      # The stub leg only: StubTest regenerates the stubs with the consumer's generator, which
+      # runs a debug build through cargo-php (the version the generator names) and preloads a
+      # C stand-in for PHP's data symbols, so it needs a C compiler and libclang too.
+      - name: Stub generator prerequisites (cargo-php, libclang)
+        if: matrix.stubs
         shell: bash
         run: |
           set -euo pipefail
-          build_id=$(php -i | sed -n 's/^PHP Extension Build => //p')
-          echo "\`php-native-${{ matrix.rid }}\` — PHP $(php -r 'echo PHP_VERSION;'), build ID \`${build_id}\`" \
-            >> "$GITHUB_STEP_SUMMARY"
-          php -d extension="$PWD/php-ext/${{ inputs.crate }}.so" \
-              -r 'exit(extension_loaded("${{ inputs.crate }}") ? 0 : 1);'
+          version=$(sed -n "s/^const CARGO_PHP_VERSION = '\(.*\)';$/\1/p" php/tools/generate-stubs.php)
+          if [ -z "$version" ]; then
+            echo "::error::php/tools/generate-stubs.php names no CARGO_PHP_VERSION"
+            exit 1
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libclang-dev
+          cargo install cargo-php --version "$version" --locked
+          command -v cc
 
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: php-native-${{ matrix.rid }}
-          path: php-ext/${{ inputs.crate }}.so
+      # `cargo php-ext` is the crate's own alias (rust/.cargo/config.toml): the release cdylib
+      # with the `php` feature, in target/php/ so it never lands on the FFI library's path. The
+      # library is staged as {crate}.so (PHP names a macOS extension .so too); the packer zips it
+      # under the name PIE installs.
+      - name: Build the extension
+        if: matrix.kind == 'glibc' || matrix.kind == 'macos'
+        working-directory: rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RID" = osx-x64 ]; then
+            PHP=$(command -v php)
+            export PHP PHP_CONFIG="${PHP%/php}/php-config"
+            cargo php-ext --target x86_64-apple-darwin
+            lib="target/php/x86_64-apple-darwin/release/lib$CRATE.dylib"
+          elif [ "$RUNNER_OS" = macOS ]; then
+            cargo php-ext
+            lib="target/php/release/lib$CRATE.dylib"
+          else
+            cargo php-ext
+            lib="target/php/release/lib$CRATE.so"
+          fi
+          mkdir -p ../php-ext
+          cp "$lib" "../php-ext/$CRATE.so"
+          echo "EXTENSION=$GITHUB_WORKSPACE/php-ext/$CRATE.so" >> "$GITHUB_ENV"
 
-      # Attested on exactly the same footing as the native library and the Magnus extension:
-      # a compiled binary a consumer can neither read nor reproduce. Same verifying command,
-      # same reason it needs both halves of the identity:
+      # Clippy over the `php` feature, which check-core can't build (it needs PHP's headers and
+      # libclang, both here): once, on the stub leg, with check-core's flags.
+      - name: Clippy over the extension (the php feature)
+        if: matrix.stubs
+        working-directory: rust
+        shell: bash
+        run: cargo clippy --features php -- -D warnings
+
+      # ext-php-rs fetches the PHP devel pack matching `php -i` (version, NTS, compiler) and links
+      # its php8.lib. Its Windows path needs `#![feature(abi_vectorcall)]`, which is unstable
+      # (rust-lang/rust#124485, open); stable rustc accepts a nightly feature only with the
+      # bootstrap variable set, so it is set on this step alone, never wider. Each stable bump is
+      # re-proven here.
+      - name: Build the extension (Windows)
+        if: runner.os == 'Windows'
+        working-directory: rust
+        shell: bash
+        env:
+          RUSTC_BOOTSTRAP: "1"
+          LIBCLANG_PATH: C:\Program Files\LLVM\bin
+        run: |
+          set -euo pipefail
+          cargo php-ext
+          mkdir -p ../php-ext
+          cp "target/php/release/$CRATE.dll" "../php-ext/$CRATE.dll"
+          echo "EXTENSION=$GITHUB_WORKSPACE/php-ext/$CRATE.dll" >> "$GITHUB_ENV"
+
+      # Every binding's README promises linux-x64 and linux-arm64 load on glibc 2.34 or newer;
+      # the image's own glibc (2.43 on 26.04) is not that floor.
+      - name: glibc floor — nothing newer than GLIBC_2.34 is referenced
+        if: matrix.kind == 'glibc'
+        shell: bash
+        run: |
+          set -euo pipefail
+          newest=$(objdump -T "$EXTENSION" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "newest glibc symbol version referenced: $newest"
+          if [ "$(printf '%s\n' GLIBC_2.34 "$newest" | sort -V | tail -1)" != GLIBC_2.34 ]; then
+            echo "::error::the extension references $newest; the documented floor for $RID is glibc 2.34"
+            exit 1
+          fi
+
+      # PHP matches a module's build ID exactly and refuses every other ABI at load, so this is
+      # what makes the bytes worth attesting: they load into the PHP they are named for and
+      # report this commit's version. It records the build ID in the step summary.
+      - name: Load-check the extension, and record the ABI it is pinned to
+        if: matrix.kind != 'musl'
+        shell: bash
+        run: php -d "extension=$EXTENSION" "$FORGE_SCRIPTS/php_ext_load_check.php" "$CRATE" "$PACKAGE_VERSION"
+
+      # The musl legs do all of the above, the suite and the pack in containers: see the script.
+      - name: Build, load-check, test and pack on Alpine
+        if: matrix.kind == 'musl'
+        shell: bash
+        run: '"$FORGE_SCRIPTS/php_ext_musl.sh" "$CRATE" "$RID" "$MINOR" . .hyperforge "$PIE_PHAR" php-dist'
+
+      - name: Install the suite's Composer dependencies
+        if: matrix.kind != 'musl'
+        working-directory: php
+        shell: bash
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      # `composer test`, run through `php` rather than the Composer proxy, which is a shebang
+      # script Windows' pwsh cannot execute. tools/run-tests.php loads the extension named by
+      # <CRATE>_PHP_EXTENSION, as do the suite's child processes. The stub leg sets
+      # <CRATE>_CHECK_STUBS, so StubTest regenerates and compares; elsewhere it skips.
+      - name: Test the extension (composer test)
+        if: matrix.kind != 'musl'
+        working-directory: php
+        shell: bash
+        env:
+          STUBS: ${{ matrix.stubs }}
+        run: |
+          set -euo pipefail
+          export "${ENV_PREFIX}_PHP_EXTENSION=$EXTENSION"
+          if [ "$STUBS" = true ]; then export "${ENV_PREFIX}_CHECK_STUBS=1"; fi
+          php tools/run-tests.php
+
+      - name: Pack the PIE zip
+        if: matrix.kind != 'musl'
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python3
+          if [ "$RUNNER_OS" = Windows ]; then py=python; fi
+          "$py" "$FORGE_SCRIPTS/php_ext_package.py" pack --library "$EXTENSION" --php php --pie "$PIE_PHAR" --version "$RELEASE_TAG" --extension "$CRATE" --out php-dist
+
+      # The zip is what PIE downloads and what a consumer verifies:
       #
-      #     gh attestation verify <file> --repo <owner>/<repo> --signer-repo SkunkWerkx/.github
+      #     gh attestation verify <zip> --repo <owner>/<repo> --signer-repo SkunkWerkx/.github
       #
-      # and the same fork-PR gate, since a fork's token cannot sign.
-      - name: Attest PHP (ext-php-rs) extension provenance
+      # Release mode only, and never on a fork's pull request, whose token cannot sign.
+      - name: Attest the zip's build provenance
         if: >-
-          inputs.attest_native && inputs.mode != 'pr' &&
+          inputs.attest_native && inputs.mode == 'release' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: php-ext/${{ inputs.crate }}.so
+          subject-path: php-dist/*.zip
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: php-ext-${{ matrix.rid }}-${{ matrix.minor }}
+          path: php-dist/*.zip
+          if-no-files-found: error

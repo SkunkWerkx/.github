@@ -14,7 +14,7 @@ A pattern is a regex whose first group is an export name, or an object `{"block"
 with another. Optional keys: `abi_probe` (a C program compiled against the bundle's header
 and linked with each payload; default `.github/scripts/abi_probe.c`), `cdylib_smoke` (a
 Python script given a shared library and `rust/Cargo.toml`: each RID's in hyper-check-core.yml's
-check-cdylib, the committed linux-x64 one in release_guard.py), `wheels` (count,
+check-cdylib, the CI run's linux-x64 one in release_guard.py), `wheels` (count,
 default 17), `sdist` (boolean, default false: also publish the Python source
 distribution), `swift_remote` (boolean, default false: the Swift core ships as two zips
 on the GitHub Release, named by URL and checksum in the root Package.swift, instead of being
@@ -31,8 +31,6 @@ import re
 
 RIDS = ('linux-x64', 'linux-arm64', 'linux-musl-x64', 'linux-musl-arm64',
         'osx-x64', 'osx-arm64', 'win-x64', 'win-arm64')
-# PHP on Windows is an x64 process even on ARM hardware, so no win-arm64 library ships there.
-PHP_RIDS = tuple(rid for rid in RIDS if rid != 'win-arm64')
 GO_TARGETS = ('android_amd64', 'android_arm64', 'darwin_amd64', 'darwin_arm64', 'ios_arm64',
               'iossimulator_arm64', 'linux_amd64', 'linux_arm64', 'maccatalyst_amd64',
               'maccatalyst_arm64', 'wasm', 'windows_amd64', 'windows_arm64')
@@ -131,10 +129,6 @@ class HyperConfig:
         return f'{self.crate}.lib' if 'windows' in target else f'lib{self.crate}.a'
 
     @property
-    def php_libs(self):
-        return {rid: self.lib_name(rid) for rid in PHP_RIDS}
-
-    @property
     def bundle(self):
         return f'swift/{self.project}Core.artifactbundle'
 
@@ -180,10 +174,11 @@ class HyperConfig:
         return files
 
     def payload_paths(self, artifacts):
-        """Every committed native payload -> where the CI artifacts hold it."""
+        """Every committed native payload -> where the CI artifacts hold it. All are static
+        archives: no binding commits a shared library (PHP's extension ships as PIE zips on the
+        GitHub Release)."""
         artifacts = Path(artifacts)
-        paths = {f'php/src/native/{rid}/{name}': artifacts / 'native' / f'native-{rid}' / name
-                 for rid, name in self.php_libs.items()}
+        paths = {}
         static = [f'go/staticlib/{target}/lib{self.crate}.a' for target in self.go_targets]
         if not self.swift_remote:
             static += [f'{self.bundle}/{target}/{self.archive_name(target)}' for target in self.swift_targets]
@@ -198,14 +193,14 @@ class HyperConfig:
     @property
     def source_paths(self):
         """Files under the payload trees that are source, not staged payload."""
-        return {'php/src/native/README.md', 'go/staticlib/README.md',
+        return {'go/staticlib/README.md',
                 f'{self.bundle}/include/{self.header}', f'{self.bundle}/include/module.modulemap'}
 
     @property
     def payload_trees(self):
         if self.swift_remote:
-            return ('php/src/native', 'go/staticlib')
-        return ('php/src/native', self.bundle, self.xcframework, 'go/staticlib')
+            return ('go/staticlib',)
+        return (self.bundle, self.xcframework, 'go/staticlib')
 
     @property
     def staged_edits(self):
@@ -215,11 +210,16 @@ class HyperConfig:
 
     @property
     def probe_payloads(self):
-        """The payload kinds the ABI probe links against, each the linux-x64 one: a PHP shared
-        library, a Swift archive while those are committed, and a Go archive."""
+        """The committed payload kinds the ABI probe links against, each the linux-x64 one: a
+        Swift archive while those are committed, and a Go archive."""
         swift = () if self.swift_remote else (f'{self.bundle}/x86_64-unknown-linux-gnu/lib{self.crate}.a',)
-        return (f'php/src/native/linux-x64/{self.lib_name("linux-x64")}', *swift,
-                f'go/staticlib/linux_amd64/lib{self.crate}.a')
+        return (*swift, f'go/staticlib/linux_amd64/lib{self.crate}.a')
+
+    def shared_payload(self, artifacts):
+        """The CI run's linux-x64 shared library, under `artifacts`: uncommitted, but the ABI
+        probe links it and the cdylib smoke loads it, so a release still proves the shared
+        library every loading binding takes."""
+        return Path(artifacts) / 'native' / 'native-linux-x64' / self.lib_name('linux-x64')
 
     def core_exports(self, root=None):
         """The C export names the Rust source declares, by the repository's own rule."""
@@ -259,7 +259,6 @@ def shell(cfg):
              f'NATIVE_EXTENSION={cfg.native_extension}',
              'RUBY_ABIS=(' + ' '.join(cfg.ruby_abis) + ')',
              assoc('LIB_NAMES', cfg.lib_names), assoc('JNI_LIB_NAMES', cfg.jni_lib_names),
-             assoc('PHP_LIBS', cfg.php_libs),
              assoc('RUBY_PLATFORMS', cfg.ruby_platforms), assoc('NODE_PLATFORMS', cfg.node_platforms),
              assoc('STATIC_TREES', {'go/staticlib': len(cfg.go_targets)} if cfg.swift_remote
                    else {cfg.bundle: len(cfg.swift_targets),

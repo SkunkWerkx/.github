@@ -1,9 +1,10 @@
 name: HyperForge — stage native binaries for release
 
-# PHP, Swift and Go have no packing step of their own: whatever is in the git tree at a
-# tagged commit is what a consumer gets. So the binaries under php/src/native/, the Swift
-# artifact bundle and XCFramework and go/staticlib/ are committed, and the commit that is
-# tagged (B) carries the bytes built from its preparation parent (A). A consumer whose
+# Swift and Go have no packing step of their own: whatever is in the git tree at a tagged
+# commit is what a consumer gets. So the Swift artifact bundle and XCFramework and
+# go/staticlib/ are committed, and the commit that is tagged (B) carries the bytes built from
+# its preparation parent (A). (PHP's extension is not committed: it ships as PIE zips on the
+# GitHub Release, built by hyper-build-php-extension.yml.) A consumer whose
 # hyper.json sets swift_remote commits no Swift binaries: B writes the release version and
 # the checksums of the two zips the static-libs job attested into its root Package.swift
 # (swift_release.py), and the release attaches those zips to the GitHub Release.
@@ -162,7 +163,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y llvm
 
       # Every payload is present, exports exactly the C ABI the Rust source declares, and the
-      # consumer's ABI probe links and runs against one of each kind.
+      # consumer's ABI probe links and runs against one of each kind, and against the run's
+      # linux-x64 shared library, which is committed nowhere but which the cdylib smoke loads.
       - name: Validate downloaded symbols, version and runtime contract
         env:
           GH_TOKEN: ${{ github.token }}
@@ -182,7 +184,7 @@ jobs:
       # Several destinations, one set of bytes: git stores a static archive Swift and Go both
       # carry as one blob. Symlinks were rejected: //go:embed refuses them, the Go module proxy
       # drops them, and a Windows checkout without Developer Mode materializes them as text.
-      - name: Verify attestations, then stage into php/, swift/, go/
+      - name: Verify attestations, then stage into swift/ and go/
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.find.outputs.source_sha }}
@@ -200,18 +202,11 @@ jobs:
             echo "$(sha256sum "$1" | cut -d' ' -f1)  $2" >> digests.txt
           }
           : > digests.txt
+          # Every RID's shared library is verified and listed with its digest, though none is
+          # committed: the guard's probe and smoke ran on the linux-x64 one above.
           for rid in "${!LIB_NAMES[@]}"; do
             verify "artifacts/native/native-$rid/${LIB_NAMES[$rid]}" "$rid/${LIB_NAMES[$rid]}"
           done
-
-          # PHP is the one tree that takes shared libraries. PHP on Windows is an x64 process
-          # even on ARM hardware, so no ARM64 DLL ships under php/. install -m 755 rather than
-          # cp: download-artifact does not preserve modes.
-          for rid in "${!PHP_LIBS[@]}"; do
-            mkdir -p "php/src/native/$rid"
-            install -m 755 "artifacts/native/native-$rid/${PHP_LIBS[$rid]}" "php/src/native/$rid/${PHP_LIBS[$rid]}"
-          done
-          git rm -r --quiet --ignore-unmatch php/src/native/win-arm64
 
           # All of a tree's archives or none: a Swift bundle whose info.json names an archive
           # that is not there fails every consumer's build, and a Go build with no archive for
@@ -277,9 +272,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if [ "$SWIFT_REMOTE" = true ]; then
-            git add php/src/native Package.swift
+            git add Package.swift
           else
-            git add php/src/native "$BUNDLE" "$XCFRAMEWORK"
+            git add "$BUNDLE" "$XCFRAMEWORK"
           fi
           # -f: go/staticlib's archives are in .gitignore, so that this workflow is the only
           # thing that ever adds one; a developer's own build of them stays out of a commit.

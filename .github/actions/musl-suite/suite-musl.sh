@@ -3,7 +3,7 @@
 #
 #   suite-musl.sh <binding> <crate> <rid> <repo-root> <musl-lib-dir>
 #
-# <binding> is one of: csharp, go, java, java-jni, node, php, python, ruby. <rid> is linux-musl-x64 or linux-musl-arm64 and has to match
+# <binding> is one of: csharp, go, java, java-jni, node, python, ruby. <rid> is linux-musl-x64 or linux-musl-arm64 and has to match
 # the container's architecture (DOCKER_PLATFORM overrides the host's, as in build-musl.sh).
 # The csharp suite reads CSHARP_TEST_PROJECT, CSHARP_RUNTIMES_DIR and CSHARP_AOT_PROJECT, plus
 # two optional ones for a multi-targeted project: CSHARP_AOT_FRAMEWORKS (space-separated TFMs,
@@ -13,8 +13,8 @@
 # The java-jni suite reads JDK_FLOOR_VERSION (the floor JDK's Temurin major) and needs the
 # JNI shim, lib<crate>_jni.so, beside the core in <musl-lib-dir>.
 # SUITE_IMAGE overrides the binding's default image, which is how the same suite runs a
-# second time on the oldest runtime the binding claims: `php:8.2-cli-alpine` beside
-# `php:8.5-cli-alpine`, `ruby:3.3-alpine` beside `ruby:4.0-alpine`. A floor nothing runs is
+# second time on the oldest runtime the binding claims: `ruby:3.3-alpine` beside
+# `ruby:4.0-alpine`, `python:3.11-alpine` beside `python:3.14-alpine`. A floor nothing runs is
 # a floor nobody knows is true, and the Alpine images exist for every version, so this job
 # is where the floors get tested as well as musl.
 #
@@ -135,23 +135,6 @@ case "$binding" in
       apk del build-base >/dev/null
       if ls /usr/lib/libgcc_s.so* >/dev/null 2>&1; then echo "::error::libgcc_s is still installed, so this run proves nothing"; exit 1; fi
       /work/suite.test -test.count=1
-    '
-    ;;
-
-  # The official image ships without ext-ffi; building it is three packages and one command.
-  php)
-    in_alpine "${SUITE_IMAGE:-php:8.5-cli-alpine}" '
-      apk add --no-cache libffi-dev git unzip >/dev/null
-      docker-php-ext-install ffi >/dev/null
-      php -r "copy(\"https://getcomposer.org/installer\", \"/tmp/composer-setup.php\");"
-      php /tmp/composer-setup.php --quiet --install-dir=/usr/local/bin --filename=composer
-      cp -r /src/php /work/php
-      rm -rf /work/php/vendor /work/php/composer.lock /work/php/src/native/linux-x64 /work/php/src/native/linux-arm64
-      mkdir -p "/work/php/src/native/$RID"
-      cp "/musl/lib$CRATE.so" "/work/php/src/native/$RID/"
-      cd /work/php
-      composer install --no-interaction --prefer-dist --no-progress --quiet
-      php vendor/bin/phpunit
     '
     ;;
 

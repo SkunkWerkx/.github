@@ -49,7 +49,7 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(len(packages), len(self.files))
         self.m.validate_inventory(self.root, result, self.identity, self.workspace)
         for entry in packages:
-            self.assertEqual(entry['source_sha'], self.identity['source_sha' if entry['path'].startswith('pypi/') else 'staging_sha'])
+            self.assertEqual(entry['source_sha'], self.identity['source_sha' if entry['path'].startswith(('pypi/', 'php/')) else 'staging_sha'])
 
     def test_recovery_rejects_altered_missing_and_extra_bytes(self):
         saved = self.build()
@@ -155,7 +155,7 @@ class InventoryTests(unittest.TestCase):
         self.addCleanup(outside.cleanup)
         workspace = Path(outside.name) / 'checkout'
         self.natives_list = Path(outside.name) / 'natives.txt'
-        natives = ['php/src/native/linux-x64/libhypercast.so', 'go/staticlib/linux_amd64/libhypercast.a',
+        natives = ['go/staticlib/darwin_arm64/libhypercast.a', 'go/staticlib/linux_amd64/libhypercast.a',
                    'swift/HyperCastCore.artifactbundle/x86_64-unknown-linux-gnu/libhypercast.a',
                    'swift/HyperCastCore.artifactbundle/info.json']
         for index, relative in enumerate(natives):
@@ -260,13 +260,13 @@ if '--predicate-type' in args:
  sys.exit(0)
 if path.name=='info.json':
  sys.exit('HTTP 404: Not Found')
-source='a'*40 if path.parent.name=='pypi' or 'release-packages' not in path.parts else 'b'*40
+source='a'*40 if path.parent.name in ('pypi','php') or 'release-packages' not in path.parts else 'b'*40
 sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
 ''')
         gh.chmod(0o755)
         root = self.root / 'release-packages'
         shutil.move(str(self.root / 'nuget'), root / 'nuget')
-        for group in ('ruby', 'pypi', 'crate', 'maven'):
+        for group in ('ruby', 'pypi', 'crate', 'maven', 'php'):
             shutil.move(str(self.root / group), root / group)
         env = {**os.environ, **{key.upper(): value for key, value in self.identity.items()},
                'PATH': str(gh.parent) + os.pathsep + os.environ['PATH'], 'GITHUB_RUN_ID': '34',
@@ -318,13 +318,13 @@ if '--predicate-type' in args:
  inventory=json.loads(pathlib.Path('release-packages/inventory.json' if pathlib.Path('release-packages').is_dir() else os.environ['INVENTORY']).read_text())
  print(json.dumps([{'verificationResult':{'statement':{'predicateType':args[args.index('--predicate-type')+1],'predicate':inventory}}}]))
  sys.exit(0)
-source='a'*40 if pathlib.Path(args[2]).parent.name=='pypi' or 'release-packages' not in pathlib.Path(args[2]).parts else 'b'*40
+source='a'*40 if pathlib.Path(args[2]).parent.name in ('pypi','php') or 'release-packages' not in pathlib.Path(args[2]).parts else 'b'*40
 sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
 ''')
         gh.chmod(0o755)
         root = workspace / 'release-packages'
         root.mkdir()
-        for group in self.m.REGISTRIES:
+        for group in (*self.m.REGISTRIES, 'php'):
             shutil.move(str(self.root / group), root / group)
         env = {**os.environ, **{key.upper(): value for key, value in self.identity.items()},
                'PATH': str(gh.parent) + os.pathsep + os.environ['PATH'], 'GITHUB_RUN_ID': '34',
@@ -358,7 +358,7 @@ if '--predicate-type' in args:
  print(json.dumps([{'verificationResult':{'statement':{'predicateType':args[args.index('--predicate-type')+1],'predicate':inventory}}}]))
  sys.exit(0)
 path=pathlib.Path(args[2])
-source='a'*40 if path.parent.name=='pypi' or os.environ['ROOT'] not in str(path.resolve()) else 'b'*40
+source='a'*40 if path.parent.name in ('pypi','php') or os.environ['ROOT'] not in str(path.resolve()) else 'b'*40
 if os.environ.get('WRONG_SOURCE') and path.suffix=='.crate': source='c'*40
 sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
 ''')
@@ -406,6 +406,48 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
             (self.root / 'bun/x.tgz').write_bytes(b'')
             self.m.payload_files(self.root)
 
+    def test_php_zips_are_exactly_the_twenty_one_named_with_the_release_tag(self):
+        # The release 1.1.0: seven platforms x 8.3, 8.4, 8.5, each named with v1.1.0.
+        layout = [p for p in self.layout() if not p.startswith('php/')]
+        # Written out, not derived: the spec's asset table for 1.1.0, so the formula is checked
+        # against names it did not produce.
+        zips = [f'php/php_hyperuuid-v1.1.0_php{m}-{arch}-{system}-nts.zip'
+                for m in ('8.3', '8.4', '8.5')
+                for arch in ('x86_64', 'arm64')
+                for system in ('linux-glibc', 'linux-musl', 'darwin-bsdlibc')]
+        zips += ['php/php_hyperuuid-v1.1.0-8.3-nts-vs16-x86_64.zip',
+                 'php/php_hyperuuid-v1.1.0-8.4-nts-vs17-x86_64.zip',
+                 'php/php_hyperuuid-v1.1.0-8.5-nts-vs17-x86_64.zip']
+        self.assertEqual(len(set(zips)), 21)
+        # The fixture's other groups are hypercast 0.10.0; validate those names for 1.1.0.
+        others = [p.replace('hypercast', 'hyperuuid').replace('0.10.0', '1.1.0') for p in layout]
+        self.m.validate_layout(others + zips, 'hyperuuid', '1.1.0')
+        self.assertEqual(sorted(f'php/{n}' for n in self.m.php_asset_names('1.1.0', 'hyperuuid')), sorted(zips))
+        missing = 'php/php_hyperuuid-v1.1.0_php8.3-x86_64-linux-glibc-nts.zip'
+        broken = {
+            'missing one zip': ([z for z in zips if z != missing], missing),
+            'an extra php/ file': (zips + ['php/README.md'], 'php/README.md'),
+            'a bare 1.1.0 version segment': ([z.replace('-v1.1.0', '-1.1.0') if z == missing else z for z in zips],
+                                             'php/php_hyperuuid-1.1.0_php8.3-x86_64-linux-glibc-nts.zip'),
+            'no zips at all': ([], missing),
+        }
+        for label, (group, named) in broken.items():
+            with self.subTest(label), self.assertRaisesRegex(ValueError, 'PHP extension zips') as raised:
+                self.m.validate_layout(others + group, 'hyperuuid', '1.1.0')
+            self.assertIn(named, str(raised.exception))
+
+    def test_php_zips_are_built_at_a_signed_by_the_forge_and_attached_to_the_release(self):
+        inventory = self.build()
+        entries = [e for e in inventory['files'] if e['path'].startswith('php/')]
+        self.assertEqual(len(entries), 21)
+        for entry in entries:
+            self.assertEqual((entry['signer_repo'], entry['source_sha'], entry['location']),
+                             (self.m.FORGE, 'a' * 40, 'packages'))
+        self.assertIn('php', self.m.RELEASE_ASSET_GROUPS)
+        self.assertNotIn('php', self.m.REGISTRIES, 'no registry upload: PIE reads the GitHub Release')
+        subjects = self.m.checksums(inventory)
+        self.assertTrue(all(f"  {e['path']}\n" in subjects for e in entries), 'the release attestation names every zip')
+
     def test_npm_and_cran_are_signed_by_the_consumer_at_b(self):
         inventory = self.build()
         entries = [e for e in inventory['files'] if e['path'].split('/')[0] in ('npm', 'cran')]
@@ -414,9 +456,10 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
             self.assertEqual((entry['signer_repo'], entry['source_sha']), ('SkunkWerkx/HyperCast', 'b' * 40))
         self.assertIn('npm', self.m.REGISTRIES)
         self.assertNotIn('cran', self.m.REGISTRIES, 'no job ever uploads the CRAN tarball')
-        self.assertEqual(self.m.INVENTORY_GROUPS, self.m.REGISTRIES + ('cran', 'github', 'c'))
+        self.assertEqual(self.m.INVENTORY_GROUPS, self.m.REGISTRIES + ('cran', 'github', 'c', 'php'))
         self.assertIn('c/', self.m.CONSUMER_SIGNED, 'the C archives are packed and attested at B')
-        for bad in (['npm/x.tgz'], ['cran/x.tar.gz']):
+        # php/ is the PIE zips' group now, so the old committed php/src/native layout collides.
+        for bad in (['npm/x.tgz'], ['cran/x.tar.gz'], ['php/src/native/linux-x64/libhypercast.so']):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'collides'):
                 self.m.build_inventory(self.root, self.identity, bad, self.workspace)
 

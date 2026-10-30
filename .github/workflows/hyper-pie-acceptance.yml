@@ -1,0 +1,329 @@
+name: HyperForge — PIE installs the released PHP extension
+
+# Acceptance for the PHP extension's PIE zips, against a real GitHub Release. The build workflow
+# (hyper-build-php-extension.yml) loads each build directly and checks each zip's name against
+# PIE's own code; neither shows that PIE downloads, extracts, installs and enables the finished
+# zip. PIE finds a pre-packaged binary only through GitHub's /releases/tags/{version} API, so
+# this needs a published Release, and it runs twice:
+#
+#   * workflow_call, from a consumer's release.yml after its finalizer, against Packagist and the
+#     Release just written. A failure here is fixed with a patch release, never in place: a
+#     renamed asset leaves the inventory's paths wrong, and a repacked zip changes the digest the
+#     release attestation names (docs/release-runbook.md).
+#   * workflow_dispatch, for the rehearsal before a first release: `repository` names a scratch
+#     repository (added as a `vcs` repository) whose Release carries the zips.
+#
+# One leg per platform and PHP minor, the platforms php_ext_package.py builds. Each starts with
+# PHP and the pinned, attested PIE phar and nothing of the consumer's: no checkout, no build
+# tools. PIE installs `<package>:v<package_version>` (the tag, which is the version PIE looks the
+# Release up by), then a fresh `php` with no -d flags runs pie_acceptance.php: the extension is
+# loaded, reports package_version, is byte for byte the file in that leg's zip on the Release, and
+# makes a v4, the corpus's v5 vector, a v7 and a SQL order round trip.
+#
+# The bytes: before installing, each leg downloads its own zip from the Release and, against a
+# real release (no `repository`), verifies the release attestation over it, the one release.yml
+# signed at the tag; the file PIE installed must be that zip's entry. A rehearsal's scratch
+# Release carries no release attestation (its zips were attached by hand from a CI run, whose
+# build provenance names the consumer, not the scratch repository), so there only the sha256
+# comparison runs.
+#
+# How each platform gets its PHP mirrors the build workflow: setup-php on Linux glibc and Windows
+# (NTS), Alpine's php8X packages in a bare alpine:3.24 container on musl, the shivammathur/php tap
+# on osx-arm64, and on osx-x64 the same x86_64 PHP from php.net's source under Rosetta 2. That
+# PHP has no openssl, so on osx-x64 PIE runs on the tap's arm64 PHP of the same minor and installs
+# into the x86_64 one (--with-php-path). PIE itself needs openssl, iconv and phar, and `unzip`
+# (Composer extracts a zip with it on Unix; macOS and the Ubuntu runners ship it, Alpine adds it),
+# and `otool` on macOS to see bsdlibc (on the runners with Xcode).
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: "The Composer package PIE installs (e.g. skunkwerkx/hyperuuid)"
+        type: string
+        required: true
+      extension:
+        description: "The extension's name, the consumer's crate (e.g. hyperuuid)"
+        type: string
+        required: true
+      package_version:
+        description: "The bare X.Y.Z the extension reports; PIE is asked for the tag v<package_version>"
+        type: string
+        required: true
+      repository:
+        description: "Empty for Packagist; otherwise a repository URL PIE adds as `vcs` first"
+        type: string
+        default: ""
+      minors:
+        description: "The PHP minors, space-separated (the release's php_versions)"
+        type: string
+        default: "8.3 8.4 8.5"
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "The Composer package PIE installs (e.g. skunkwerkx/hyperuuid)"
+        type: string
+        required: true
+      extension:
+        description: "The extension's name, the consumer's crate (e.g. hyperuuid)"
+        type: string
+        required: true
+      package_version:
+        description: "The bare X.Y.Z the extension reports; PIE is asked for the tag v<package_version>"
+        type: string
+        required: true
+      repository:
+        description: "Empty for Packagist; otherwise a repository URL PIE adds as `vcs` first"
+        type: string
+        default: ""
+      minors:
+        description: "The PHP minors, space-separated (the release's php_versions)"
+        type: string
+        default: "8.3 8.4 8.5"
+
+permissions:
+  contents: read
+
+jobs:
+  legs:
+    runs-on: ubuntu-26.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      # Every platform on every minor: php_ext_package.py's release matrix, the legs that built
+      # the zips this installs.
+      - name: The legs
+        id: matrix
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+          MINORS: ${{ inputs.minors }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::package_version is '$PACKAGE_VERSION', not a bare X.Y.Z (PIE is asked for v<package_version>)"
+            exit 1
+          fi
+          matrix=$(python3 .hyperforge/.github/scripts/php_ext_package.py matrix --mode release --versions "$MINORS" --floor '')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix" | jq -r '.include[] | "\(.rid) PHP \(.minor)"'
+
+  install:
+    needs: legs
+    name: ${{ matrix.rid }} PHP ${{ matrix.minor }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.legs.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      FORGE_SCRIPTS: .hyperforge/.github/scripts
+      RID: ${{ matrix.rid }}
+      MINOR: ${{ matrix.minor }}
+      PACKAGE: ${{ inputs.package }}
+      EXTENSION: ${{ inputs.extension }}
+      PACKAGE_VERSION: ${{ inputs.package_version }}
+      REPOSITORY: ${{ inputs.repository }}
+    steps:
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      # The Forge's scripts only: nothing of the consumer's reaches the leg but its Release.
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      # The phar PIE runs from: php_ext_package.py's pin, its sha256, and PIE's release
+      # workflow's attestation, as the build workflow fetches it.
+      - name: Fetch PIE, and verify its checksum and attestation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          py=python3
+          if [ "$RUNNER_OS" = Windows ]; then py=python; fi
+          pin=$("$py" "$FORGE_SCRIPTS/php_ext_package.py" pie-pin | tr -d '\r')
+          version=${pin% *}
+          sha256=${pin#* }
+          tmp=$RUNNER_TEMP
+          if command -v cygpath >/dev/null; then tmp=$(cygpath -m "$tmp"); fi
+          phar="$tmp/pie.phar"
+          curl -fsSL --retry 3 -o "$phar" "https://github.com/php/pie/releases/download/$version/pie.phar"
+          got=$("$py" -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$phar" | tr -d '\r')
+          if [ "$got" != "$sha256" ]; then
+            echo "::error::pie.phar $version has sha256 $got, not the pinned $sha256"
+            exit 1
+          fi
+          gh attestation verify "$phar" --owner php
+          echo "PIE_PHAR=$phar" >> "$GITHUB_ENV"
+
+      # This leg's zip, as the Release serves it: the name from php_ext_package.py's platform
+      # table, the release attestation over it (a real release only), and the sha256 of its one
+      # entry, which pie_acceptance.php holds the installed file to.
+      - name: Fetch this leg's zip from the Release, and verify it
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          py=python3
+          if [ "$RUNNER_OS" = Windows ]; then py=python; fi
+          tag="v$PACKAGE_VERSION"
+          name=$("$py" "$FORGE_SCRIPTS/php_ext_package.py" asset --rid "$RID" --minor "$MINOR" --version "$tag" --extension "$EXTENSION" | tr -d '\r')
+          if [ -n "$REPOSITORY" ]; then
+            release_repo=$(printf '%s' "$REPOSITORY" | sed -E 's#^https://github\.com/##; s#\.git$##; s#/$##')
+          else
+            release_repo=$GITHUB_REPOSITORY
+          fi
+          if ! [[ "$release_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::cannot read a GitHub owner/repo from repository '$REPOSITORY'"
+            exit 1
+          fi
+          dir=$RUNNER_TEMP/release-zip
+          if command -v cygpath >/dev/null; then dir=$(cygpath -m "$dir"); fi
+          mkdir -p "$dir"
+          gh release download "$tag" --repo "$release_repo" --pattern "$name" --dir "$dir"
+          zip="$dir/$name"
+          if [ -z "$REPOSITORY" ]; then
+            gh attestation verify "$zip" --repo "$release_repo" --source-ref "refs/tags/$tag" \
+              --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1
+          else
+            echo "::notice::$release_repo is a rehearsal Release, with no release attestation: only the installed file's sha256 is checked"
+          fi
+          sha256=$("$py" -c 'import hashlib, sys, zipfile; names = zipfile.ZipFile(sys.argv[1]).namelist(); assert len(names) == 1, names; print(hashlib.sha256(zipfile.ZipFile(sys.argv[1]).read(names[0])).hexdigest())' "$zip" | tr -d '\r')
+          echo "$name: entry sha256 $sha256"
+          echo "ENTRY_SHA256=$sha256" >> "$GITHUB_ENV"
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        if: matrix.kind == 'glibc' || matrix.kind == 'windows'
+        env:
+          phpts: nts
+        with:
+          php-version: ${{ matrix.minor }}
+          extensions: openssl, iconv, phar, zip
+          tools: none
+          coverage: none
+
+      # osx-arm64's PHP, and the PHP that runs PIE on osx-x64.
+      - name: PHP from the shivammathur/php tap (macOS)
+        if: matrix.kind == 'macos'
+        shell: bash
+        env:
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          set -euo pipefail
+          brew tap shivammathur/php
+          formula="shivammathur/php/php@$MINOR"
+          if ! brew info --formula "$formula" >/dev/null 2>&1; then
+            formula=shivammathur/php/php
+            # The image's Homebrew core php shares the tap formula's name.
+            brew uninstall --ignore-dependencies --force php >/dev/null 2>&1 || true
+          fi
+          brew install "$formula"
+          bin="$(brew --prefix "$formula")/bin"
+          got=$("$bin/php" -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')
+          if [ "$got" != "$MINOR" ]; then
+            echo "::error::$formula is PHP $got, not $MINOR"
+            exit 1
+          fi
+          "$bin/php" -v
+          echo "PIE_PHP=$bin/php" >> "$GITHUB_ENV"
+          echo "TARGET_PHP=$bin/php" >> "$GITHUB_ENV"
+
+      - name: Resolve the x86_64 PHP release (osx-x64)
+        id: php_x64
+        if: matrix.rid == 'osx-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r version sha256 < <("$FORGE_SCRIPTS/php_macos_x86_64.sh" resolve "$MINOR")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      # The build workflow's key: the PHP that leg built against, cached by its run.
+      - name: Restore the x86_64 PHP (osx-x64)
+        id: php_x64_cache
+        if: matrix.rid == 'osx-x64'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/php-x86_64
+          key: php-x86_64-macos-${{ steps.php_x64.outputs.version }}-${{ hashFiles('.hyperforge/.github/scripts/php_macos_x86_64.sh') }}
+
+      - name: Build the x86_64 PHP (osx-x64)
+        if: matrix.rid == 'osx-x64' && steps.php_x64_cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.php_x64.outputs.version }}
+          SHA256: ${{ steps.php_x64.outputs.sha256 }}
+        run: '"$FORGE_SCRIPTS/php_macos_x86_64.sh" build "$VERSION" "$SHA256" "$RUNNER_TEMP/php-x86_64"'
+
+      # It is built with no php.ini, so PIE would have nowhere to enable the extension; an
+      # installed PHP has one. An empty file at its configured path is what a user's would be.
+      - name: Target the x86_64 PHP (osx-x64)
+        if: matrix.rid == 'osx-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          php="$RUNNER_TEMP/php-x86_64/bin/php"
+          file "$php"
+          ini_dir=$("$php" -r 'echo PHP_CONFIG_FILE_PATH;')
+          mkdir -p "$ini_dir"
+          touch "$ini_dir/php.ini"
+          echo "TARGET_PHP=$php" >> "$GITHUB_ENV"
+
+      - name: Install with PIE, then check from a fresh PHP
+        if: matrix.kind != 'musl'
+        shell: bash
+        # PIE's release lookup and Composer's vcs driver call the GitHub API; anonymously that is
+        # 60 requests an hour per runner IP. The job token, read-only here, lifts it. Never echoed.
+        env:
+          COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ github.token }}"}}'
+        run: |
+          set -euo pipefail
+          pie_php=${PIE_PHP:-php}
+          target_php=${TARGET_PHP:-php}
+          "$FORGE_SCRIPTS/pie_acceptance.sh" "$pie_php" "$target_php" "$PIE_PHAR" "$PACKAGE" "$EXTENSION" "$PACKAGE_VERSION" "$REPOSITORY" "$ENTRY_SHA256"
+
+      # A bare alpine image with Alpine's PHP of this minor and what PIE needs to run, nothing
+      # else: the image the build workflow's musl legs built against (php_ext_musl.sh).
+      - name: Install with PIE, then check from a fresh PHP (Alpine)
+        if: matrix.kind == 'musl'
+        shell: bash
+        # PIE's release lookup and Composer's vcs driver call the GitHub API; anonymously that is
+        # 60 requests an hour per runner IP. The job token, read-only here, lifts it. Never echoed.
+        env:
+          COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ github.token }}"}}'
+        run: |
+          set -euo pipefail
+          apk_php="php${MINOR/./}"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/$FORGE_SCRIPTS:/forge:ro" -v "$PIE_PHAR:/pie.phar:ro" \
+            -e APK_PHP="$apk_php" -e PACKAGE -e EXTENSION -e PACKAGE_VERSION -e REPOSITORY -e ENTRY_SHA256 -e COMPOSER_AUTH \
+            alpine:3.24 sh -euc '
+              apk add --no-cache "$APK_PHP" "$APK_PHP-openssl" "$APK_PHP-iconv" "$APK_PHP-phar" unzip >/dev/null
+              sh /forge/pie_acceptance.sh "$APK_PHP" "$APK_PHP" /pie.phar "$PACKAGE" "$EXTENSION" "$PACKAGE_VERSION" "$REPOSITORY" "$ENTRY_SHA256"
+            '

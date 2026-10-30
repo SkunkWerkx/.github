@@ -236,6 +236,22 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertLess(names.index('cran-packages'), verify)
 
 
+    def test_gate_takes_the_php_zips_from_the_ci_run_into_the_php_group(self):
+        # Every php-ext-<rid>-<minor> artifact of the ci.yml run at A, merged flat into
+        # release-packages/php on the fresh path, before the inventory is created (which checks
+        # their provenance and the exact name set); a recovery run has them in release-packages.
+        steps = self.steps('release-gate')
+        download = [s for s in steps if s.get('uses', '').startswith('actions/download-artifact@')
+                    and s.get('with', {}).get('pattern') == 'php-ext-*']
+        self.assertEqual(len(download), 1)
+        self.assertEqual(download[0]['if'], "inputs.prepared_run_id == ''")
+        self.assertEqual(download[0]['with']['path'], 'release-packages/php')
+        self.assertIs(download[0]['with']['merge-multiple'], True)
+        self.assertEqual(download[0]['with']['run-id'], '${{ inputs.ci_run_id }}')
+        self.assertEqual(download[0]['with']['github-token'], '${{ inputs.token }}')
+        self.assertLess(steps.index(download[0]),
+                        [s.get('name') for s in steps].index('Verify every final package and create the source/run inventory'))
+
     def test_pypi_action_prepares_and_leaves_the_upload_to_the_caller(self):
         # pypa/gh-action-pypi-publish nested in a composite action looks for its image at
         # ghcr.io/<consumer>:<tag> (actions/runner#2473): both v1.0.0 uploads failed that way.

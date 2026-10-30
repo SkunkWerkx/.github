@@ -212,7 +212,7 @@ jobs:
         run: |
           set -euo pipefail
           if grep -rnE '^[[:space:]]*extern crate alloc' src \
-               --exclude=python_ext.rs --exclude=ruby_ext.rs --exclude=php_ext.rs; then
+               --exclude=python_ext.rs --exclude=ruby_ext.rs --exclude=php_ext.rs --exclude-dir=php_ext; then
             echo '::error::The core declared "extern crate alloc"; it documents that a bare-metal consumer needs no global allocator (rust/README.md, no_std). Drop the allocation or update that claim.' >&2
             exit 1
           fi

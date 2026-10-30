@@ -125,9 +125,9 @@ class ConfigTests(unittest.TestCase):
     def test_swift_leaves_the_committed_payloads_and_package_swift_may_be_staged(self):
         cfg = hyper_config.HyperConfig(REMOTE)
         paths = cfg.payload_paths(Path('artifacts'))
-        self.assertEqual(len(paths), 7 + 13)
+        self.assertEqual(len(paths), 13)
         self.assertFalse(any(path.startswith('swift/') for path in paths))
-        self.assertEqual(cfg.payload_trees, ('php/src/native', 'go/staticlib'))
+        self.assertEqual(cfg.payload_trees, ('go/staticlib',))
         self.assertEqual(cfg.staged_edits, ('Package.swift',))
         self.assertEqual(cfg.swift_assets, ('HyperUuidCore.artifactbundle.zip', 'HyperUuidCoreApple.xcframework.zip'))
         self.assertFalse(any(path.startswith('swift/') for path in cfg.probe_payloads))
@@ -182,8 +182,6 @@ class GuardTests(unittest.TestCase):
         self.git('reset', '-q', '--hard', self.a)
         for path in guard.payload_paths(self.cfg, Path('artifacts')):
             self.write(path, 'verified bytes')
-            if path.startswith('php/'):
-                (self.root / path).chmod(0o755)
         self.write('Package.swift', manifest)
         self.commit(f'stage\n\nRelease-Source-SHA: {self.a}\nRelease-CI-Run-ID: 42')
         return self.git('rev-parse', 'HEAD')
@@ -234,7 +232,8 @@ class InventoryAndNotesTests(unittest.TestCase):
                  'crate/r.json', 'crate/m.bin', 'maven/bundle.zip', 'ruby/hyperuuid-0.9.0.gem',
                  'ruby/hyperuuid-wasm-0.9.0.gem',
                  *(f'ruby/hyperuuid-0.9.0-{p}.gem' for p in cfg.ruby_platforms.values()),
-                 *(f'pypi/hyperuuid-0.9.0-cp311-{i}.whl' for i in range(cfg.wheels))]
+                 *(f'pypi/hyperuuid-0.9.0-cp311-{i}.whl' for i in range(cfg.wheels)),
+                 *(f'php/{name}' for name in self.inventory.php_asset_names('0.9.0', 'hyperuuid'))]
         assets = [f'github/{name}' for name in cfg.swift_assets]
         self.inventory.validate_layout(paths + assets, 'hyperuuid', '0.9.0', cfg)
         for wrong in (paths, paths + assets[:1], paths + assets + ['github/extra.zip']):
@@ -251,7 +250,7 @@ class InventoryAndNotesTests(unittest.TestCase):
                  {'path': 'github/HyperUuidCoreApple.xcframework.zip', 'location': 'packages'}]
         inventory = dict(repository=REPO, version='0.9.0', source_sha='a' * 40, ci_run_id='42', files=files)
         text = ' '.join(self.notes.verifying(inventory).split())
-        self.assertIn('the 1 native libraries committed for Go and PHP, and the Swift core\'s '
+        self.assertIn('the 1 native libraries committed for Go, and the Swift core\'s '
                       '`HyperUuidCore.artifactbundle.zip` and `HyperUuidCoreApple.xcframework.zip`, attached below. '
                       'Its predicate', text)
         self.assertIn('The native libraries, the Swift zips, the Python wheels', text)

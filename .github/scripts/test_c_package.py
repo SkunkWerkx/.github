@@ -282,7 +282,8 @@ class InventoryAndNotesTests(unittest.TestCase):
                  'crate/r.json', 'crate/m.bin', 'maven/bundle.zip', 'ruby/hyperuuid-0.9.0.gem',
                  'ruby/hyperuuid-wasm-0.9.0.gem',
                  *(f'ruby/hyperuuid-0.9.0-{p}.gem' for p in cfg.ruby_platforms.values()),
-                 *(f'pypi/hyperuuid-0.9.0-cp311-{i}.whl' for i in range(cfg.wheels))]
+                 *(f'pypi/hyperuuid-0.9.0-cp311-{i}.whl' for i in range(cfg.wheels)),
+                 *(f'php/{name}' for name in inventory.php_asset_names('0.9.0', 'hyperuuid'))]
         archives = [f'c/{name}' for name in c_package.asset_names(cfg, '0.9.0')]
         inventory.validate_layout(paths + archives, 'hyperuuid', '0.9.0', cfg)
         for wrong in (paths, paths + archives[1:], paths + archives + ['c/extra.tar.gz'],
@@ -303,7 +304,7 @@ class InventoryAndNotesTests(unittest.TestCase):
         inventory = dict(repository='SkunkWerkx/HyperUuid', version='0.9.0', source_sha='a' * 40, ci_run_id='42',
                          files=files)
         text = ' '.join(notes.verifying(inventory).split())
-        self.assertIn('committed for Go, Swift and PHP, and 2 C archives, one per platform, attached below.', text)
+        self.assertIn('committed for Go and Swift, and 2 C archives, one per platform, attached below.', text)
 
 
 if __name__ == '__main__':

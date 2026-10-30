@@ -186,8 +186,8 @@ def release_record(root, cfg, commit, tag, override, repo):
     return sha, run_id
 
 
-def expected_mode(path):
-    return '100755' if path.startswith('php/') else '100644'
+# Every staged payload is a static archive or generated text, never executable.
+PAYLOAD_MODE = '100644'
 
 
 def validate_transition(root, cfg, sha, commit):
@@ -204,7 +204,7 @@ def validate_transition(root, cfg, sha, commit):
         entry = git(root, 'ls-tree', commit, '--', path).split()
         if not entry:
             raise ValueError(f'staged payload was removed: {path}')
-        if entry[0] != expected_mode(path):
+        if entry[0] != PAYLOAD_MODE:
             raise ValueError(f'invalid staged file mode for {path}: {entry[0]}')
 
 
@@ -229,7 +229,7 @@ def validate_staged_tree(root, cfg, commit):
     for path in expected:
         if path not in entries:
             raise ValueError(f'missing staged payload: {path}')
-        if entries[path] != expected_mode(path):
+        if entries[path] != PAYLOAD_MODE:
             raise ValueError(f'invalid staged file mode for {path}: {entries[path]}')
     for path in entries:
         if path not in expected and path not in cfg.source_paths:
@@ -312,18 +312,22 @@ def check_runtime(root, cfg, payload, version):
 def validate_payloads(root, cfg, paths, sha, repo, compare=False, attest=True):
     exports = cfg.core_exports(root)
     version = re.search(r'^version = "([^"]+)"', (root / 'rust/Cargo.toml').read_text(), re.M)[1]
+    # The linux-x64 shared library is committed nowhere, but it is the kind every loading
+    # binding takes, so the probe and the smoke run on the CI run's own.
+    shared = cfg.shared_payload(root / 'artifacts')
     # Check the complete explicit platform set, including generated metadata, before copying.
-    for dest, src in paths.items():
+    sources = [shared, *paths.values()]
+    for src in sources:
         if not src.is_file() or src.is_symlink():
             raise ValueError(f'missing artifact payload: {src}')
+    for src in sources:
         if src.suffix in LIBRARY_SUFFIXES:
             if attest:
                 verify_attestation(src, sha, repo)
             check_symbols(src, exports, cfg)
-    for dest in cfg.probe_payloads:
-        check_runtime(root, cfg, paths[dest], version)
+    for payload in (shared, *(paths[dest] for dest in cfg.probe_payloads)):
+        check_runtime(root, cfg, payload, version)
     if cfg.cdylib_smoke:
-        shared = paths[cfg.probe_payloads[0]]
         subprocess.run([sys.executable, '-I', str(root / cfg.cdylib_smoke), str(shared),
                         str(root / 'rust/Cargo.toml')], check=True)
     if compare:

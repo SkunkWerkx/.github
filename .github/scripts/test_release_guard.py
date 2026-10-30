@@ -52,8 +52,6 @@ class ReleaseGuardTests(unittest.TestCase):
         self.payload = 'go/staticlib/linux_amd64/libhyperuuid.a'
         for path in guard.payload_paths(self.cfg, Path('artifacts')):
             self.write(path, 'verified bytes')
-            if path.startswith('php/'):
-                (self.root / path).chmod(0o755)
         self.commit(f'stage\n\nRelease-Source-SHA: {self.a}\nRelease-CI-Run-ID: 42\nRelease-Forge-SHA: {"f" * 40}')
         self.b = self.git('rev-parse', 'HEAD')
         self.run = dict(id=42, head_sha=self.a, head_branch='master',
@@ -114,8 +112,6 @@ class ReleaseGuardTests(unittest.TestCase):
         a = self.git('rev-parse', 'HEAD')
         for path in guard.payload_paths(self.cfg, Path('artifacts')):
             self.write(path, 'verified bytes')
-            if path.startswith('php/'):
-                (self.root / path).chmod(0o755)
         self.commit(f'stage\n\nRelease-Source-SHA: {a}\nRelease-CI-Run-ID: 42')
         self.run['head_sha'] = a
         return a, self.git('rev-parse', 'HEAD')
@@ -247,10 +243,11 @@ class ReleaseGuardTests(unittest.TestCase):
         paths = output.split()
         self.assertEqual(len(paths), len(set(paths)))
         self.assertEqual(set(paths), set(guard.payload_paths(self.cfg, Path('artifacts'))))
-        self.assertIn('php/src/native/linux-x64/libhyperuuid.so', paths)
+        self.assertIn('go/staticlib/linux_amd64/libhyperuuid.a', paths)
+        self.assertFalse([path for path in paths if path.startswith('php/')])
         self.assertIn('swift/HyperUuidCoreApple.xcframework/Info.plist', paths)
-        # 7 PHP libraries, 13 Go and 11 Swift archives, two metadata files, three slices x 3.
-        self.assertEqual(len(paths), 7 + 13 + 11 + 2 + 9)
+        # 13 Go and 11 Swift archives, two metadata files, three slices x 3.
+        self.assertEqual(len(paths), 13 + 11 + 2 + 9)
 
 
 class AbiProbeTests(unittest.TestCase):
@@ -382,13 +379,15 @@ EXPORT int uuid_new_v7(void) {return 0;}
         zip_path = guard.swift_assets_dir(root) / name
         zip_path.parent.mkdir(parents=True, exist_ok=True)
         zip_path.write_bytes(f'zip of {name}'.encode())
-    # Staging also verifies the Windows ARM library PHP never ships.
-    extra = root / 'artifacts/native/native-win-arm64/hyperuuid.dll'
-    extra.parent.mkdir(parents=True)
-    shutil.copyfile(dll, extra)
+    # Every RID's shared library: staging verifies each one's provenance, and the guard probes
+    # and smokes the linux-x64 one, though none is committed.
+    for rid, name in cfg.lib_names.items():
+        native = root / 'artifacts/native' / f'native-{rid}' / name
+        native.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(dll if name.endswith('.dll') else shared, native)
     sha = 'a' * 40
     script = step(SCRIPTS.parent / 'workflows/hyper-stage-natives.yml',
-                  'Verify attestations, then stage into php/, swift/, go/')
+                  'Verify attestations, then stage into swift/ and go/')
     subprocess.run(['git', 'init', '-q', str(root)], check=True)
     for key, value in (('commit.gpgsign', 'false'), ('user.name', 'Test'), ('user.email', 'test@example.com')):
         subprocess.run(['git', '-C', str(root), 'config', key, value], check=True)
@@ -403,6 +402,23 @@ EXPORT int uuid_new_v7(void) {return 0;}
            'GITHUB_REPOSITORY': REPO, 'GITHUB_STEP_SUMMARY': str(root / 'summary'),
            'FORGE_SCRIPTS': str(SCRIPTS)}
     return cfg, paths, sha, script, env, source_sha
+
+
+class SharedPayloadTests(unittest.TestCase):
+    def test_the_linux_x64_shared_library_is_required_though_nothing_commits_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_config(root)
+            (root / 'rust/src').mkdir(parents=True)
+            (root / 'rust/Cargo.toml').write_text('version = "0.9.0"\n')
+            (root / 'rust/src/ffi.rs').write_text('pub extern "C" fn hyperuuid_version() {}\npub extern "C" fn uuid_new_v7() {}\n')
+            cfg = guard.config(root)
+            paths = guard.payload_paths(cfg, root / 'artifacts')
+            for src in paths.values():
+                src.parent.mkdir(parents=True, exist_ok=True)
+                src.write_text('archive')
+            with self.assertRaisesRegex(ValueError, 'missing artifact payload: .*native-linux-x64/libhyperuuid.so'):
+                guard.validate_payloads(root, cfg, paths, 'a' * 40, REPO, attest=False)
 
 
 class StagingIntegrationTests(unittest.TestCase):
@@ -420,12 +436,13 @@ class StagingIntegrationTests(unittest.TestCase):
         cfg, paths, sha, script, env, source_sha = staging_fixture(root, MINIMAL)
         with patch.object(guard, 'verify_attestation') as verify:
             guard.validate_payloads(root, cfg, paths, sha, REPO)
-            self.assertEqual(verify.call_count, 34)
+            # 27 static archives, and the linux-x64 shared library the probe links.
+            self.assertEqual(verify.call_count, 27 + 1)
         result = subprocess.run(['bash', '-c', script], cwd=root, env=env, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(result.returncode, 0, result.stderr)
         guard.compare_payloads(root, paths)
-        subprocess.run(['git', '-C', str(root), 'add', 'php/src/native', cfg.bundle, cfg.xcframework, 'go/staticlib'], check=True)
+        subprocess.run(['git', '-C', str(root), 'add', cfg.bundle, cfg.xcframework, 'go/staticlib'], check=True)
         guard.validate_staging_index(root, cfg, source_sha)
         shipped = root / 'go/staticlib/linux_amd64/libhyperuuid.a'
         original_bytes = shipped.read_bytes()
@@ -453,7 +470,7 @@ class StagingIntegrationTests(unittest.TestCase):
         cfg, paths, sha, script, env, source_sha = staging_fixture(root, {**MINIMAL, 'swift_remote': True})
         with patch.object(guard, 'verify_attestation') as verify:
             guard.validate_payloads(root, cfg, paths, sha, REPO)
-            self.assertEqual(verify.call_count, 7 + 13)
+            self.assertEqual(verify.call_count, 13 + 1)
         result = subprocess.run(['bash', '-c', script], cwd=root, env=env, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -465,7 +482,7 @@ class StagingIntegrationTests(unittest.TestCase):
                                  'apple': guard.swift_release.sha256(assets / cfg.swift_assets[1])})
         # Eight libraries, thirteen Go archives and the two zips, each verified and listed.
         self.assertEqual(len((root / 'digests.txt').read_text().splitlines()), 8 + 13 + 2)
-        subprocess.run(['git', '-C', str(root), 'add', 'php/src/native', 'Package.swift'], check=True)
+        subprocess.run(['git', '-C', str(root), 'add', 'Package.swift'], check=True)
         subprocess.run(['git', '-C', str(root), 'add', '-f', 'go/staticlib'], check=True)
         guard.validate_staging_index(root, cfg, source_sha)
         (assets / cfg.swift_assets[0]).write_bytes(b'a different zip')

@@ -55,8 +55,6 @@ class HyperConfigTests(unittest.TestCase):
         self.assertEqual(cfg.lib_name('linux-x64'), 'libhyperuuid.so')
         self.assertEqual(cfg.lib_name('osx-arm64'), 'libhyperuuid.dylib')
         self.assertEqual(cfg.lib_name('win-arm64'), 'hyperuuid.dll')
-        self.assertNotIn('win-arm64', cfg.php_libs)
-        self.assertEqual(len(cfg.php_libs), 7)
         self.assertEqual(cfg.bundle, 'swift/HyperUuidCore.artifactbundle')
         self.assertEqual(cfg.xcframework, 'swift/HyperUuidCoreApple.xcframework')
         self.assertEqual(cfg.version_env, 'HYPERUUID_VERSION')
@@ -64,19 +62,28 @@ class HyperConfigTests(unittest.TestCase):
         self.assertEqual(cfg.ruby_abis, ('3.4', '4.0'))
         self.assertEqual(len(cfg.ruby_platforms), 7)
         paths = cfg.payload_paths(Path('artifacts'))
-        # 7 PHP libraries, 13 Go and 11 Swift archives, info.json, Info.plist and three
-        # slices of archive + header + module map.
-        self.assertEqual(len(paths), 7 + 13 + 11 + 2 + 3 * 3)
+        # 13 Go and 11 Swift archives, info.json, Info.plist and three slices of archive +
+        # header + module map. PHP commits nothing: its extension ships as PIE zips.
+        self.assertEqual(len(paths), 13 + 11 + 2 + 3 * 3)
         self.assertEqual(paths['go/staticlib/wasm/libhyperuuid.a'],
                          Path('artifacts/static-libs/go/staticlib/wasm/libhyperuuid.a'))
         self.assertEqual(paths['swift/HyperUuidCore.artifactbundle/x86_64-unknown-windows-msvc/hyperuuid.lib'],
                          Path('artifacts/static-libs/swift/HyperUuidCore.artifactbundle/x86_64-unknown-windows-msvc/hyperuuid.lib'))
-        self.assertEqual(paths['php/src/native/win-x64/hyperuuid.dll'],
-                         Path('artifacts/native/native-win-x64/hyperuuid.dll'))
+        self.assertEqual(cfg.shared_payload(Path('artifacts')),
+                         Path('artifacts/native/native-linux-x64/libhyperuuid.so'))
         self.assertIn('swift/HyperUuidCore.artifactbundle/include/hyperuuid.h', cfg.source_paths)
         self.assertEqual(set(cfg.version_files), {
             'rust/Cargo.toml', 'csharp/HyperUuid/HyperUuid.csproj', 'java/build.gradle.kts',
             'ruby/hyperuuid.gemspec', 'ruby/lib/hyperuuid.rb'})
+
+    def test_no_php_payload_is_staged(self):
+        # The PHP extension ships as PIE zips on the GitHub Release; php/src/native/ is gone.
+        for data in (MINIMAL, {**MINIMAL, 'swift_remote': True}):
+            cfg = hyper_config.HyperConfig(data)
+            staged = [*cfg.payload_paths(Path('artifacts')), *cfg.payload_trees, *cfg.source_paths,
+                      *cfg.probe_payloads, hyper_config.shell(cfg)]
+            self.assertFalse([path for path in staged if 'php/' in path or 'PHP_LIBS' in path])
+            self.assertFalse(hasattr(cfg, 'php_libs'))
 
     def test_overrides_and_validation(self):
         data = {**MINIMAL, 'wheels': 9, 'ruby': {'abis': ['4.0']}, 'cdylib_smoke': '.github/scripts/cdylib_smoke.py'}
@@ -112,9 +119,9 @@ class HyperConfigTests(unittest.TestCase):
         write_config(self.root)
         script = subprocess.check_output([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'shell',
                                           '--root', str(self.root)], text=True)
-        probe = script + 'echo "$CRATE ${LIB_NAMES[osx-x64]} ${PHP_LIBS[win-x64]} ${RUBY_PLATFORMS[linux-x64]} ${#RUBY_ABIS[@]} ${STATIC_TREES[go/staticlib]} $WHEELS ${PHP_LIBS[win-arm64]:-none}"\n'
+        probe = script + 'echo "$CRATE ${LIB_NAMES[osx-x64]} ${JNI_LIB_NAMES[win-x64]} ${RUBY_PLATFORMS[linux-x64]} ${#RUBY_ABIS[@]} ${STATIC_TREES[go/staticlib]} $WHEELS ${PHP_LIBS:-none}"\n'
         out = subprocess.check_output(['bash', '-euo', 'pipefail', '-c', probe], text=True).strip()
-        self.assertEqual(out, 'hyperuuid libhyperuuid.dylib hyperuuid.dll x86_64-linux-gnu 2 13 17 none')
+        self.assertEqual(out, 'hyperuuid libhyperuuid.dylib hyperuuid_jni.dll x86_64-linux-gnu 2 13 17 none')
         lines = subprocess.check_output([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'version-files',
                                          '--root', str(self.root)], text=True).splitlines()
         self.assertEqual(lines[0].split('\t')[0], 'rust/Cargo.toml')

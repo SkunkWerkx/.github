@@ -33,6 +33,7 @@ import zipfile
 
 import c_package
 import hyper_config
+import php_ext_package
 from package_preparation import not_served
 from release_guard import LIBRARY_SUFFIXES
 from release_package_metadata import DEFAULTS, npm_filename, npm_names, npm_package, validate_package_metadata
@@ -43,13 +44,15 @@ SCHEMA = 2
 # The registries a release publishes to. The CRAN source tarball is inventoried and attested
 # like a package but no job uploads it: the maintainer submits the preserved bytes by hand.
 REGISTRIES = ('nuget', 'ruby', 'pypi', 'crate', 'maven', 'npm')
-# `github` and `c` hold the files the finalizer attaches to the GitHub Release beside the
+# `github`, `c` and `php` hold the files the finalizer attaches to the GitHub Release beside the
 # inventory: with swift_remote, the two Swift zips the root Package.swift names (built at A);
-# with c_assets, one C archive per platform (packed at B).
-RELEASE_ASSET_GROUPS = ('github', 'c')
+# with c_assets, one C archive per platform (packed at B); and the PHP extension's PIE zips, one
+# per platform and PHP minor (built and attested at A, in the ci.yml run), which PIE downloads
+# from the Release.
+RELEASE_ASSET_GROUPS = ('github', 'c', 'php')
 INVENTORY_GROUPS = REGISTRIES + ('cran',) + RELEASE_ASSET_GROUPS
 # Built and attested by the Forge at A, in the ci.yml run, rather than packed at B.
-BUILT_AT_SOURCE = ('pypi/', 'github/')
+BUILT_AT_SOURCE = ('pypi/', 'github/', 'php/')
 # Signed in the consumer's own release.yml at B rather than by the Forge.
 CONSUMER_SIGNED = ('ruby/', 'npm/', 'cran/', 'c/')
 IDENTITY = ('repository', 'crate', 'version', 'source_sha', 'staging_sha',
@@ -60,6 +63,13 @@ NPM_REGISTRY = 'https://registry.npmjs.org/'
 def sha256(path):
     with path.open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def php_asset_names(version, extension):
+    """The PIE zips a release of bare `version` attaches: php_ext_package.py's platforms on each of
+    its minors, named with the release tag (`v` + version), the version PIE puts in the name, for
+    the extension `extension` (the consumer's crate)."""
+    return php_ext_package.release_asset_names(f'v{version}', extension)
 
 
 def validate_identity(identity):
@@ -148,6 +158,10 @@ def validate_layout(paths, crate, version, cfg=None):
     archives = sorted(f'c/{name}' for name in c_package.asset_names(cfg, version)) if getattr(cfg, 'c_assets', False) else []
     if sorted(groups['c']) != archives:
         raise ValueError(f'C archives are wrong: expected {archives}, got {sorted(groups["c"])}')
+    zips = sorted(f'php/{name}' for name in php_asset_names(version, crate))
+    if sorted(groups['php']) != zips:
+        missing, extra = sorted(set(zips) - set(groups['php'])), sorted(set(groups['php']) - set(zips))
+        raise ValueError(f'PHP extension zips are wrong: missing {missing}, unexpected {extra}')
 
 
 def native_files(workspace, natives):
@@ -424,7 +438,7 @@ def finalize(repo, version, subject, inventory, notes=None):
 
     `notes` is the release body release_notes.py wrote from the CHANGELOG; without it the
     Release gets GitHub's generated notes. The Release carries the inventory and every file
-    under the packages' `github/` and `c/` groups, each byte-identical to a copy already there."""
+    under the packages' `github/`, `c/` and `php/` groups, each byte-identical to a copy already there."""
     assets = [inventory, *(path for group in RELEASE_ASSET_GROUPS
                            for path in sorted((inventory.parent / group).glob('*')))]
     def remote_ref(tag):

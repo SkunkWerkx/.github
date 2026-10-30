@@ -13,17 +13,20 @@ the release tag, whose **subjects** are every file the release ships and whose *
 is the release inventory (`release-packages/inventory.json`, schema 2). The statement is
 made in the publication gate, before anything is uploaded, and preserved with the packages.
 
-Subjects (about 90 per release) are every file in `inventory.json`:
+Subjects are every file in `inventory.json`:
 
 - the registry packages: the `.nupkg` and `.snupkg`, the nine gems, the 17 wheels (and the sdist, from a consumer that sets `sdist`), the
   `.crate` with its saved registry request, the signed Maven bundle and the repository files
   inside it (the jar, the sources and javadoc jars, the `.pom`, their signatures), and, from
   a consumer with those bindings, the nine npm tarballs (the root package and one per
   platform) and the CRAN source tarball, which no job uploads (the maintainer submits it);
-- the native libraries committed at the tagged commit for Go (`go/staticlib/**`), Swift
-  (the artifact bundle and the XCFramework) and PHP (`php/src/native/**`), and the metadata
-  staged beside them: the bundle's `info.json` and the XCFramework's `Info.plist`, headers
-  and module maps;
+- the native libraries committed at the tagged commit for Go (`go/staticlib/**`) and Swift
+  (the artifact bundle and the XCFramework), and the metadata staged beside them: the
+  bundle's `info.json` and the XCFramework's `Info.plist`, headers and module maps;
+- the files under `php/`: the PHP extension's PIE zips, one per platform and PHP minor
+  (`php_<crate>-v<version>_php<minor>-<arch>-<os>-<libc>-nts.zip`, and on Windows
+  `php_<crate>-v<version>-<minor>-nts-<vs16|vs17>-x86_64.zip`), built and attested by the
+  Forge in the `ci.yml` run at A, which the GitHub Release carries and PIE installs from;
 - from a consumer that sets `swift_remote`, which commits no Swift binaries, the files under
   `github/` instead: the zipped artifact bundle and XCFramework the GitHub Release carries
   and the tagged `Package.swift` names by checksum;
@@ -52,7 +55,7 @@ the push.
 | `ci_run_id` | the release-mode `ci.yml` run at A |
 | `package_run_id` | the `release.yml` run that packed and attested |
 | `forge_sha` | the Forge commit that run used |
-| `files[]` | `path`, `size`, `sha256`, `location` (`packages` or `source`), `source_sha` (A for wheels, the sdist and native libraries, B for packages assembled at the tag), `signer_repo` (the repository whose workflow signed the file's build provenance: `SkunkWerkx/.github` for Forge-built files, the consumer for the gems, the npm tarballs and the CRAN tarball). Both are absent for the staged metadata, which carries no build provenance; the release attestation is its only binding |
+| `files[]` | `path`, `size`, `sha256`, `location` (`packages` or `source`), `source_sha` (A for wheels, the sdist, the PHP extension's zips and native libraries, B for packages assembled at the tag), `signer_repo` (the repository whose workflow signed the file's build provenance: `SkunkWerkx/.github` for Forge-built files, the consumer for the gems, the npm tarballs and the CRAN tarball). Both are absent for the staged metadata, which carries no build provenance; the release attestation is its only binding |
 
 `inventory.json` itself carries SLSA build provenance at B, made in the same gate.
 

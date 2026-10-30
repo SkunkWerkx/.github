@@ -129,6 +129,20 @@ if args[:2]==['release','download']:
         create=next(call for call in calls if call[:2]==['release','create'])
         self.assertEqual(create[-5:],[str(self.inventory),*map(str,assets),*map(str,sorted(c.iterdir()))])
 
+    def test_a_new_release_carries_the_php_zips_last_where_pie_downloads_them(self):
+        assets=self.github_assets()
+        c=self.repo/'c'
+        c.mkdir()
+        (c/'hyperuuid-0.10.0-linux-x64.tar.gz').write_text('c')
+        php=self.repo/'php'
+        php.mkdir()
+        for name in ('php_hypercast-v0.10.0_php8.5-arm64-darwin-bsdlibc-nts.zip','php_hypercast-v0.10.0-8.3-nts-vs16-x86_64.zip'):
+            (php/name).write_text(name)
+        self.finalize()
+        calls=[json.loads(line) for line in (self.root/'calls').read_text().splitlines()]
+        create=next(call for call in calls if call[:2]==['release','create'])
+        self.assertEqual(create[-6:],[str(self.inventory),*map(str,assets),*map(str,sorted(c.iterdir())),*map(str,sorted(php.iterdir()))])
+
     def test_an_existing_release_gets_only_its_missing_assets_and_keeps_matching_ones(self):
         assets=self.github_assets()
         os.environ['RELEASE_EXISTS']='1'

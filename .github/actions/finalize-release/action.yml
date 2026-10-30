@@ -3,8 +3,9 @@ description: >
   After every publisher succeeded: verifies the preserved inventory one last time, writes the
   GitHub Release body from the CHANGELOG's section for this version plus a generated
   Verifying section (release_notes.py), creates the go/vX.Y.Z tag at B if missing and the
-  GitHub Release with inventory.json attached, or validates the ones that exist. Runs in the
-  consumer's checkout at B (contents: write).
+  GitHub Release with inventory.json and every file of the github, c and php groups (the Swift
+  zips, the C archives, the PHP extension's PIE zips) attached, or validates the ones that
+  exist. Runs in the consumer's checkout at B (contents: write).
 
 inputs:
   version:

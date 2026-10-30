@@ -15,6 +15,7 @@ import zipfile
 
 from package_preparation import crate_metadata
 from hyper_config import NODE_PLATFORMS, RUBY_PLATFORMS
+import php_ext_package
 
 SCRIPT = Path(__file__).with_name('release_package_metadata.py')
 # npm platform package names (napi-rs), and the corpus members every R source tarball carries.
@@ -72,6 +73,13 @@ def write_cran(root, crate, version, **changes):
     write_tar(root / f'cran/{crate}_{version}.tar.gz', r_entries(crate, version, **changes))
 
 
+def write_php(root, crate, version):
+    """The release's PIE zips, one per platform and minor, named with the release tag."""
+    for name in php_ext_package.release_asset_names(f'v{version}', crate):
+        stem = name.removesuffix('.zip')
+        write_zip(root / f'php/{name}', [(f'{stem}.dll' if '-nts-vs' in name else f'{crate}.so', b'extension')])
+
+
 def sdist_entries(crate, version, lock=True, cargo_version=None, cargo=True):
     top = f'{crate}-{version}'
     entries = [(f'{top}/PKG-INFO', f'Metadata-Version: 2.3\nName: {crate}\nVersion: {version}\n'.encode())]
@@ -122,6 +130,7 @@ def create_packages(root, crate='hypercast', version='0.10.0', sdist=False):
         path.write_bytes(data)
     write_npm(root, crate, version)
     write_cran(root, crate, version)
+    write_php(root, crate, version)
 
 
 class PackageMetadataTests(unittest.TestCase):

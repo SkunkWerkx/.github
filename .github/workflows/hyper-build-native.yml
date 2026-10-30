@@ -17,13 +17,15 @@ name: HyperForge — build native core, test every binding
 # legs ran in waves and one job sat queued 20+ minutes after the others had finished and
 # slots had freed). One phase is 6 jobs — 2 per OS family, under every cap, nothing
 # queues — and saves ~50s per leg of repeated checkout + download-artifact + job setup,
-# plus a duplicate Ruby and PHP toolchain install (setup-php alone was 56s on macOS) that
-# the Magnus/ext-php-rs sections have already paid for.
+# plus a duplicate Ruby toolchain install that the Magnus section has already paid for.
+# The deliberate exception is the PHP extension (hyper-build-php-extension.yml): an extension is
+# pinned to one PHP minor, so each minor is a leg of its own, and its macOS legs (osx-arm64 and
+# osx-x64) are 2 in `pr` mode and 6 in `release` mode, so a release board queues for macOS slots.
 #
 # Two shards on Windows (2026-10): after `pr` mode the board's wall clock was win-x64 alone,
 # 13.1 minutes on HyperUuid run 37710502986, against 8.5 for macOS — Swift 4.9 of it (3.1 just
 # installing the toolchain) and Ruby's Magnus build 2.0. So each Windows leg is two jobs: `ffi`
-# (the crate's suite, the uploaded and attested library, C#, Java, Go, Python, PHP) and
+# (the crate's suite, the uploaded and attested library, C#, Java, Go, Python) and
 # `swift-ruby` (Swift and Ruby), each building the core itself, which is seconds, rather than
 # waiting on the other. Windows only: those runners do not count against the macOS cap, and
 # macOS, at 8.5 minutes, does not hold the board. Every other leg is `shard: all`, one job.
@@ -37,9 +39,9 @@ name: HyperForge — build native core, test every binding
 # python/ruby/php aren't FFI-consuming bindings in the same sense — each is an optional
 # feature of the SAME core crate (`--features python`/`ruby`/`php`), not a satellite crate
 # path-depending back on it, so there's no separate artifact hand-off to design around;
-# building the feature *is* proving it compiles. These were always tested in this job, which
-# is why collapsing the rest in was an extension of the existing shape rather than a new
-# idea:
+# building the feature *is* proving it compiles. Python and Ruby were always tested in this
+# job, which is why collapsing the rest in was an extension of the existing shape rather than
+# a new idea; PHP has a job of its own:
 #   - python (pyo3): every leg. This is the *only* Python backend (no ctypes fallback), and
 #     what every PyPI release ships, so it's proven on every PR, not deferred to release
 #     time. Gated by the `pyo3` input.
@@ -70,17 +72,13 @@ name: HyperForge — build native core, test every binding
 #     forced static or the extension picks up a libunwind.dll dependency no gem consumer
 #     would have. bindgen needs a --target redirect just like x64 does, and for a sharper
 #     reason: clang rejects the gnullvm triple outright. See build-magnus.sh.
-#     The PHP ext-ffi suite lives in ONE section down with the suites — see it for the
-#     platform rules.
-#   - php (ext-php-rs): linux-x64, linux-arm64 and osx-arm64, in `release` mode (a `pr`-mode
-#     run skips it), in the build-php-extension job (hyper-build-php-extension.yml), not in
-#     this matrix. Not wired into the shipped Composer package (that's ext-ffi) — built so it
-#     can't silently bit-rot, then load-checked, uploaded and attested like any other
-#     shippable binary; still no phpunit run against it. It began as a benchmark spike behind a
-#     `php_native_spike` input; the spike answered its question, so the flag is gone and the
-#     build is simply part of the pipeline. All Windows legs skipped: ext-php-rs gates its
-#     Windows path on a nightly-only Rust feature, incompatible with the stable toolchain
-#     every leg here builds on (confirmed by a real E0554 failure, not assumed).
+#   - php (ext-php-rs): the build-php-extension job (hyper-build-php-extension.yml), not this
+#     matrix. The extension is the PHP binding, installed by PIE from a zip per platform and
+#     PHP minor, so it is built against each PHP it ships for, which is a matrix of its own:
+#     seven platforms (every RID but win-arm64, where PHP runs as an x64 process) by each
+#     minor in `php_versions` in `release` mode, the newest minor plus linux-x64 on
+#     `php_floor_version` in `pr` mode. Each leg load-checks the extension, runs the suite
+#     through it, and packs, uploads and (release) attests its zip. Gated by the `php` input.
 #
 # There is no `paths` job (dorny/paths-filter) skipping work per PR when nothing relevant
 # changed: with a job per leg (two on Windows) there is nothing granular left to skip, and
@@ -111,11 +109,10 @@ name: HyperForge — build native core, test every binding
 #     cargo invocation doesn't get this from PyO3/rb-sys/ext-php-rs the way maturin/
 #     rake-compiler builds do — harmless for the default, no-feature build too).
 #   - PHP never ships native Windows ARM64 (runs under x64 emulation there — can never
-#     load an ARM64 native lib), so the win-arm64 leg skips the PHP steps entirely (both
-#     the ext-ffi suite and the php-feature compile-check); win-x64 covers real
-#     PHP-on-Windows.
-#   - `php vendor/bin/phpunit` must be invoked through `php` — the Composer proxy is a
-#     shebang script the Windows legs' default pwsh can't execute.
+#     load an ARM64 native lib), so the PHP extension has no win-arm64 build; win-x64's
+#     covers PHP-on-Windows.
+#   - PHPUnit must be invoked through `php` — the Composer proxy is a shebang script the
+#     Windows legs' default pwsh can't execute.
 #   - macOS runners sometimes need xcode-select pointed at full Xcode before Ruby
 #     native-extension builds (mkmf try_link failures otherwise).
 #   - Windows staging spellings: a CPython extension is a renamed DLL (.pyd); Ruby's
@@ -135,8 +132,8 @@ on:
           in every language the consumer enables, on every platform, and drops what only a release needs:
           attestations, the Magnus build against ruby_compat_version (a second ABI for the
           fat gem; the primary ABI is still built and tested), the osx-x64 cross-build
-          (packaged; with `node` on, only the TypeScript addon's suite runs on it), and the ext-php-rs extension (shipped by no
-          package; built so it cannot rot, which the weekly release-mode run covers). The floor-version runs stay: they are cheap,
+          (packaged; with `node` on, only the TypeScript addon's suite runs on it), and the PHP extension
+          on every minor but the newest (the floor still builds on linux-x64). The floor-version runs stay: they are cheap,
           off the critical path, and exactly the drift a PR should catch. A caller passes
           `pr` on pull_request events and `release` on every other.
         required: false
@@ -195,8 +192,8 @@ on:
       attest_native:
         description: >
           Emit a signed SLSA build-provenance attestation binding each shippable compiled
-          artifact — the plain FFI native library on every leg, plus the ext-php-rs extension
-          on linux-x64, linux-arm64 and osx-arm64 (its own job), and the Magnus extension on every leg when `magnus` is on —
+          artifact — the plain FFI native library on every leg, plus each PHP extension zip
+          (its own job), and the Magnus extension on every leg when `magnus` is on —
           to this workflow run and commit, verifiable by a consumer with
           `gh attestation verify`.
           On by default: every artifact this forge produces should be verifiable, and an
@@ -264,7 +261,7 @@ on:
         type: boolean
         default: true
       php:
-        description: "Run the PHP binding's suite (ext-ffi) on every leg and on Alpine, and, in release mode, build the ext-php-rs extension (the crate's `php` feature)"
+        description: "Build, load-check, test and pack the PHP extension (the crate's `php` feature, ext-php-rs) for PIE, in the build-php-extension job: every platform on each of php_versions in release mode, the newest plus linux-x64 on php_floor_version in pr mode"
         required: false
         type: boolean
         default: true
@@ -343,14 +340,11 @@ on:
         required: false
         type: string
         default: "3.15t"
-      php_version:
-        description: >
-          The newest PHP, which every leg but macOS installs through setup-php. macOS takes
-          Homebrew core's `php`, always the newest, and posts a notice when that has moved
-          past this value — the cue to bump this default.
+      php_versions:
+        description: "The PHP minors the extension is built for, space-separated; the newest is the pr-mode minor"
         required: false
         type: string
-        default: "8.5"
+        default: "8.3 8.4 8.5"
       # 6.4 is the first Swift with an Ubuntu 26.04 toolchain; 6.3 and earlier stop at 24.04.
       swift_version:
         required: false
@@ -389,7 +383,7 @@ on:
         type: boolean
         default: true
       php_floor_version:
-        description: "Oldest PHP the binding declares (composer.json) — the musl job runs the PHP suite on it as well as on php_version. Empty skips the floor run."
+        description: "Oldest PHP the binding declares (composer.json): a pr-mode run builds and tests the extension on it on linux-x64 as well as on the newest of php_versions. Empty skips the floor leg."
         required: false
         type: string
         default: "8.2"
@@ -943,9 +937,9 @@ jobs:
       #
       # Collapsed, the whole matrix was 6 jobs instead of 48 — 2 per OS family, comfortably
       # under the cap, so nothing queues. (The Windows legs are two shards each since 2026-10,
-      # which adds two Windows jobs and no macOS ones; see the header.) This is not a new pattern here: Python, Ruby's
-      # Magnus backend and PHP's ext-php-rs spike were always tested in this job. It extends
-      # that to the remaining six rather than inventing anything.
+      # which adds two Windows jobs and no macOS ones; see the header.) This is not a new pattern here: Python and Ruby's
+      # Magnus backend were always tested in this job. It extends that to the remaining
+      # bindings rather than inventing anything.
       #
       # Two consequences worth stating:
       #
@@ -954,10 +948,9 @@ jobs:
       #    `fail-fast: false`; in one job it has to be asked for. A red step still names the
       #    binding, so the diagnosis is as fast as it was before — it is the *parallelism*
       #    that is given up here, not the reporting.
-      #  * The Ruby and PHP toolchains are each installed once, never re-installed by a
-      #    later section that needs them again. shivammathur/setup-php alone measured 56s
-      #    on macOS, so blindly re-running it would have handed back most of the savings.
-      #    The conditions below are exact rather than convenient, which is why they are ugly.
+      #  * The Ruby toolchain is installed once, never re-installed by a later section that
+      #    needs it again. The conditions below are exact rather than convenient, which is
+      #    why they are ugly.
       # ---------------------------------------------------------------------------
 
       # C#: the real [LibraryImport] resolution/marshalling path per OS.
@@ -1194,8 +1187,8 @@ jobs:
           key: ${{ steps.swift_toolcache_key.outputs.key }}
 
       # setup-swift puts the Swift toolchain's bin directory first on PATH, and that
-      # directory has a `clang` of its own. bindgen — which the ext-php-rs and Magnus builds
-      # further down both run — loads the newest libclang it finds in the system's
+      # directory has a `clang` of its own. bindgen — which the Magnus build further down runs,
+      # as the PHP extension's did when this job built it — loads the newest libclang it finds in the system's
       # directories, but asks whichever `clang` is first on PATH where the compiler's own
       # headers are. On Ubuntu 26.04 with Swift 6.4 those are two different compilers: the
       # system's libclang 22 was handed Swift's clang 21 headers, whose SSE intrinsics call
@@ -1250,77 +1243,6 @@ jobs:
       - name: Build the root Swift manifest (the one consumers resolve)
         if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.swift }}
         run: swift build
-
-      # =========================================================================
-      # PHP — both backends, one section, one toolchain install.
-      #
-      # This was two sections far apart, each with its own setup-php whose conditions were
-      # written to be mutually exclusive so the 56s install never ran twice. That worked, but
-      # you had to hold both halves in your head to see it. One section, one install, two
-      # platform rules:
-      #
-      #   * win-arm64 is skipped ENTIRELY, both backends. PHP has never shipped a native
-      #     Windows ARM64 build; it runs under x64 emulation there and can never load an
-      #     ARM64 native lib. win-x64 covers the real PHP-on-Windows story.
-      #   * ext-php-rs additionally skips ALL Windows, which leaves darwin + linux. Its
-      #     Windows path gates on `#![feature(abi_vectorcall)]`, nightly-only, and every leg
-      #     here builds on stable — confirmed by a real E0554 failure on win-x64, not assumed.
-      #     That extension is built by the build-php-extension job, not in this section.
-      # =========================================================================
-      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && runner.os != 'macOS' && inputs.php }}
-        with:
-          php-version: ${{ inputs.php_version }}
-          extensions: ffi
-          tools: composer
-
-      # macOS takes PHP from Homebrew core, not setup-php. setup-php installs it on macOS
-      # from its own tap with brew's output discarded, and on 2026-10-08 that began failing
-      # with nothing but "Could not setup PHP 8.5" (HyperUuid run 37710502986, both
-      # attempts). Core's `php` is built `--with-ffi` and bottled by Homebrew's own CI, and
-      # it is always the newest PHP, which is the platform every binding tracks; so this leg
-      # moves to the next PHP the day core does, possibly ahead of php_version, and says so.
-      - name: PHP and Composer from Homebrew (macOS)
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && runner.os == 'macOS' && inputs.php }}
-        shell: bash
-        env:
-          HOMEBREW_NO_INSTALL_CLEANUP: "1"
-          WANT: ${{ inputs.php_version }}
-        run: |
-          set -euo pipefail
-          brew install php composer
-          php -v
-          php -r 'exit(extension_loaded("ffi") ? 0 : 1);' \
-            || { echo "::error::Homebrew's php has no ffi extension loaded"; exit 1; }
-          got=$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')
-          if [ "$got" != "$WANT" ]; then
-            echo "::notice::macOS is testing PHP $got (Homebrew core's newest); php_version is $WANT — bump the forge's default to match."
-          fi
-
-      # --- the shipped backend: built-in ext-ffi, the one the Composer package uses ---
-
-      - name: Install PHP dependencies
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && inputs.php }}
-        working-directory: php
-        run: composer install --no-interaction --prefer-dist
-
-      - name: Place native lib for PHP in-repo testing
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && inputs.php }}
-        shell: bash
-        run: |
-          mkdir -p "php/src/native/${{ matrix.rid }}"
-          cp "out/${{ matrix.lib_name }}" "php/src/native/${{ matrix.rid }}/"
-
-      - name: Test PHP bindings against this platform's native lib
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && matrix.rid != 'win-arm64' && inputs.php }}
-        working-directory: php
-        # Through `php`, not bare — the Composer proxy is a shebang script the Windows
-        # legs' default pwsh can't execute.
-        run: php vendor/bin/phpunit
-
-      # The ext-php-rs extension is not built here: the build-php-extension job below
-      # (hyper-build-php-extension.yml) builds, load-checks, uploads and attests it on the
-      # three unix legs in release mode, in jobs of its own.
 
       # =========================================================================
       # RUBY — both backends, one section.
@@ -1498,11 +1420,12 @@ jobs:
   #    tested on an x64 Node under Rosetta. Every other one still runs on osx-arm64, against
   #    the same source; what is not proven per release is each of those runtimes' own x64
   #    macOS build loading the library.
-  #  * No Magnus extension and no ext-php-rs extension is built for it. Both need an x86_64
-  #    build of their host runtime to compile against, which is the leg again. Ruby there
-  #    installs the universal gem and runs on Fiddle over this library — the fallback every
-  #    platform without a precompiled gem already takes — and a caller's release.yml no
-  #    longer packs an x86_64-darwin platform gem.
+  #  * No Magnus extension is built for it: it needs an x86_64 build of Ruby to compile
+  #    against, which is the leg again. Ruby there installs the universal gem and runs on
+  #    Fiddle over this library — the fallback every platform without a precompiled gem
+  #    already takes — and a caller's release.yml no longer packs an x86_64-darwin platform
+  #    gem. The PHP extension's osx-x64 zips are the build-php-extension job's, built against
+  #    an x86_64 PHP it compiles from source and runs under Rosetta the same way.
   #
   # Rosetta has an end date of its own (Apple keeps it through macOS 27), and this job goes
   # when it does or when the RID is retired, whichever is first.
@@ -1637,7 +1560,7 @@ jobs:
       # The TypeScript addon, cross-built the same way: npm ci and the napi CLI run on the
       # arm64 Node, and --target names the x86_64 triple. Then an x64 Node, which runs under
       # Rosetta, loads it and runs the suite, the one binding whose own runtime is tested on
-      # this RID: an x64 Node is a download away, where an x64 Ruby or PHP would be the leg.
+      # this RID: an x64 Node is a download away, where an x64 Ruby would be the leg.
       # The wrapper guard and the architecture check are the matrix legs' and the core's above.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: inputs.node
@@ -1701,7 +1624,7 @@ jobs:
   # staging steps pick the two musl libraries up by the name they already glob for.
   #
   # The suites double as the floor tests. Every `*-alpine` image exists for old versions as
-  # well as new, so the PHP, Ruby, Python and Node suites run twice or more — on the version the
+  # well as new, so the Ruby, Python and Node suites run twice or more — on the version the
   # matrix job uses and on the oldest one (for Node, each older major) the package declares. Before this job nothing ran a declared floor
   # at all: HyperCast claimed PHP 8.1 while using 8.2 syntax, and no run could have noticed.
   # Go needs no second run: its image is the version go.mod names, which is the floor.
@@ -1894,24 +1817,6 @@ jobs:
           rid: ${{ matrix.rid }}
           image: ${{ steps.images.outputs.go }}
 
-      - name: PHP on Alpine
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.php }}
-        uses: ./.hyperforge/.github/actions/musl-suite
-        with:
-          binding: php
-          crate: ${{ inputs.crate }}
-          rid: ${{ matrix.rid }}
-          image: php:${{ inputs.php_version }}-cli-alpine
-
-      - name: PHP on Alpine — the declared floor
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.php_floor_version != '' && inputs.php_floor_version != inputs.php_version && inputs.php }}
-        uses: ./.hyperforge/.github/actions/musl-suite
-        with:
-          binding: php
-          crate: ${{ inputs.crate }}
-          rid: ${{ matrix.rid }}
-          image: php:${{ inputs.php_floor_version }}-cli-alpine
-
       # Compat ABI first and primary last, as on the matrix legs. Each builds in its Ruby's
       # Alpine image and runs the suite on a bare copy of it — see build-magnus-musl.sh.
       - name: Ruby (Magnus) on Alpine — compat ABI
@@ -1970,11 +1875,14 @@ jobs:
           rid: ${{ matrix.rid }}
           image: python:${{ inputs.python_floor_version }}-alpine
 
+  # The PHP extension, built against each PHP it ships for and packed for PIE: a matrix of
+  # (platform, minor) legs of its own, in both modes (see its header).
   build-php-extension:
-    if: inputs.php && inputs.mode != 'pr'
+    if: inputs.php
     uses: ./.github/workflows/hyper-build-php-extension.yml
     with:
       crate: ${{ inputs.crate }}
       mode: ${{ inputs.mode }}
-      php_version: ${{ inputs.php_version }}
+      php_versions: ${{ inputs.php_versions }}
+      php_floor_version: ${{ inputs.php_floor_version }}
       attest_native: ${{ inputs.attest_native }}

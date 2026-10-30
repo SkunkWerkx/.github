@@ -64,15 +64,21 @@ first one `release.yml` publishes through Trusted Publishing, and it carries npm
    preserved inventory, every hash and the release attestation (never re-attesting), each
    publisher verifies its own files' build provenance just before uploading them, it
    publishes to the six registries, then creates `go/vX.Y.Z` and the GitHub Release at B
-   with the CHANGELOG section, a Verifying section and `inventory.json` attached. The CRAN
+   with the CHANGELOG section, a Verifying section, `inventory.json` and the release's own
+   files attached (the Swift zips, the C archives and the PHP extension's PIE zips). Its last
+   job, `pie-acceptance` (`hyper-pie-acceptance.yml`), then has PIE install the extension from
+   Packagist and that Release on every platform and PHP minor, and holds the installed file to
+   that leg's zip on the Release, whose release attestation it verifies first. The CRAN
    tarball (`cran/hyperuuid_<v>.tar.gz`) is attested and inventoried like every other file
    but no job uploads it: the maintainer submits it to CRAN by hand from the preserved
    bytes.
 
 There is one native build matrix, in A's CI. Static production and Android shared
 production are separate producers; Apple and Android consumer tests start when their own
-artifacts are ready. The release-mode ext-php-rs extensions are built in jobs of their own
-(`hyper-build-php-extension.yml`), never inside the native matrix.
+artifacts are ready. The PHP extension's PIE zips, one per platform and PHP minor, are built
+in jobs of their own (`hyper-build-php-extension.yml`), never inside the native matrix; the
+publication gate takes every `php-ext-<rid>-<minor>` artifact of A's run into the inventory's
+`php/` group, and the finalizer attaches them to the GitHub Release, where PIE looks.
 
 ## After publication
 
@@ -92,8 +98,8 @@ failed only on the real registries.
   Run it on at least a wheel and a Go archive from the module cache (the two that fail
   without the predicate type), the served `.nupkg` and a gem. Build provenance is the
   second check: the gems, the inventory and the pre-push `.nupkg` verify with `--repo` alone
-  (signed at the tag by the consumer's `release.yml`); the wheels and the sdist, the committed natives and
-  the natives inside the `.nupkg` and the jar were built at A by the Forge's workflows and
+  (signed at the tag by the consumer's `release.yml`); the wheels and the sdist, the committed natives,
+  the PHP extension's zips and the natives inside the `.nupkg` and the jar were built at A by the Forge's workflows and
   need `--signer-repo SkunkWerkx/.github --source-digest <A>`. `--owner SkunkWerkx` also
   accepts them, with less said. PyPI additionally holds a PEP 740 publish attestation per
   wheel and sdist, filed by the publish action, visible on each file's PyPI page. It must name
@@ -105,9 +111,15 @@ failed only on the real registries.
   and `runtimes/browser-wasm/nativeassets/net11.0`; Go
   `$(go env GOMODCACHE)/github.com/!skunk!werkx/<repo>/go@vX/staticlib/<os_arch>`; Swift
   `.build/checkouts/<Repo>/swift/<Repo>Core.artifactbundle/<triple>` (with `swift_remote`, the
-  GitHub Release's two zips, unpacked under `.build/artifacts/`); PHP
-  `vendor/skunkwerkx/<repo>/php/src/native/<rid>` (Packagist ships the repo zipball); C (with
-  `c_assets`) `<crate>-<version>-<rid>/lib` and `bin` in the GitHub Release's archives.
+  GitHub Release's two zips, unpacked under `.build/artifacts/`); PHP the target PHP's
+  `extension_dir` (`php -r 'echo ini_get("extension_dir");'`), where `pie install
+  skunkwerkx/<repo>:vX.Y.Z` puts the `.so` or `.dll` from the GitHub Release's
+  `php_<crate>-vX.Y.Z...` zip for that platform and minor, and the ini line PIE wrote to enable
+  it; C (with `c_assets`) `<crate>-<version>-<rid>/lib` and `bin` in the GitHub Release's
+  archives.
+- `pie-acceptance` is the PHP smoke, already run: a red leg there is the release's, and is
+  fixed as the `pie-acceptance` paragraph under Recover a failed publication says, not by a
+  re-run that happens to pass.
 - Registry lag is not failure: Maven Central takes 20 to 30 minutes to serve a new version,
   and PyPI's JSON endpoint can report a stale latest for a few minutes (read
   `releases["X.Y.Z"]` directly).
@@ -176,6 +188,17 @@ between main-package and symbol acceptance, reconcile the symbols explicitly; th
 fails instead of assuming success. The finalized served `.nupkg` is verified, preserved and
 attested twice after publication (build provenance and `release/v1`), on the run that
 pushed it.
+
+A red `pie-acceptance` leg after publication (PIE cannot find, install or enable a zip, the
+file it installed is not that zip's, or the extension fails a check) is fixed with a patch release, never in place: no
+asset rename, no repack and no re-attest. Renaming an asset leaves the inventory's recorded
+paths wrong; repacking a zip, a Windows one to fix the DLL name inside it say, changes the digest
+the release attestation names; and rebuilding or re-attesting a published version is what this
+runbook forbids everywhere else. Re-run the failed leg once if the failure was transient (a
+runner, a Homebrew or Packagist outage); otherwise fix the cause, release X.Y.Z+1 and leave
+X.Y.Z as it is, recorded as broken for PHP in the CHANGELOG. Naming errors are meant to be
+caught before publication, by the packer's check against PIE's own names in every CI leg and by
+the rehearsal (`hyper-pie-acceptance.yml` dispatched against a scratch repository's Release).
 
 Concurrency serializes releases without canceling an active publisher. A failed registry
 leaves other successful publications in place; the gate avoids preparation failures after

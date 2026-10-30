@@ -34,7 +34,7 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertIn('--signer-repo SkunkWerkx/.github --source-digest ' + 'a' * 40, body)
         self.assertIn('[42](https://github.com/SkunkWerkx/HyperUuid/actions/runs/42)', body)
         self.assertIn('all 4 of them', body)
-        self.assertIn('the 1 native libraries committed for Go, Swift and PHP, and the 1 metadata',
+        self.assertIn('the 1 native libraries committed for Go and Swift, and the 1 metadata',
                       ' '.join(body.split()))
         self.assertIn('PEP 740', body)
 
@@ -97,7 +97,17 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertNotIn('Node addons', notes.verifying({**INVENTORY, 'files': cran}))
 
 
-SIBLING_VERIFYING = "## Verifying\n\nEvery file in this release verifies from the tag alone. One attestation, signed by this\nrepository's `release.yml` at `v1.0.0`, names all 4 of them: every registry\npackage (NuGet, RubyGems, PyPI, crates.io and Maven Central), the 1 native\nlibraries committed for Go, Swift and PHP, and the 1 metadata files staged beside\nthem. Its predicate is the release inventory attached below.\n\n```sh\ngh attestation verify <file> --repo SkunkWerkx/HyperUuid \\\n  --source-ref refs/tags/v1.0.0 --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1\n```\n\nThe native libraries, the Python wheels and the archives inside the NuGet package and the\njar also carry build provenance from CI run [42](https://github.com/SkunkWerkx/HyperUuid/actions/runs/42)\nat commit `aaaaaaa`, the parent of the tagged commit, signed by the Forge:\n\n```sh\ngh attestation verify <file> --repo SkunkWerkx/HyperUuid --signer-repo SkunkWerkx/.github --source-digest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n```\n\n`inventory.json` lists every file with its size and SHA-256 and, for each file with build\nprovenance, the commit it was built from and the repository that signed it; it carries\nbuild provenance of its own at the tagged commit. PyPI additionally holds a PEP 740 publish attestation for every wheel.\n"
+    def test_php_zips_are_counted_attached_and_carry_forge_provenance(self):
+        php = [dict(path=f'php/php_hyperuuid-v1.0.0_php8.{m}-x86_64-linux-glibc-nts.zip', location='packages',
+                    source_sha='a' * 40, signer_repo='SkunkWerkx/.github') for m in (3, 4, 5)]
+        body = ' '.join(notes.verifying({**INVENTORY, 'files': INVENTORY['files'] + php}).split())
+        self.assertIn('committed for Go and Swift, and the 1 metadata files staged beside them, and 3 PHP extension '
+                      'zips for PIE, one per platform and PHP minor, attached below.', body)
+        self.assertIn('The native libraries, the PHP extension zips, the Python wheels', body)
+        self.assertNotIn('PHP extension', notes.verifying(INVENTORY))
+
+
+SIBLING_VERIFYING = "## Verifying\n\nEvery file in this release verifies from the tag alone. One attestation, signed by this\nrepository's `release.yml` at `v1.0.0`, names all 4 of them: every registry\npackage (NuGet, RubyGems, PyPI, crates.io and Maven Central), the 1 native\nlibraries committed for Go and Swift, and the 1 metadata files staged beside\nthem. Its predicate is the release inventory attached below.\n\n```sh\ngh attestation verify <file> --repo SkunkWerkx/HyperUuid \\\n  --source-ref refs/tags/v1.0.0 --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1\n```\n\nThe native libraries, the Python wheels and the archives inside the NuGet package and the\njar also carry build provenance from CI run [42](https://github.com/SkunkWerkx/HyperUuid/actions/runs/42)\nat commit `aaaaaaa`, the parent of the tagged commit, signed by the Forge:\n\n```sh\ngh attestation verify <file> --repo SkunkWerkx/HyperUuid --signer-repo SkunkWerkx/.github --source-digest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n```\n\n`inventory.json` lists every file with its size and SHA-256 and, for each file with build\nprovenance, the commit it was built from and the repository that signed it; it carries\nbuild provenance of its own at the tagged commit. PyPI additionally holds a PEP 740 publish attestation for every wheel.\n"
 
 
 if __name__ == '__main__':

@@ -38,7 +38,7 @@ def verifying(inventory):
     # A consumer with swift_remote attaches the Swift core to the Release as two zips, built
     # and attested by the Forge in CI, instead of committing it.
     assets = sorted(Path(e['path']).name for e in files if e['path'].startswith('github/'))
-    committed = 'Go and PHP' if assets else 'Go, Swift and PHP'
+    committed = 'Go' if assets else 'Go and Swift'
     staged = f', and the {metadata} metadata files staged beside\nthem' if metadata else ''
     attached = (f",\nand the Swift core's {' and '.join(f'`{name}`' for name in assets)}, attached below"
                 if assets else '')
@@ -47,6 +47,12 @@ def verifying(inventory):
     archives = sum(1 for e in files if e['path'].startswith('c/'))
     if archives:
         attached += f",\nand {archives} C archives, one per platform, attached below"
+    # The PHP extension's PIE zips, one per platform and PHP minor, built and attested by the
+    # Forge in CI like the native libraries; PIE downloads them from the Release.
+    extensions = sum(1 for e in files if e['path'].startswith('php/'))
+    if extensions:
+        attached += f",\nand {extensions} PHP extension zips for PIE, one per platform and PHP minor, attached below"
+        zips += ', the PHP extension zips'
     registry = (", and npm a provenance statement for every package, linking it to the\n"
                 "publishing run of this repository's `release.yml`") if npm else ''
     return f'''## Verifying

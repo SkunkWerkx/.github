@@ -9,6 +9,323 @@ import unittest
 WORKFLOWS = Path(__file__).resolve().parents[1] / 'workflows'
 
 
+def load_script(name):
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(f'{name}.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class PieAcceptanceContracts(unittest.TestCase):
+    """hyper-pie-acceptance.yml: PIE installs the released zips on every platform and minor, from
+    a leg holding PHP and the pinned PIE only, then a fresh PHP checks the extension."""
+    PATH = WORKFLOWS / 'hyper-pie-acceptance.yml'
+
+    def setUp(self):
+        import yaml_lite
+        self.text = self.PATH.read_text()
+        self.workflow = yaml_lite.load(self.text)
+        self.steps = self.workflow['jobs']['install']['steps']
+
+    def step(self, name):
+        return next(step for step in self.steps if step.get('name') == name)
+
+    def test_called_and_dispatched_with_the_same_inputs(self):
+        on = self.workflow['on']
+        self.assertEqual(set(on), {'workflow_call', 'workflow_dispatch'})
+        called, dispatched = on['workflow_call']['inputs'], on['workflow_dispatch']['inputs']
+        self.assertEqual(list(called), ['package', 'extension', 'package_version', 'repository', 'minors'])
+        self.assertEqual(list(dispatched), list(called))
+        for name in called:
+            with self.subTest(input=name):
+                self.assertEqual(dispatched[name], called[name])
+        self.assertEqual(called['repository']['default'], '')
+        self.assertIs(called['extension']['required'], True)
+        self.assertNotIn('default', called['extension'])
+
+    def test_minors_move_with_the_build_and_the_inventory(self):
+        php_ext_package = load_script('php_ext_package')
+        minors = ' '.join(php_ext_package.MINORS)
+        import yaml_lite
+        native = yaml_lite.load((WORKFLOWS / 'hyper-build-native.yml').read_text())['on']['workflow_call']['inputs']
+        extension = yaml_lite.load((WORKFLOWS / 'hyper-build-php-extension.yml').read_text())['on']['workflow_call']['inputs']
+        self.assertEqual(self.workflow['on']['workflow_call']['inputs']['minors']['default'], minors)
+        self.assertEqual(native['php_versions']['default'], minors)
+        self.assertEqual(extension['php_versions']['default'], minors)
+
+    def test_every_platform_on_every_minor(self):
+        run = next(s['run'] for s in self.workflow['jobs']['legs']['steps'] if s.get('id') == 'matrix')
+        self.assertIn('php_ext_package.py matrix --mode release --versions "$MINORS" --floor \'\'', run)
+        self.assertIn('^[0-9]+\\.[0-9]+\\.[0-9]+$', run)
+        install = self.workflow['jobs']['install']
+        self.assertEqual(install['strategy']['matrix'], '${{ fromJSON(needs.legs.outputs.matrix) }}')
+        self.assertIs(install['strategy']['fail-fast'], False)
+
+    def test_the_leg_holds_php_and_the_pinned_pie_only(self):
+        fetch = self.step('Fetch PIE, and verify its checksum and attestation')
+        self.assertIn('php_ext_package.py" pie-pin', fetch['run'])
+        self.assertIn('gh attestation verify "$phar" --owner php', fetch['run'])
+        self.assertNotRegex(self.text, r'[0-9a-f]{64}')
+        # The only checkout is the Forge's own: nothing of the consumer's but its Release.
+        checkouts = [s for job in self.workflow['jobs'].values() for s in job['steps']
+                     if s.get('uses', '').startswith('actions/checkout@')]
+        self.assertEqual(len(checkouts), 2)
+        for checkout in checkouts:
+            self.assertEqual(checkout['with']['path'], '.hyperforge')
+        self.assertNotIn('composer install', self.text)
+        self.assertNotIn('cargo', self.text)
+        self.assertIn('tools: none', self.text)
+
+    def test_both_install_steps_run_the_leg_script_with_the_bare_version(self):
+        for name in ('Install with PIE, then check from a fresh PHP',
+                     'Install with PIE, then check from a fresh PHP (Alpine)'):
+            with self.subTest(step=name):
+                run = self.step(name)['run']
+                self.assertRegex(run, r'pie_acceptance\.sh"? "\$[A-Za-z_]+" "\$[A-Za-z_]+" "?\$?/?[A-Za-z_.]+"? '
+                                      r'"\$PACKAGE" "\$EXTENSION" "\$PACKAGE_VERSION" "\$REPOSITORY" "\$ENTRY_SHA256"')
+        self.assertIn('alpine:3.24', self.step('Install with PIE, then check from a fresh PHP (Alpine)')['run'])
+        script = (WORKFLOWS.parent / 'scripts/pie_acceptance.sh').read_text()
+        self.assertIn('release_tag="v$package_version"', script)
+        self.assertIn('install --no-interaction "$@" "$package:$release_tag"', script)
+        self.assertIn('repository:add "$@" vcs "$repository"', script)
+        self.assertIn('"$target_php" "$here/pie_acceptance.php" "$extension" "$package_version" "$entry_sha256"', script)
+        self.assertIn('-e EXTENSION ', self.step('Install with PIE, then check from a fresh PHP (Alpine)')['run'])
+        self.assertIn('-e ENTRY_SHA256 ', self.step('Install with PIE, then check from a fresh PHP (Alpine)')['run'])
+        self.assertEqual(self.workflow['jobs']['install']['env']['EXTENSION'], '${{ inputs.extension }}')
+
+    def test_the_installed_file_is_the_release_zips_entry(self):
+        # Before PIE runs, each leg downloads its own zip from the Release, verifies the release
+        # attestation over it against a real release, and hands its entry's sha256 to the checks.
+        fetch = self.step("Fetch this leg's zip from the Release, and verify it")
+        run = fetch['run']
+        self.assertIn('php_ext_package.py" asset --rid "$RID" --minor "$MINOR" --version "$tag" --extension "$EXTENSION"', run)
+        self.assertIn('tag="v$PACKAGE_VERSION"', run)
+        self.assertIn('gh release download "$tag" --repo "$release_repo" --pattern "$name"', run)
+        self.assertIn('gh attestation verify "$zip" --repo "$release_repo" --source-ref "refs/tags/$tag"', run)
+        self.assertIn('--predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1', run)
+        self.assertIn('if [ -z "$REPOSITORY" ]; then', run)
+        self.assertIn('release_repo=$GITHUB_REPOSITORY', run)
+        self.assertIn('echo "ENTRY_SHA256=$sha256" >> "$GITHUB_ENV"', run)
+        self.assertEqual(fetch['env']['GH_TOKEN'], '${{ github.token }}')
+        names = [step.get('name') for step in self.steps]
+        for install in ('Install with PIE, then check from a fresh PHP',
+                        'Install with PIE, then check from a fresh PHP (Alpine)'):
+            self.assertLess(names.index("Fetch this leg's zip from the Release, and verify it"), names.index(install))
+        self.assertEqual(self.workflow['jobs']['install']['permissions']['attestations'], 'read')
+        php = (WORKFLOWS.parent / 'scripts/pie_acceptance.php').read_text()
+        self.assertIn("hash_file('sha256', $file) === $entrySha256", php)
+        self.assertIn("ini_get('extension_dir')", php)
+
+    def test_both_install_steps_authenticate_composer_to_github_without_logging_it(self):
+        auth = '\'{"github-oauth":{"github.com":"${{ github.token }}"}}\''
+        for name in ('Install with PIE, then check from a fresh PHP',
+                     'Install with PIE, then check from a fresh PHP (Alpine)'):
+            with self.subTest(step=name):
+                self.assertEqual(self.step(name)['env']['COMPOSER_AUTH'], auth.strip("'"))
+        self.assertIn('-e COMPOSER_AUTH ', self.step('Install with PIE, then check from a fresh PHP (Alpine)')['run'])
+        self.assertEqual(self.text.count('COMPOSER_AUTH'), 3)
+        self.assertNotRegex(self.text, r'(echo|printf|cat)[^\n]*COMPOSER_AUTH')
+        script = (WORKFLOWS.parent / 'scripts/pie_acceptance.sh').read_text()
+        self.assertNotIn('COMPOSER_AUTH', script)
+        self.assertNotIn('set -x', script)
+
+    def test_the_checks_are_the_corpus_vectors(self):
+        php = (WORKFLOWS.parent / 'scripts/pie_acceptance.php').read_text()
+        self.assertIn("const V5_EXPECT = '2ed6657d-e927-568b-95e1-2665a8aea6a2';", php)
+        self.assertIn("const SQL_ORDER = '07060504-0908-0080-8000-017f22e279b0';", php)
+        self.assertIn('phpversion($extension) === $version', php)
+        self.assertNotIn('ini_set', php)
+        # The extension is an argument; only the API checks are HyperUuid's, and another
+        # extension fails rather than passing on checks that aren't its own.
+        self.assertNotIn("const EXTENSION", php)
+        self.assertIn("if ($extension !== 'hyperuuid') {", php)
+
+
+class PhpExtensionContracts(unittest.TestCase):
+    """hyper-build-php-extension.yml builds, tests and packs the PIE zips; nothing else builds
+    PHP, and the ext-ffi suites are gone."""
+    PATH = WORKFLOWS / 'hyper-build-php-extension.yml'
+    MUSL = WORKFLOWS.parent / 'scripts/php_ext_musl.sh'
+
+    def setUp(self):
+        import yaml_lite
+        self.text = self.PATH.read_text()
+        self.workflow = yaml_lite.load(self.text)
+        self.jobs = self.workflow['jobs']
+        self.steps = self.jobs['build']['steps']
+
+    def step(self, name):
+        return next(step for step in self.steps if step.get('name') == name)
+
+    def test_inputs(self):
+        inputs = self.workflow['on']['workflow_call']['inputs']
+        self.assertEqual(set(inputs), {'crate', 'mode', 'php_versions', 'php_floor_version', 'attest_native'})
+        self.assertEqual(inputs['php_versions']['default'], '8.3 8.4 8.5')
+        self.assertEqual(inputs['mode']['default'], 'release')
+
+    def test_version_job_reads_the_crate_version_at_the_commit_and_derives_the_tag(self):
+        version = self.jobs['version']
+        self.assertEqual(set(version['outputs']), {'package_version', 'release_tag', 'matrix', 'env_prefix'})
+        run = next(step['run'] for step in version['steps'] if step.get('id') == 'version')
+        self.assertIn('cargo metadata --no-deps --format-version 1', run)
+        self.assertIn('.packages[] | select(.name == $crate) | .version', run)
+        self.assertIn("^[0-9]+\\.[0-9]+\\.[0-9]+$", run)
+        self.assertIn('release_tag=v$package_version', run)
+        matrix = next(step['run'] for step in version['steps'] if step.get('id') == 'matrix')
+        self.assertIn('php_ext_package.py" matrix --mode "$MODE" --versions "$PHP_VERSIONS" --floor "$PHP_FLOOR_VERSION"', matrix)
+        build = self.jobs['build']
+        self.assertEqual(build['needs'], 'version')
+        self.assertEqual(build['strategy']['matrix'], '${{ fromJSON(needs.version.outputs.matrix) }}')
+        self.assertIs(build['strategy']['fail-fast'], False)
+
+    def test_the_tag_reaches_only_the_packer_and_the_bare_version_only_the_load_check(self):
+        texts = (self.text, self.MUSL.read_text())
+        for text in texts:
+            text = text.replace('\\\n', ' ')  # shell line continuations
+            packs = re.findall(r'php_ext_package\.py"? pack[^\n]*', text)
+            self.assertTrue(packs)
+            for call in packs:
+                self.assertIn('--version "$RELEASE_TAG"', call)
+            for call in re.findall(r'php_ext_load_check\.php"? [^\n]*', text):
+                self.assertTrue(call.rstrip().endswith('"$CRATE" "$PACKAGE_VERSION"'), call)
+        self.assertEqual(set(re.findall(r'RELEASE_TAG: (.*)', self.text)), {'${{ needs.version.outputs.release_tag }}'})
+        self.assertEqual(set(re.findall(r'PACKAGE_VERSION: (.*)', self.text)),
+                         {'${{ needs.version.outputs.package_version }}'})
+        # release_tag is written once, as "v" + package_version, and read only as the job output.
+        rest = self.text
+        for known in ('needs.version.outputs.release_tag', 'steps.version.outputs.release_tag',
+                      'release_tag=v$package_version', '      release_tag:', '`release_tag`'):
+            rest = rest.replace(known, '')
+        self.assertNotIn('release_tag', rest)
+        check = (WORKFLOWS.parent / 'scripts/php_ext_load_check.php').read_text()
+        self.assertIn('phpversion($crate)', check)
+        self.assertIn('!== $want', check)
+
+    def test_rustc_bootstrap_is_set_once_on_the_windows_build_step(self):
+        code = '\n'.join(line for line in self.text.splitlines() if not line.lstrip().startswith('#'))
+        self.assertEqual(code.count('RUSTC_BOOTSTRAP'), 1)
+        steps = [step for step in self.steps if 'RUSTC_BOOTSTRAP' in (step.get('env') or {})]
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0]['env']['RUSTC_BOOTSTRAP'], '1')
+        self.assertEqual(steps[0]['if'], "runner.os == 'Windows'")
+        self.assertIn('abi_vectorcall', self.text)
+        self.assertIn('rust-lang/rust#124485', self.text)
+        for other in ('hyper-build-native.yml', 'hyper-build-wheels.yml', 'hyper-build-static.yml'):
+            self.assertNotIn('RUSTC_BOOTSTRAP', (WORKFLOWS / other).read_text(), other)
+        self.assertNotIn('RUSTC_BOOTSTRAP', self.MUSL.read_text())
+
+    def test_phpunit_runs_on_every_leg(self):
+        test = self.step('Test the extension (composer test)')
+        self.assertEqual(test['if'], "matrix.kind != 'musl'")
+        self.assertIn('tools/run-tests.php', test['run'])
+        self.assertIn('export "${ENV_PREFIX}_PHP_EXTENSION=$EXTENSION"', test['run'])
+        self.assertIn('if [ "$STUBS" = true ]; then export "${ENV_PREFIX}_CHECK_STUBS=1"; fi', test['run'])
+        self.assertEqual(test['env']['STUBS'], '${{ matrix.stubs }}')
+        self.assertEqual(self.jobs['build']['env']['ENV_PREFIX'], '${{ needs.version.outputs.env_prefix }}')
+        musl = self.MUSL.read_text()
+        self.assertIn('php tools/run-tests.php', musl)
+        self.assertEqual(self.step('Build, load-check, test and pack on Alpine')['if'], "matrix.kind == 'musl'")
+
+    DERIVE = "printf '%s' \"$CRATE\" | tr '[:lower:]-' '[:upper:]_'"
+
+    def test_no_crate_name_is_hard_coded_in_the_suite_variables(self):
+        for path in (self.PATH, self.MUSL):
+            with self.subTest(path=path.name):
+                self.assertNotIn('HYPERUUID_', path.read_text())
+
+    def test_the_suite_variable_prefix_is_derived_from_the_crate_the_same_way_in_both(self):
+        version = next(s for s in self.jobs['version']['steps'] if s.get('id') == 'version')
+        self.assertIn(f'env_prefix=$({self.DERIVE})', version['run'])
+        self.assertEqual(self.jobs['version']['outputs']['env_prefix'],
+                         '${{ steps.version.outputs.env_prefix }}')
+        musl = self.MUSL.read_text()
+        self.assertIn('env_prefix=$(' + self.DERIVE.replace('$CRATE', '$crate') + ')', musl)
+        self.assertIn('-e "${env_prefix}_PHP_EXTENSION=/ext/$crate.so"', musl)
+        for crate, prefix in (('hyperuuid', 'HYPERUUID'), ('hypercast', 'HYPERCAST'),
+                              ('hyper-tabular', 'HYPER_TABULAR')):
+            with self.subTest(crate=crate):
+                out = subprocess.run(['bash', '-c', self.DERIVE], env={'CRATE': crate, 'PATH': os.environ['PATH']},
+                                     capture_output=True, text=True, check=True).stdout
+                self.assertEqual(out, prefix)
+
+    def test_each_leg_loads_packs_and_uploads_its_zip_and_release_attests_it(self):
+        load = self.step('Load-check the extension, and record the ABI it is pinned to')
+        self.assertEqual(load['if'], "matrix.kind != 'musl'")
+        self.assertIn('-d "extension=$EXTENSION"', load['run'])
+        upload = next(step for step in self.steps if str(step.get('uses', '')).startswith('actions/upload-artifact@'))
+        self.assertEqual(upload['with']['name'], 'php-ext-${{ matrix.rid }}-${{ matrix.minor }}')
+        self.assertEqual(upload['with']['path'], 'php-dist/*.zip')
+        attest = next(step for step in self.steps if str(step.get('uses', '')).startswith('actions/attest-build-provenance@'))
+        self.assertIn("inputs.attest_native && inputs.mode == 'release'", attest['if'])
+        self.assertEqual(attest['with']['subject-path'], 'php-dist/*.zip')
+        glibc = self.step('glibc floor — nothing newer than GLIBC_2.34 is referenced')
+        self.assertEqual(glibc['if'], "matrix.kind == 'glibc'")
+
+    def test_pie_comes_from_the_packer_pin_checked_by_hash_and_attestation_before_any_pack(self):
+        fetch = self.step('Fetch PIE, and verify its checksum and attestation')
+        self.assertIn('php_ext_package.py" pie-pin', fetch['run'])
+        self.assertIn('gh attestation verify "$phar" --owner php', fetch['run'])
+        self.assertEqual(fetch['env']['GH_TOKEN'], '${{ github.token }}')
+        self.assertNotRegex(self.text, r'[0-9a-f]{64}')
+        names = [step.get('name') for step in self.steps]
+        self.assertLess(names.index('Fetch PIE, and verify its checksum and attestation'),
+                        names.index('Build, load-check, test and pack on Alpine'))
+        self.assertLess(names.index('Fetch PIE, and verify its checksum and attestation'),
+                        names.index('Pack the PIE zip'))
+
+    def test_the_build_is_the_crate_php_ext_alias(self):
+        for name in ('Build the extension', 'Build the extension (Windows)'):
+            self.assertIn('cargo php-ext', self.step(name)['run'], name)
+        self.assertIn('cargo php-ext', self.MUSL.read_text())
+        # `--features php` is clippy's only (below); every build is the alias.
+        self.assertEqual(self.text.count('--features php'), 1)
+
+    def test_clippy_runs_over_the_php_feature_on_the_stub_leg(self):
+        # check-core lints every other feature set but can't build this one (PHP headers and
+        # libclang); the stub leg has both.
+        clippy = self.step('Clippy over the extension (the php feature)')
+        self.assertEqual(clippy['if'], 'matrix.stubs')
+        self.assertEqual(clippy['working-directory'], 'rust')
+        self.assertEqual(clippy['run'], 'cargo clippy --features php -- -D warnings')
+        toolchain = next(step for step in self.steps
+                         if str(step.get('uses', '')).startswith('dtolnay/rust-toolchain@'))
+        self.assertEqual(toolchain['with']['components'], "${{ matrix.stubs && 'clippy' || '' }}")
+        names = [step.get('name') for step in self.steps]
+        self.assertLess(names.index('Stub generator prerequisites (cargo-php, libclang)'),
+                        names.index('Clippy over the extension (the php feature)'))
+        self.assertLess(names.index('Point bindgen at one system LLVM, not at Swift\'s clang'),
+                        names.index('Clippy over the extension (the php feature)'))
+
+    def test_the_packer_is_told_the_crate_as_the_extension(self):
+        for text in (self.text, self.MUSL.read_text()):
+            text = text.replace('\\\n', ' ')
+            packs = re.findall(r'php_ext_package\.py"? pack[^\n]*', text)
+            self.assertTrue(packs)
+            for call in packs:
+                self.assertIn('--extension "$CRATE"', call)
+        for name in ('php_ext_package.py', 'pie_asset_names.php', 'pie_acceptance.sh'):
+            self.assertNotIn("'hyperuuid'", (WORKFLOWS.parent / 'scripts' / name).read_text(), name)
+        self.assertNotIn('--exclude=php_ext.rs;', (WORKFLOWS / 'hyper-check-core.yml').read_text())
+        self.assertIn('--exclude=php_ext.rs --exclude-dir=php_ext', (WORKFLOWS / 'hyper-check-core.yml').read_text())
+
+    def test_native_calls_it_in_both_modes_and_runs_no_php_suite(self):
+        native = (WORKFLOWS / 'hyper-build-native.yml').read_text()
+        self.assertIn('  build-php-extension:\n    if: inputs.php\n', native)
+        job = native.split('  build-php-extension:\n', 1)[1]
+        for line in ('mode: ${{ inputs.mode }}', 'php_versions: ${{ inputs.php_versions }}',
+                     'php_floor_version: ${{ inputs.php_floor_version }}'):
+            self.assertIn(line, job)
+        import yaml_lite
+        inputs = yaml_lite.load(native)['on']['workflow_call']['inputs']
+        self.assertNotIn('php_version', inputs)
+        self.assertEqual(inputs['php_versions']['default'], '8.3 8.4 8.5')
+        suite = (WORKFLOWS.parent / 'actions/musl-suite/suite-musl.sh').read_text()
+        for text in (native, suite):
+            for gone in ('ext-ffi', 'ffi.enable', 'phpunit', 'setup-php', 'php/src/native', '--features php'):
+                self.assertNotIn(gone, text)
+        self.assertNotIn('\n  php)', suite)
+
+
 class ProducerContracts(unittest.TestCase):
     def test_timing_model_waits_for_both_android_architectures(self):
         path = Path(__file__).with_name('ci_timing.py')
@@ -31,26 +348,6 @@ class ProducerContracts(unittest.TestCase):
         self.assertEqual(result['test-android']['modeled_finish_seconds'], 600)
         self.assertEqual(result['test-apple-mobile']['artifact_ready_seconds'], 120)
         self.assertEqual(result['test-apple-mobile']['modeled_finish_seconds'], 1320)
-
-    def test_parallel_php_keeps_existing_platforms_load_probe_and_artifacts(self):
-        path = WORKFLOWS / 'hyper-build-php-extension.yml'
-        self.assertTrue(path.exists())
-        text = path.read_text()
-        self.assertEqual(re.findall(r'            rid: ([\w-]+)', text),
-                         ['linux-x64', 'linux-arm64', 'osx-arm64'])
-        for value in ('cargo rustc --release --crate-type cdylib --features php',
-                      'php -d extension=', 'extension_loaded(',
-                      'name: php-native-${{ matrix.rid }}',
-                      'actions/attest-build-provenance@'):
-            self.assertIn(value, text)
-        native = (WORKFLOWS / 'hyper-build-native.yml').read_text()
-        # The extension is built only by its own job: the matrix builds none, so it can never
-        # be built twice or by two recipes that drift apart, and there is no schedule to pick.
-        self.assertNotIn('php_extension_schedule', native)
-        self.assertNotIn('- name: Validate PHP extension schedule', native)
-        self.assertIn("  build-php-extension:\n    if: inputs.php && inputs.mode != 'pr'\n", native)
-        for gone in ('--features php', 'php-native-${{ matrix.rid }}'):
-            self.assertNotIn(gone, native)
 
     def test_wasi_suite_runs_under_a_pinned_checksummed_wasmtime_with_the_repository_mounted(self):
         import yaml_lite
