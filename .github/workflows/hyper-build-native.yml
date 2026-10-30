@@ -593,8 +593,9 @@ jobs:
 
       # The static libraries this leg's own suites link — the C# Native AOT publish, Go's
       # cgo backend, Swift — built from this commit before any of them runs. The
-      # archives committed in the tree (Swift's, Go's) are whatever was staged last, and C#'s
-      # are not committed at all; without this a leg would link the previous core, or none.
+      # archives committed in the tree (Go's, and Swift's unless `swift_remote`) are whatever
+      # was staged last, and C#'s are not committed at all; without this a leg would link the
+      # previous core, or none.
       # What ships is the caller's hyper-build-static.yml output, not this.
       - name: Build this leg's static libraries
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
@@ -1220,9 +1221,10 @@ jobs:
           echo "::warning::No /usr/lib/llvm-*/ carries both clang and libclang; bindgen is left to find its own, which is how the mismatch above happens."
 
       # The Swift binding links the core in on every platform, from its artifact bundle, and
-      # "Build this leg's static libraries" has already written this leg's triple over the
-      # committed archive and regenerated the bundle's info.json, so the suite links the
-      # core this commit built. (A caller without `static_libs` tests the committed archive.)
+      # "Build this leg's static libraries" has already written this leg's triple into the
+      # bundle (over the committed archive, if there is one) and regenerated its info.json, so
+      # the suite links the core this commit built. (A caller without `static_libs` tests the
+      # committed archive.)
       - name: Test Swift bindings, the core linked in
         if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.swift }}
         working-directory: swift

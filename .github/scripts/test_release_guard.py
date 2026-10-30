@@ -327,31 +327,30 @@ class PlatformSymbolsTests(unittest.TestCase):
                                 guard.check_symbols(archive, expected, cfg)
 
 
-class StagingIntegrationTests(unittest.TestCase):
-    def test_positive_stages_exact_downloaded_bytes_and_rejects_incomplete_set(self):
-        if not shutil.which('lld-link') or not shutil.which('llvm-nm') or not shutil.which('sha256sum'):
-            self.skipTest('DLL fixture requires LLVM lld-link and llvm-nm, the script sha256sum')
-        if sys.platform == 'darwin':
-            self.skipTest('cc -shared builds Mach-O here, which the ELF-oriented fixture cannot use; validate.yml runs this on Ubuntu')
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_config(root)
-            cfg = guard.config(root)
-            (root / 'rust/src').mkdir(parents=True)
-            (root / 'rust/Cargo.toml').write_text('version = "0.9.0"\n')
-            exports = {'hyperuuid_version', 'uuid_v7_to_sql_order', 'uuid_new_v7'}
-            (root / 'rust/src/ffi.rs').write_text(''.join(f'pub extern "C" fn {n}() {{}}\n' for n in exports))
-            include = root / cfg.bundle / 'include'
-            include.mkdir(parents=True)
-            (include / 'hyperuuid.h').write_text('#include <stdint.h>\nuint32_t hyperuuid_version(void);\n'
-                                                 'int32_t uuid_v7_to_sql_order(uint8_t *p);\n')
-            (include / 'module.modulemap').write_text('module HyperUuidCore {}\n')
-            probe = root / cfg.abi_probe
-            probe.parent.mkdir(parents=True)
-            probe.write_text('#include "hyperuuid.h"\nint main(void) { uint8_t p[8] = {0};\n'
-                             '  return hyperuuid_version() == EXPECTED_VERSION && uuid_v7_to_sql_order(p) == 5 ? 0 : 1; }\n')
-            source = root / 'fixture.c'
-            source.write_text('''#include <stdint.h>
+SWIFT_MANIFEST = 'let coreRelease = "0.8.0"\nlet coreChecksum = ""\nlet appleCoreChecksum = ""\n'
+
+
+def staging_fixture(root, data):
+    """A consumer checkout at A beside fake CI artifacts for every payload, a stub gh that
+    accepts provenance at `sha`, and the staging step's script with its environment."""
+    write_config(root, data)
+    cfg = guard.config(root)
+    (root / 'rust/src').mkdir(parents=True)
+    (root / 'rust/Cargo.toml').write_text('version = "0.9.0"\n')
+    exports = {'hyperuuid_version', 'uuid_v7_to_sql_order', 'uuid_new_v7'}
+    (root / 'rust/src/ffi.rs').write_text(''.join(f'pub extern "C" fn {n}() {{}}\n' for n in exports))
+    include = root / cfg.bundle / 'include'
+    include.mkdir(parents=True)
+    (include / 'hyperuuid.h').write_text('#include <stdint.h>\nuint32_t hyperuuid_version(void);\n'
+                                         'int32_t uuid_v7_to_sql_order(uint8_t *p);\n')
+    (include / 'module.modulemap').write_text('module HyperUuidCore {}\n')
+    (root / 'Package.swift').write_text(SWIFT_MANIFEST)
+    probe = root / cfg.abi_probe
+    probe.parent.mkdir(parents=True)
+    probe.write_text('#include "hyperuuid.h"\nint main(void) { uint8_t p[8] = {0};\n'
+                     '  return hyperuuid_version() == EXPECTED_VERSION && uuid_v7_to_sql_order(p) == 5 ? 0 : 1; }\n')
+    source = root / 'fixture.c'
+    source.write_text('''#include <stdint.h>
 #ifdef _WIN32
 #define EXPORT __declspec(dllexport)
 #else
@@ -361,73 +360,117 @@ EXPORT uint32_t hyperuuid_version(void) {return 0x000900;}
 EXPORT int32_t uuid_v7_to_sql_order(uint8_t *p) {return 5;}
 EXPORT int uuid_new_v7(void) {return 0;}
 ''')
-            obj, shared, archive, dll = [root / name for name in ('f.o', 'f.so', 'f.a', 'f.dll')]
-            subprocess.run(['cc', '-fPIC', '-c', str(source), '-o', str(obj)], check=True)
-            subprocess.run(['cc', '-shared', str(obj), '-o', str(shared)], check=True)
-            subprocess.run(['ar', 'rcs', str(archive), str(obj)], check=True)
-            subprocess.run(['clang', '-target', 'x86_64-pc-windows-msvc', '-ffreestanding',
-                            '-fuse-ld=lld', '-nostdlib', '-shared', '-Wl,/noentry',
-                            str(source), '-o', str(dll)], check=True)
-            paths = guard.payload_paths(cfg, root / 'artifacts')
-            for dest, src in paths.items():
-                src.parent.mkdir(parents=True, exist_ok=True)
-                if src.suffix in ('.a', '.lib'):
-                    shutil.copyfile(archive, src)
-                elif src.suffix == '.dll':
-                    shutil.copyfile(dll, src)
-                elif src.suffix in ('.so', '.dylib'):
-                    shutil.copyfile(shared, src)
-                else:
-                    src.write_text('generated metadata')
-            # Staging also verifies the Windows ARM library PHP never ships.
-            extra = root / 'artifacts/native/native-win-arm64/hyperuuid.dll'
-            extra.parent.mkdir(parents=True)
-            shutil.copyfile(dll, extra)
-            sha = 'a' * 40
-            with patch.object(guard, 'verify_attestation') as verify:
-                guard.validate_payloads(root, cfg, paths, sha, REPO)
-                self.assertEqual(verify.call_count, 34)
-            script = step(SCRIPTS.parent / 'workflows/hyper-stage-natives.yml',
-                          'Verify attestations, then stage into php/, swift/, go/')
-            subprocess.run(['git', 'init', '-q', str(root)], check=True)
-            for key, value in (('commit.gpgsign', 'false'), ('user.name', 'Test'), ('user.email', 'test@example.com')):
-                subprocess.run(['git', '-C', str(root), 'config', key, value], check=True)
-            subprocess.run(['git', '-C', str(root), 'add', 'rust', '.github', cfg.bundle + '/include'], check=True)
-            subprocess.run(['git', '-C', str(root), 'commit', '-qm', 'source A'], check=True)
-            source_sha = guard.git(root, 'rev-parse', 'HEAD')
-            gh = root / 'bin/gh'
-            gh.parent.mkdir()
-            gh.write_text('#!/bin/sh\ncase "$*" in *"--source-digest ' + sha + '"*) test -f "$3";; *) exit 1;; esac\n')
-            gh.chmod(0o755)
-            env = {**os.environ, 'PATH': f'{gh.parent}:{os.environ["PATH"]}', 'SOURCE_SHA': sha,
-                   'GITHUB_REPOSITORY': REPO, 'GITHUB_STEP_SUMMARY': str(root / 'summary'),
-                   'FORGE_SCRIPTS': str(SCRIPTS)}
-            result = subprocess.run(['bash', '-c', script], cwd=root, env=env, text=True,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            guard.compare_payloads(root, paths)
-            subprocess.run(['git', '-C', str(root), 'add', 'php/src/native', cfg.bundle, cfg.xcframework, 'go/staticlib'], check=True)
+    obj, shared, archive, dll = [root / name for name in ('f.o', 'f.so', 'f.a', 'f.dll')]
+    subprocess.run(['cc', '-fPIC', '-c', str(source), '-o', str(obj)], check=True)
+    subprocess.run(['cc', '-shared', str(obj), '-o', str(shared)], check=True)
+    subprocess.run(['ar', 'rcs', str(archive), str(obj)], check=True)
+    subprocess.run(['clang', '-target', 'x86_64-pc-windows-msvc', '-ffreestanding',
+                    '-fuse-ld=lld', '-nostdlib', '-shared', '-Wl,/noentry',
+                    str(source), '-o', str(dll)], check=True)
+    paths = guard.payload_paths(cfg, root / 'artifacts')
+    for dest, src in paths.items():
+        src.parent.mkdir(parents=True, exist_ok=True)
+        if src.suffix in ('.a', '.lib'):
+            shutil.copyfile(archive, src)
+        elif src.suffix == '.dll':
+            shutil.copyfile(dll, src)
+        elif src.suffix in ('.so', '.dylib'):
+            shutil.copyfile(shared, src)
+        else:
+            src.write_text('generated metadata')
+    for name in cfg.swift_assets:
+        zip_path = guard.swift_assets_dir(root) / name
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        zip_path.write_bytes(f'zip of {name}'.encode())
+    # Staging also verifies the Windows ARM library PHP never ships.
+    extra = root / 'artifacts/native/native-win-arm64/hyperuuid.dll'
+    extra.parent.mkdir(parents=True)
+    shutil.copyfile(dll, extra)
+    sha = 'a' * 40
+    script = step(SCRIPTS.parent / 'workflows/hyper-stage-natives.yml',
+                  'Verify attestations, then stage into php/, swift/, go/')
+    subprocess.run(['git', 'init', '-q', str(root)], check=True)
+    for key, value in (('commit.gpgsign', 'false'), ('user.name', 'Test'), ('user.email', 'test@example.com')):
+        subprocess.run(['git', '-C', str(root), 'config', key, value], check=True)
+    subprocess.run(['git', '-C', str(root), 'add', 'rust', '.github', 'Package.swift', cfg.bundle + '/include'], check=True)
+    subprocess.run(['git', '-C', str(root), 'commit', '-qm', 'source A'], check=True)
+    source_sha = guard.git(root, 'rev-parse', 'HEAD')
+    gh = root / 'bin/gh'
+    gh.parent.mkdir()
+    gh.write_text('#!/bin/sh\ncase "$*" in *"--source-digest ' + sha + '"*) test -f "$3";; *) exit 1;; esac\n')
+    gh.chmod(0o755)
+    env = {**os.environ, 'PATH': f'{gh.parent}:{os.environ["PATH"]}', 'SOURCE_SHA': sha,
+           'GITHUB_REPOSITORY': REPO, 'GITHUB_STEP_SUMMARY': str(root / 'summary'),
+           'FORGE_SCRIPTS': str(SCRIPTS)}
+    return cfg, paths, sha, script, env, source_sha
+
+
+class StagingIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        if not shutil.which('lld-link') or not shutil.which('llvm-nm') or not shutil.which('sha256sum'):
+            self.skipTest('DLL fixture requires LLVM lld-link and llvm-nm, the script sha256sum')
+        if sys.platform == 'darwin':
+            self.skipTest('cc -shared builds Mach-O here, which the ELF-oriented fixture cannot use; validate.yml runs this on Ubuntu')
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_positive_stages_exact_downloaded_bytes_and_rejects_incomplete_set(self):
+        root = self.root
+        cfg, paths, sha, script, env, source_sha = staging_fixture(root, MINIMAL)
+        with patch.object(guard, 'verify_attestation') as verify:
+            guard.validate_payloads(root, cfg, paths, sha, REPO)
+            self.assertEqual(verify.call_count, 34)
+        result = subprocess.run(['bash', '-c', script], cwd=root, env=env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        guard.compare_payloads(root, paths)
+        subprocess.run(['git', '-C', str(root), 'add', 'php/src/native', cfg.bundle, cfg.xcframework, 'go/staticlib'], check=True)
+        guard.validate_staging_index(root, cfg, source_sha)
+        shipped = root / 'go/staticlib/linux_amd64/libhyperuuid.a'
+        original_bytes = shipped.read_bytes()
+        shipped.write_bytes(b'copied wrong artifact')
+        subprocess.run(['git', '-C', str(root), 'add', str(shipped)], check=True)
+        with self.assertRaisesRegex(ValueError, 'do not match the recorded CI run'):
             guard.validate_staging_index(root, cfg, source_sha)
-            shipped = root / 'go/staticlib/linux_amd64/libhyperuuid.a'
-            original_bytes = shipped.read_bytes()
-            shipped.write_bytes(b'copied wrong artifact')
-            subprocess.run(['git', '-C', str(root), 'add', str(shipped)], check=True)
-            with self.assertRaisesRegex(ValueError, 'do not match the recorded CI run'):
-                guard.validate_staging_index(root, cfg, source_sha)
-            shipped.write_bytes(original_bytes)
-            subprocess.run(['git', '-C', str(root), 'add', str(shipped)], check=True)
-            with self.assertRaisesRegex(ValueError, 'not based on preparation'):
-                guard.validate_staging_index(root, cfg, 'f' * 40)
-            manifest = root / 'rust/Cargo.toml'
-            manifest.write_text(manifest.read_text() + '\n# unrelated change\n')
-            subprocess.run(['git', '-C', str(root), 'add', 'rust/Cargo.toml'], check=True)
-            with self.assertRaisesRegex(ValueError, 'unrelated A -> B change'):
-                guard.validate_staging_index(root, cfg, source_sha)
-            self.assertEqual(len((root / 'digests.txt').read_text().splitlines()), 35)
-            missing = paths['go/staticlib/linux_amd64/libhyperuuid.a']
-            missing.unlink()
-            with patch.object(guard, 'verify_attestation'), self.assertRaisesRegex(ValueError, 'missing artifact'):
-                guard.validate_payloads(root, cfg, paths, sha, REPO)
+        shipped.write_bytes(original_bytes)
+        subprocess.run(['git', '-C', str(root), 'add', str(shipped)], check=True)
+        with self.assertRaisesRegex(ValueError, 'not based on preparation'):
+            guard.validate_staging_index(root, cfg, 'f' * 40)
+        manifest = root / 'rust/Cargo.toml'
+        manifest.write_text(manifest.read_text() + '\n# unrelated change\n')
+        subprocess.run(['git', '-C', str(root), 'add', 'rust/Cargo.toml'], check=True)
+        with self.assertRaisesRegex(ValueError, 'unrelated A -> B change'):
+            guard.validate_staging_index(root, cfg, source_sha)
+        self.assertEqual(len((root / 'digests.txt').read_text().splitlines()), 35)
+        missing = paths['go/staticlib/linux_amd64/libhyperuuid.a']
+        missing.unlink()
+        with patch.object(guard, 'verify_attestation'), self.assertRaisesRegex(ValueError, 'missing artifact'):
+            guard.validate_payloads(root, cfg, paths, sha, REPO)
+
+    def test_swift_remote_stages_the_zips_checksums_and_no_swift_tree(self):
+        root = self.root
+        cfg, paths, sha, script, env, source_sha = staging_fixture(root, {**MINIMAL, 'swift_remote': True})
+        with patch.object(guard, 'verify_attestation') as verify:
+            guard.validate_payloads(root, cfg, paths, sha, REPO)
+            self.assertEqual(verify.call_count, 7 + 13)
+        result = subprocess.run(['bash', '-c', script], cwd=root, env=env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((root / cfg.bundle / 'info.json').exists())
+        self.assertFalse((root / cfg.xcframework).exists())
+        named = guard.swift_release.read((root / 'Package.swift').read_text())
+        assets = guard.swift_assets_dir(root)
+        self.assertEqual(named, {'version': '0.9.0', 'core': guard.swift_release.sha256(assets / cfg.swift_assets[0]),
+                                 'apple': guard.swift_release.sha256(assets / cfg.swift_assets[1])})
+        # Eight libraries, thirteen Go archives and the two zips, each verified and listed.
+        self.assertEqual(len((root / 'digests.txt').read_text().splitlines()), 8 + 13 + 2)
+        subprocess.run(['git', '-C', str(root), 'add', 'php/src/native', 'Package.swift'], check=True)
+        subprocess.run(['git', '-C', str(root), 'add', '-f', 'go/staticlib'], check=True)
+        guard.validate_staging_index(root, cfg, source_sha)
+        (assets / cfg.swift_assets[0]).write_bytes(b'a different zip')
+        with self.assertRaisesRegex(ValueError, 'Core.artifactbundle.zip'):
+            guard.validate_staging_index(root, cfg, source_sha)
 
 
 class StagingRequestTests(unittest.TestCase):

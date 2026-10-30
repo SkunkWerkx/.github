@@ -1,0 +1,211 @@
+name: HyperForge — test the C archives
+
+# For a consumer whose .github/hyper.json sets c_assets: packs the C archives from this run's
+# own artifacts with the same c_package.py the release's pack-c runs (so a path or layout
+# mistake fails here, not at the tag), then unpacks each platform's archive on a runner that
+# executes it and builds the consumer's c/smoke/ consumer against it through CMake and
+# pkg-config, shared and static (c/smoke/run.sh says what each build must show).
+#
+# The caller runs it after the jobs that upload native-* (hyper-build-native.yml, Android's
+# included: hyper-build-android.yml) and static-libs (hyper-build-static.yml with android).
+# The four Apple mobile archives (static only) are built against on a Mac through the same
+# find_package: linked for an iOS device, run in an iOS simulator, and run as Mac Catalyst on
+# both architectures (c/smoke/apple-mobile.sh). Android and WebAssembly are packed, not run:
+# neither has a runner that executes them.
+
+on:
+  workflow_call:
+
+jobs:
+  pack:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      # The smoke consumers and the hand-written C++ header are source like any other:
+      # c/.clang-format for C and C++ (the cbindgen header is generated, and checked by
+      # rust/tests/header.rs instead), shellcheck for the scripts. The runner image ships both.
+      - name: clang-format --dry-run and shellcheck
+        run: |
+          set -euo pipefail
+          clang-format --version
+          shopt -s nullglob
+          clang-format --style=file:c/.clang-format --dry-run -Werror c/smoke/*.c c/smoke/*.cpp include/*.hpp
+          shellcheck c/smoke/*.sh
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: native-*
+          path: artifacts
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: static-libs
+          path: artifacts/static-libs
+
+      # llvm-readobj and llvm-dlltool, for Windows' import libraries.
+      - name: Install LLVM
+        run: sudo apt-get update && sudo apt-get install -y llvm
+
+      - name: Pack one archive per platform
+        run: python3 .hyperforge/.github/scripts/c_package.py pack --artifacts artifacts --out c-packages
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: c-packages-ci
+          path: c-packages/*
+          if-no-files-found: error
+
+  smoke:
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { rid: linux-x64, os: ubuntu-26.04 }
+          - { rid: linux-arm64, os: ubuntu-26.04-arm }
+          - { rid: linux-musl-x64, os: ubuntu-26.04, alpine: true }
+          - { rid: linux-musl-arm64, os: ubuntu-26.04-arm, alpine: true }
+          - { rid: osx-arm64, os: macos-latest }
+          # No Intel macOS runner (hyper-build-native.yml has why): the x86_64 programs run
+          # under Rosetta, as the osx-x64 Python and Ruby legs do.
+          - { rid: osx-x64, os: macos-latest, smoke_arch: x86_64 }
+          - { rid: win-x64, os: windows-latest }
+          - { rid: win-arm64, os: windows-11-arm }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: c-packages-ci
+          path: c-packages
+
+      # Exactly one archive per platform: <crate>-<version>-<rid>, with the version
+      # rust/Cargo.toml gives, which every build below must also report.
+      - name: Unpack the ${{ matrix.rid }} archive
+        id: unpack
+        env:
+          RID: ${{ matrix.rid }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -n 1)
+          shopt -s nullglob
+          archives=(c-packages/*-"$version-$RID".tar.gz c-packages/*-"$version-$RID".zip)
+          [ "${#archives[@]}" = 1 ] || { echo "::error::expected one $RID archive at $version, found: ${archives[*]}"; exit 1; }
+          mkdir unpacked
+          case "${archives[0]}" in
+            *.zip) pwsh -NoProfile -Command "Expand-Archive -Path '${archives[0]}' -DestinationPath unpacked" ;;
+            *) tar -xzf "${archives[0]}" -C unpacked ;;
+          esac
+          dirs=(unpacked/*/)
+          echo "dir=${dirs[0]%/}" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install pkg-config
+        if: ${{ !matrix.alpine && !startsWith(matrix.rid, 'win-') }}
+        run: |
+          command -v pkg-config >/dev/null && exit 0
+          if [ "$RUNNER_OS" = macOS ]; then brew install pkgconf; else sudo apt-get update && sudo apt-get install -y pkg-config; fi
+
+      - name: Install Rosetta
+        if: matrix.smoke_arch == 'x86_64'
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            softwareupdate --install-rosetta --agree-to-license
+          fi
+          arch -x86_64 /usr/bin/true
+
+      # SMOKE_CXX: every runner's compiler has C++23's <expected>, so the C++ header's build
+      # is required, never skipped.
+      - name: Smoke-test the ${{ matrix.rid }} archive
+        if: ${{ !matrix.alpine }}
+        env:
+          SMOKE_CXX: "1"
+          SMOKE_ARCH: ${{ matrix.smoke_arch }}
+          PACKAGE: ${{ steps.unpack.outputs.dir }}
+          VERSION: ${{ steps.unpack.outputs.version }}
+        run: c/smoke/run.sh "$PACKAGE" "$VERSION"
+
+      # musl: in Alpine, where the archive's libraries are the platform's own.
+      - name: Smoke-test the ${{ matrix.rid }} archive on Alpine
+        if: matrix.alpine
+        env:
+          PACKAGE: ${{ steps.unpack.outputs.dir }}
+          VERSION: ${{ steps.unpack.outputs.version }}
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work -e PACKAGE -e VERSION -e SMOKE_CXX=1 alpine:3.22 sh -c \
+            'apk add -q bash build-base cmake pkgconf && bash c/smoke/run.sh "$PACKAGE" "$VERSION"'
+
+  smoke-apple-mobile:
+    needs: pack
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: c-packages-ci
+          path: c-packages
+
+      - name: Unpack the four Apple mobile archives
+        id: unpack
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -n 1)
+          mkdir unpacked
+          for rid in ios-arm64 iossimulator-arm64 maccatalyst-arm64 maccatalyst-x64; do
+            archives=(c-packages/*-"$version-$rid".tar.gz)
+            [ "${#archives[@]}" = 1 ] && [ -f "${archives[0]}" ] \
+              || { echo "::error::expected one $rid archive at $version, found: ${archives[*]}"; exit 1; }
+            tar -xzf "${archives[0]}" -C unpacked
+          done
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rosetta
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            softwareupdate --install-rosetta --agree-to-license
+          fi
+          arch -x86_64 /usr/bin/true
+
+      # The newest iOS runtime's first iPhone, as ci.yml's test-apple-mobile picks it.
+      - name: Boot an iPhone simulator
+        run: |
+          set -euo pipefail
+          udid=$(xcrun simctl list devices available -j | python3 -c '
+          import json, re, sys
+          devices = json.load(sys.stdin)["devices"]
+          def version(runtime):
+              return [int(n) for n in re.findall(r"\d+", runtime.rsplit("iOS", 1)[-1])]
+          for runtime in sorted((r for r in devices if "SimRuntime.iOS" in r), key=version, reverse=True):
+              for device in devices[runtime]:
+                  if device["name"].startswith("iPhone"):
+                      print(device["udid"])
+                      sys.exit(0)
+          sys.exit("no available iPhone simulator on this image")')
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+
+      - name: Smoke-test the Apple mobile archives
+        env:
+          VERSION: ${{ steps.unpack.outputs.version }}
+        run: c/smoke/apple-mobile.sh unpacked "$VERSION"

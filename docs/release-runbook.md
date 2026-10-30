@@ -104,8 +104,10 @@ failed only on the real registries.
 - Where each package carries its native: nupkg `runtimes/<rid>/native`, `staticlibs/<rid>`
   and `runtimes/browser-wasm/nativeassets/net11.0`; Go
   `$(go env GOMODCACHE)/github.com/!skunk!werkx/<repo>/go@vX/staticlib/<os_arch>`; Swift
-  `.build/checkouts/<Repo>/swift/<Repo>Core.artifactbundle/<triple>`; PHP
-  `vendor/skunkwerkx/<repo>/php/src/native/<rid>` (Packagist ships the repo zipball).
+  `.build/checkouts/<Repo>/swift/<Repo>Core.artifactbundle/<triple>` (with `swift_remote`, the
+  GitHub Release's two zips, unpacked under `.build/artifacts/`); PHP
+  `vendor/skunkwerkx/<repo>/php/src/native/<rid>` (Packagist ships the repo zipball); C (with
+  `c_assets`) `<crate>-<version>-<rid>/lib` and `bin` in the GitHub Release's archives.
 - Registry lag is not failure: Maven Central takes 20 to 30 minutes to serve a new version,
   and PyPI's JSON endpoint can report a stale latest for a few minutes (read
   `releases["X.Y.Z"]` directly).

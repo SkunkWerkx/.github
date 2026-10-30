@@ -5,7 +5,8 @@ name: HyperForge — build static libraries
 # Three bindings link the core instead of loading it, each from a no_std static library:
 #
 #  * Swift, on every RID and WebAssembly — a SwiftPM binary target (SE-0482) with one
-#    archive per triple, committed in the binding's artifact bundle, so a SwiftPM
+#    archive per triple, in the binding's artifact bundle (committed, or with swift_remote
+#    zipped for the GitHub Release; see the steps at the end), so a SwiftPM
 #    executable has nothing to load or deploy. Two of those triples can be reached no
 #    other way: Swift's static Linux SDK (musl) and its WebAssembly SDK build executables
 #    with no dynamic loader.
@@ -90,3 +91,30 @@ jobs:
           android: ${{ inputs.android }}
           upload: "true"
           attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+
+      # A consumer whose hyper.json sets swift_remote ships the Swift core as two zips on its
+      # GitHub Release instead of committing it: the artifact bundle and the XCFramework this
+      # job just wrote, zipped (swift_release.py, which refuses a tree missing any target),
+      # uploaded as swift-release-assets and attested like the archives inside them. Staging
+      # writes their checksums into the root Package.swift; the release attaches these bytes.
+      - name: Read whether the Swift core ships as release assets
+        id: config
+        run: |
+          eval "$(python3 .hyperforge/.github/scripts/hyper_config.py shell)"
+          echo "swift_remote=$SWIFT_REMOTE" >> "$GITHUB_OUTPUT"
+
+      - name: Zip the Swift artifact bundle and XCFramework
+        if: steps.config.outputs.swift_remote == 'true'
+        run: python3 .hyperforge/.github/scripts/swift_release.py zip --out "$RUNNER_TEMP/swift-release-assets"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.config.outputs.swift_remote == 'true'
+        with:
+          name: swift-release-assets
+          path: ${{ runner.temp }}/swift-release-assets
+
+      - name: Attest the Swift zips' provenance
+        if: steps.config.outputs.swift_remote == 'true' && inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/swift-release-assets/*.zip

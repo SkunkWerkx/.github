@@ -1,7 +1,8 @@
 """The release's A (build source) -> B (staged bytes) checks. No rebuilding.
 
 Only the generated paths already staged by the consumer's stage-native-binaries workflow may
-change between A and B. Build provenance names A; packages assembled by release.yml name B.
+change between A and B, and, with `swift_remote`, the root Package.swift's three release lines
+(swift_release.py), which must name the Swift zips the CI run built. Build provenance names A; packages assembled by release.yml name B.
 Every path, name and target comes from the consumer's `.github/hyper.json` (`hyper_config`);
 the one project-specific piece, the C program that proves the ABI of a linked payload, is the
 consumer's `abi_probe` file, compiled here against the Swift bundle's header.
@@ -28,6 +29,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hyper_config  # noqa: E402
+import swift_release  # noqa: E402
 
 FORGE = 'SkunkWerkx/.github'
 LIBRARY_SUFFIXES = ('.a', '.lib', '.so', '.dll', '.dylib')
@@ -173,6 +175,11 @@ def release_record(root, cfg, commit, tag, override, repo):
     if tag:
         require_changelog(root, commit, want)
         require_versioned_swift_dependencies(root, commit)
+        if cfg.swift_remote:
+            named = swift_release.read(git(root, 'show', f'{commit}:{swift_release.MANIFEST}'))
+            if named['version'] != want:
+                raise ValueError(f'{swift_release.MANIFEST} names Swift release {named["version"]!r}, '
+                                 f'not {want}; staging writes it')
     validate_transition(root, cfg, sha, commit)
     validate_staged_tree(root, cfg, commit)
     validate_run(api(repo, f'actions/runs/{run_id}'), sha, run_id, repo)
@@ -187,6 +194,11 @@ def validate_transition(root, cfg, sha, commit):
     allowed = payload_paths(cfg, Path('artifacts'))
     changed = git(root, 'diff', '--name-only', '--no-renames', sha, commit).splitlines()
     for path in changed:
+        if path in cfg.staged_edits:
+            before, after = (git(root, 'show', f'{rev}:{path}') for rev in (sha, commit))
+            if not swift_release.only_release_lines_differ(before, after):
+                raise ValueError(f'{path} changed beyond its release lines between A and B')
+            continue
         if path not in allowed:
             raise ValueError(f'unrelated A -> B change: {path}')
         entry = git(root, 'ls-tree', commit, '--', path).split()
@@ -203,6 +215,8 @@ def validate_staging_index(root, cfg, sha):
     validate_transition(root, cfg, sha, tree)
     validate_staged_tree(root, cfg, tree)
     compare_payloads(root, payload_paths(cfg, root / 'artifacts'), tree)
+    if cfg.swift_remote:
+        check_swift_assets(root, cfg, git(root, 'show', f'{tree}:{swift_release.MANIFEST}'))
 
 
 def validate_staged_tree(root, cfg, commit):
@@ -235,6 +249,20 @@ def compare_payloads(root, paths, tree=None):
                    else (root / dest).read_bytes())
         if src.read_bytes() != shipped:
             raise ValueError(f'staged bytes do not match the recorded CI run: {dest}')
+
+
+def swift_assets_dir(root):
+    return root / 'artifacts' / 'swift-release-assets'
+
+
+def check_swift_assets(root, cfg, manifest, sha=None, repo=None):
+    """The CI run's Swift zips are the ones `manifest` (Package.swift) names, for the crate's
+    version; with `sha`, each also carries the Forge's build provenance at A."""
+    assets = swift_assets_dir(root)
+    if sha:
+        for name in cfg.swift_assets:
+            verify_attestation(assets / name, sha, repo)
+    swift_release.check(cfg, manifest, swift_release.crate_version(root), assets)
 
 
 def core_exports(root, cfg=None):
@@ -300,6 +328,8 @@ def validate_payloads(root, cfg, paths, sha, repo, compare=False, attest=True):
                         str(root / 'rust/Cargo.toml')], check=True)
     if compare:
         compare_payloads(root, paths)
+        if cfg.swift_remote:
+            check_swift_assets(root, cfg, (root / swift_release.MANIFEST).read_text(), sha, repo)
 
 
 def main():

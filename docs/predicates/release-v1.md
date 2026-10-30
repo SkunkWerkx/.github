@@ -23,7 +23,13 @@ Subjects (about 90 per release) are every file in `inventory.json`:
 - the native libraries committed at the tagged commit for Go (`go/staticlib/**`), Swift
   (the artifact bundle and the XCFramework) and PHP (`php/src/native/**`), and the metadata
   staged beside them: the bundle's `info.json` and the XCFramework's `Info.plist`, headers
-  and module maps.
+  and module maps;
+- from a consumer that sets `swift_remote`, which commits no Swift binaries, the files under
+  `github/` instead: the zipped artifact bundle and XCFramework the GitHub Release carries
+  and the tagged `Package.swift` names by checksum;
+- from a consumer that sets `c_assets`, the files under `c/`: one C archive per platform,
+  packed and attested by the consumer's `release.yml` at the tagged commit, which the GitHub
+  Release carries.
 
 Equal bytes under two paths (a static archive Swift and Go both carry) stay two subjects;
 `gh attestation verify` matches by digest, so either path verifies.

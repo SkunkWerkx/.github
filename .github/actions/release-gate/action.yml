@@ -85,6 +85,30 @@ runs:
       with:
         name: cran-packages
         path: release-packages/cran
+    # The GitHub Release's own files. With swift_remote, the two Swift zips come straight from
+    # the ci.yml run at A, where the Forge built and attested them; the release guard has
+    # already checked them against the tagged Package.swift. With c_assets, the C archives
+    # come from this run's pack-c, signed by the consumer at B like the gems.
+    - name: Read what this repository attaches to its GitHub Release
+      id: config
+      if: inputs.prepared_run_id == ''
+      shell: bash
+      run: |
+        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
+        echo "swift_remote=$SWIFT_REMOTE" >> "$GITHUB_OUTPUT"
+        echo "c_assets=$C_ASSETS" >> "$GITHUB_OUTPUT"
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: inputs.prepared_run_id == '' && steps.config.outputs.swift_remote == 'true'
+      with:
+        name: swift-release-assets
+        path: release-packages/github
+        run-id: ${{ inputs.ci_run_id }}
+        github-token: ${{ inputs.token }}
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: inputs.prepared_run_id == '' && steps.config.outputs.c_assets == 'true'
+      with:
+        name: c-packages
+        path: release-packages/c
     - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       if: inputs.prepared_run_id != ''
       with:

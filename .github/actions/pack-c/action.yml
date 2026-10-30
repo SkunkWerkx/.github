@@ -1,0 +1,90 @@
+name: Pack the C archives
+description: >
+  Downloads the preparation run's shared libraries (native-*, Android's included) and static
+  libraries (static-libs), verifies the build provenance of every one c_package.py reads,
+  packs one archive per platform with the header and the consumer's c/ package files
+  (c_package.py; Windows' import library is derived from the attested DLL's exports), attests
+  the archives in the caller's identity and uploads them as c-packages. Only for a consumer
+  whose .github/hyper.json sets c_assets. Runs in the consumer's checkout at B.
+
+inputs:
+  run_id:
+    description: "The release-mode ci.yml run at A"
+    required: true
+  source_sha:
+    description: "Preparation source A"
+    required: true
+  token:
+    description: "github.token"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        pattern: native-*
+        path: artifacts
+        run-id: ${{ inputs.run_id }}
+        github-token: ${{ inputs.token }}
+
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: static-libs
+        path: artifacts/static-libs
+        run-id: ${{ inputs.run_id }}
+        github-token: ${{ inputs.token }}
+
+    # The archives go to the GitHub Release verbatim and are never rebuilt, so this is the
+    # gate that spends the attestations ci.yml made for every library inside them.
+    # --signer-repo: the attest steps live in the Forge's build workflows (pack-gems has why).
+    - name: Verify build provenance of every library about to be packed
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        SOURCE_SHA: ${{ inputs.source_sha }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        mapfile -t libraries < <(python3 "$FORGE_SCRIPTS/c_package.py" inputs --artifacts artifacts)
+        [ "${#libraries[@]}" -gt 0 ] || { echo "::error::c_package.py names no inputs"; exit 1; }
+        for f in "${libraries[@]}"; do
+          [ -f "$f" ] || { echo "::error::$f is not in the preparation run's artifacts"; exit 1; }
+          echo "::group::verify $f"
+          if ! gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" --signer-repo SkunkWerkx/.github \
+               --source-digest "$SOURCE_SHA"; then
+            echo "::error::No valid build provenance for $f — refusing to pack a C archive containing it."
+            exit 1
+          fi
+          echo "::endgroup::"
+        done
+
+    # llvm-readobj reads each DLL's exports and llvm-dlltool writes its import library.
+    - name: Install LLVM
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y llvm
+
+    - name: Pack one archive per platform
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source_sha }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        echo "Packing c/ at $GITHUB_SHA (prepared from $SOURCE_SHA)"
+        rm -rf c-packages
+        python3 "$FORGE_SCRIPTS/c_package.py" pack --artifacts artifacts --out c-packages
+
+    # The inventory records the c/ group as signed by the consumer at B, which this
+    # attestation in the consumer's release.yml is.
+    - name: Attest the C archives
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      with:
+        subject-path: c-packages/*
+
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: c-packages
+        path: c-packages/*
+        if-no-files-found: error
+        retention-days: 90

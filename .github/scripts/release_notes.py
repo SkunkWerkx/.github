@@ -35,6 +35,18 @@ def verifying(inventory):
     npm = 'npm' in groups
     sdist = any(e['path'].startswith('pypi/') and e['path'].endswith('.tar.gz') for e in files)
     addons = ', the Node addons inside the npm platform packages' if npm else ''
+    # A consumer with swift_remote attaches the Swift core to the Release as two zips, built
+    # and attested by the Forge in CI, instead of committing it.
+    assets = sorted(Path(e['path']).name for e in files if e['path'].startswith('github/'))
+    committed = 'Go and PHP' if assets else 'Go, Swift and PHP'
+    staged = f', and the {metadata} metadata files staged beside\nthem' if metadata else ''
+    attached = (f",\nand the Swift core's {' and '.join(f'`{name}`' for name in assets)}, attached below"
+                if assets else '')
+    zips = ', the Swift zips' if assets else ''
+    # With c_assets, one C archive per platform, packed and signed at the tag like the gems.
+    archives = sum(1 for e in files if e['path'].startswith('c/'))
+    if archives:
+        attached += f",\nand {archives} C archives, one per platform, attached below"
     registry = (", and npm a provenance statement for every package, linking it to the\n"
                 "publishing run of this repository's `release.yml`") if npm else ''
     return f'''## Verifying
@@ -42,15 +54,14 @@ def verifying(inventory):
 Every file in this release verifies from the tag alone. One attestation, signed by this
 repository's `release.yml` at `v{version}`, names all {len(files)} of them: every registry
 package {packages}the {len(natives)} native
-libraries committed for Go, Swift and PHP, and the {metadata} metadata files staged beside
-them. Its predicate is the release inventory attached below.
+libraries committed for {committed}{staged}{attached}. Its predicate is the release inventory attached below.
 
 ```sh
 gh attestation verify <file> --repo {repo} \\
   --source-ref refs/tags/v{version} --predicate-type {PREDICATE_TYPE}
 ```
 
-The native libraries, the Python wheels{' and sdist' if sdist else ''}{addons} and the archives inside the NuGet package and the
+The native libraries{zips}, the Python wheels{' and sdist' if sdist else ''}{addons} and the archives inside the NuGet package and the
 jar also carry build provenance from CI run [{run_id}](https://github.com/{repo}/actions/runs/{run_id})
 at commit `{source[:7]}`, the parent of the tagged commit, signed by the Forge:
 

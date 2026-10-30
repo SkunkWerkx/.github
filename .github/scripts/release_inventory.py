@@ -31,6 +31,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 
+import c_package
 import hyper_config
 from package_preparation import not_served
 from release_guard import LIBRARY_SUFFIXES
@@ -42,9 +43,15 @@ SCHEMA = 2
 # The registries a release publishes to. The CRAN source tarball is inventoried and attested
 # like a package but no job uploads it: the maintainer submits the preserved bytes by hand.
 REGISTRIES = ('nuget', 'ruby', 'pypi', 'crate', 'maven', 'npm')
-INVENTORY_GROUPS = REGISTRIES + ('cran',)
+# `github` and `c` hold the files the finalizer attaches to the GitHub Release beside the
+# inventory: with swift_remote, the two Swift zips the root Package.swift names (built at A);
+# with c_assets, one C archive per platform (packed at B).
+RELEASE_ASSET_GROUPS = ('github', 'c')
+INVENTORY_GROUPS = REGISTRIES + ('cran',) + RELEASE_ASSET_GROUPS
+# Built and attested by the Forge at A, in the ci.yml run, rather than packed at B.
+BUILT_AT_SOURCE = ('pypi/', 'github/')
 # Signed in the consumer's own release.yml at B rather than by the Forge.
-CONSUMER_SIGNED = ('ruby/', 'npm/', 'cran/')
+CONSUMER_SIGNED = ('ruby/', 'npm/', 'cran/', 'c/')
 IDENTITY = ('repository', 'crate', 'version', 'source_sha', 'staging_sha',
             'ci_run_id', 'package_run_id', 'forge_sha')
 NPM_REGISTRY = 'https://registry.npmjs.org/'
@@ -135,6 +142,12 @@ def validate_layout(paths, crate, version, cfg=None):
             raise ValueError('npm root and platform package inventory is incomplete or stale')
     if groups['cran'] and groups['cran'] != [f'cran/{crate}_{version}.tar.gz']:
         raise ValueError('CRAN source tarball name/version mismatch')
+    assets = sorted(f'github/{name}' for name in getattr(cfg, 'swift_assets', ()))
+    if sorted(groups['github']) != assets:
+        raise ValueError(f'GitHub Release assets are wrong: expected {assets}, got {sorted(groups["github"])}')
+    archives = sorted(f'c/{name}' for name in c_package.asset_names(cfg, version)) if getattr(cfg, 'c_assets', False) else []
+    if sorted(groups['c']) != archives:
+        raise ValueError(f'C archives are wrong: expected {archives}, got {sorted(groups["c"])}')
 
 
 def native_files(workspace, natives):
@@ -170,7 +183,7 @@ def build_inventory(root, identity, natives, workspace):
     for path in paths:
         name = path.relative_to(root).as_posix()
         files.append(dict(path=name, size=path.stat().st_size, sha256=sha256(path),
-                          source_sha=identity['source_sha' if name.startswith('pypi/') else 'staging_sha'],
+                          source_sha=identity['source_sha' if name.startswith(BUILT_AT_SOURCE) else 'staging_sha'],
                           signer_repo=identity['repository'] if name.startswith(CONSUMER_SIGNED) else FORGE))
     for entry in files:
         entry['location'] = 'packages'
@@ -410,7 +423,10 @@ def finalize(repo, version, subject, inventory, notes=None):
     """Create only missing Go tag/Release; reject an existing different subject.
 
     `notes` is the release body release_notes.py wrote from the CHANGELOG; without it the
-    Release gets GitHub's generated notes."""
+    Release gets GitHub's generated notes. The Release carries the inventory and every file
+    under the packages' `github/` and `c/` groups, each byte-identical to a copy already there."""
+    assets = [inventory, *(path for group in RELEASE_ASSET_GROUPS
+                           for path in sorted((inventory.parent / group).glob('*')))]
     def remote_ref(tag):
         output = subprocess.check_output(['git','ls-remote','origin',f'refs/tags/{tag}',f'refs/tags/{tag}^{{}}'],text=True)
         records = dict(line.split()[::-1] for line in output.splitlines())
@@ -434,19 +450,21 @@ def finalize(repo, version, subject, inventory, notes=None):
             raise ValueError('could not establish whether the GitHub Release exists')
         body = ['--notes-file', str(notes)] if notes else ['--generate-notes']
         subprocess.run(['gh','release','create',f'v{version}','--repo',repo,'--verify-tag',
-                        '--title',f'v{version}',*body,str(inventory)],check=True)
+                        '--title',f'v{version}',*body,*map(str,assets)],check=True)
     else:
         release = json.loads(result.stdout)
         if release['isDraft']:
             raise ValueError('existing draft release requires reconciliation')
-        if any(asset['name'] == inventory.name for asset in release['assets']):
-            with tempfile.TemporaryDirectory() as directory:
-                subprocess.run(['gh','release','download',f'v{version}','--repo',repo,
-                                '--pattern',inventory.name,'--dir',directory],check=True)
-                if (Path(directory)/inventory.name).read_bytes() != inventory.read_bytes():
-                    raise ValueError('existing GitHub Release inventory differs from verified bytes')
-        else:
-            subprocess.run(['gh','release','upload',f'v{version}',str(inventory),'--repo',repo],check=True)
+        attached = {asset['name'] for asset in release['assets']}
+        for path in assets:
+            if path.name in attached:
+                with tempfile.TemporaryDirectory() as directory:
+                    subprocess.run(['gh','release','download',f'v{version}','--repo',repo,
+                                    '--pattern',path.name,'--dir',directory],check=True)
+                    if (Path(directory)/path.name).read_bytes() != path.read_bytes():
+                        raise ValueError(f'existing GitHub Release asset {path.name} differs from verified bytes')
+            else:
+                subprocess.run(['gh','release','upload',f'v{version}',str(path),'--repo',repo],check=True)
 
 
 def main():

@@ -414,7 +414,8 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
             self.assertEqual((entry['signer_repo'], entry['source_sha']), ('SkunkWerkx/HyperCast', 'b' * 40))
         self.assertIn('npm', self.m.REGISTRIES)
         self.assertNotIn('cran', self.m.REGISTRIES, 'no job ever uploads the CRAN tarball')
-        self.assertEqual(self.m.INVENTORY_GROUPS, self.m.REGISTRIES + ('cran',))
+        self.assertEqual(self.m.INVENTORY_GROUPS, self.m.REGISTRIES + ('cran', 'github', 'c'))
+        self.assertIn('c/', self.m.CONSUMER_SIGNED, 'the C archives are packed and attested at B')
         for bad in (['npm/x.tgz'], ['cran/x.tar.gz']):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'collides'):
                 self.m.build_inventory(self.root, self.identity, bad, self.workspace)

@@ -3,7 +3,10 @@ name: HyperForge — stage native binaries for release
 # PHP, Swift and Go have no packing step of their own: whatever is in the git tree at a
 # tagged commit is what a consumer gets. So the binaries under php/src/native/, the Swift
 # artifact bundle and XCFramework and go/staticlib/ are committed, and the commit that is
-# tagged (B) carries the bytes built from its preparation parent (A).
+# tagged (B) carries the bytes built from its preparation parent (A). A consumer whose
+# hyper.json sets swift_remote commits no Swift binaries: B writes the release version and
+# the checksums of the two zips the static-libs job attested into its root Package.swift
+# (swift_release.py), and the release attaches those zips to the GitHub Release.
 #
 # Those are staged once per release, not once per merge: a PR's ci.yml run is in `pr` mode
 # and attests nothing, so it has nothing this would accept; master's binaries are the last
@@ -92,6 +95,12 @@ jobs:
           path: .hyperforge
           persist-credentials: false
 
+      - name: Read what this repository ships from git
+        id: config
+        run: |
+          eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
+          echo "swift_remote=$SWIFT_REMOTE" >> "$GITHUB_OUTPUT"
+
       - name: Resolve and validate the exact preparation run
         id: find
         env:
@@ -135,6 +144,17 @@ jobs:
         with:
           name: static-libs
           path: artifacts/static-libs
+          run-id: ${{ steps.find.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      # With swift_remote, the Swift core is not committed: the static-libs job zipped and
+      # attested it, and staging writes the zips' checksums into Package.swift instead
+      # (swift_release.py). The release attaches the same zips to the GitHub Release.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.config.outputs.swift_remote == 'true'
+        with:
+          name: swift-release-assets
+          path: artifacts/swift-release-assets
           run-id: ${{ steps.find.outputs.run_id }}
           github-token: ${{ github.token }}
 
@@ -214,19 +234,26 @@ jobs:
               install -m 644 "$archive" "$dest"
             done
           done
-          install -m 644 "artifacts/static-libs/$BUNDLE/info.json" "$BUNDLE/info.json"
-          install -m 644 "artifacts/static-libs/$XCFRAMEWORK/Info.plist" "$XCFRAMEWORK/Info.plist"
-          for header in artifacts/static-libs/"$XCFRAMEWORK"/*/Headers/"$PROJECT"Core/*; do
-            dest="${header#artifacts/static-libs/}"
-            mkdir -p "$(dirname "$dest")"
-            install -m 644 "$header" "$dest"
-          done
-          for slice in "$XCFRAMEWORK"/*/; do
-            for file in "$HEADER" module.modulemap; do
-              [ -f "$slice/Headers/${PROJECT}Core/$file" ] \
-                || { echo "::error::$slice has no Headers/${PROJECT}Core/$file in the static-libs artifact."; exit 1; }
+          if [ "$SWIFT_REMOTE" = true ]; then
+            for zip in artifacts/swift-release-assets/*.zip; do
+              verify "$zip" "${zip##*/}"
             done
-          done
+            python3 "$FORGE_SCRIPTS/swift_release.py" stage --assets artifacts/swift-release-assets
+          else
+            install -m 644 "artifacts/static-libs/$BUNDLE/info.json" "$BUNDLE/info.json"
+            install -m 644 "artifacts/static-libs/$XCFRAMEWORK/Info.plist" "$XCFRAMEWORK/Info.plist"
+            for header in artifacts/static-libs/"$XCFRAMEWORK"/*/Headers/"$PROJECT"Core/*; do
+              dest="${header#artifacts/static-libs/}"
+              mkdir -p "$(dirname "$dest")"
+              install -m 644 "$header" "$dest"
+            done
+            for slice in "$XCFRAMEWORK"/*/; do
+              for file in "$HEADER" module.modulemap; do
+                [ -f "$slice/Headers/${PROJECT}Core/$file" ] \
+                  || { echo "::error::$slice has no Headers/${PROJECT}Core/$file in the static-libs artifact."; exit 1; }
+              done
+            done
+          fi
 
           sort -k2 -o digests.txt digests.txt
           echo "### Staged native binaries (attestations verified)" >> "$GITHUB_STEP_SUMMARY"
@@ -249,7 +276,11 @@ jobs:
           python3 "$FORGE_SCRIPTS/release_guard.py" master
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add php/src/native "$BUNDLE" "$XCFRAMEWORK"
+          if [ "$SWIFT_REMOTE" = true ]; then
+            git add php/src/native Package.swift
+          else
+            git add php/src/native "$BUNDLE" "$XCFRAMEWORK"
+          fi
           # -f: go/staticlib's archives are in .gitignore, so that this workflow is the only
           # thing that ever adds one; a developer's own build of them stays out of a commit.
           git add -f go/staticlib

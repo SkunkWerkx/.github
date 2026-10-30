@@ -47,7 +47,8 @@ root=pathlib.Path(os.environ['FAKE_GH_ROOT'])
 with (root/'calls').open('a') as stream: stream.write(json.dumps(args)+'\\n')
 if args[:2]==['release','view']:
  if os.environ.get('RELEASE_EXISTS'):
-  print(json.dumps({'tagName':'v0.10.0','isDraft':False,'assets':[{'name':'inventory.json'}]}))
+  names=json.loads(os.environ.get('RELEASE_ASSETS','["inventory.json"]'))
+  print(json.dumps({'tagName':'v0.10.0','isDraft':False,'assets':[{'name':name} for name in names]}))
   sys.exit(0)
  sys.exit(1)
 if args[0]=='api':
@@ -56,7 +57,9 @@ if args[0]=='api':
 if args[:2]==['release','download']:
  directory=pathlib.Path(args[args.index('--dir')+1])
  directory.mkdir(exist_ok=True)
- (directory/'inventory.json').write_text(os.environ.get('REMOTE_INVENTORY','{"source":"B"}'))
+ name=args[args.index('--pattern')+1]
+ remote=json.loads(os.environ.get('REMOTE_ASSETS','{}'))
+ (directory/name).write_text(remote.get(name,os.environ.get('REMOTE_INVENTORY','{"source":"B"}')))
 ''')
         (self.bin/'gh').chmod(0o755)
         self.env=patch.dict(os.environ,{'PATH':str(self.bin)+os.pathsep+os.environ['PATH'],
@@ -99,6 +102,46 @@ if args[:2]==['release','download']:
         self.git(self.repo,'tag','go/v0.10.0')
         self.git(self.repo,'push','-q','origin','refs/tags/go/v0.10.0')
         with self.assertRaisesRegex(ValueError,'Go tag'):
+            self.finalize()
+
+    def github_assets(self):
+        github=self.repo/'github'
+        github.mkdir()
+        for name in ('HyperUuidCore.artifactbundle.zip','HyperUuidCoreApple.xcframework.zip'):
+            (github/name).write_text(name)
+        return sorted(github.iterdir())
+
+    def test_a_new_release_carries_every_github_asset_beside_the_inventory(self):
+        assets=self.github_assets()
+        self.finalize()
+        calls=[json.loads(line) for line in (self.root/'calls').read_text().splitlines()]
+        create=next(call for call in calls if call[:2]==['release','create'])
+        self.assertEqual(create[-3:],[str(self.inventory),*map(str,assets)])
+
+    def test_a_new_release_carries_the_c_archives_after_the_github_assets(self):
+        assets=self.github_assets()
+        c=self.repo/'c'
+        c.mkdir()
+        for name in ('hyperuuid-0.10.0-win-x64.zip','hyperuuid-0.10.0-linux-x64.tar.gz'):
+            (c/name).write_text(name)
+        self.finalize()
+        calls=[json.loads(line) for line in (self.root/'calls').read_text().splitlines()]
+        create=next(call for call in calls if call[:2]==['release','create'])
+        self.assertEqual(create[-5:],[str(self.inventory),*map(str,assets),*map(str,sorted(c.iterdir()))])
+
+    def test_an_existing_release_gets_only_its_missing_assets_and_keeps_matching_ones(self):
+        assets=self.github_assets()
+        os.environ['RELEASE_EXISTS']='1'
+        os.environ['RELEASE_ASSETS']=json.dumps(['inventory.json',assets[0].name])
+        os.environ['REMOTE_ASSETS']=json.dumps({assets[0].name:assets[0].name})
+        for key in ('RELEASE_EXISTS','RELEASE_ASSETS','REMOTE_ASSETS'):
+            self.addCleanup(os.environ.pop,key,None)
+        self.finalize()
+        calls=[json.loads(line) for line in (self.root/'calls').read_text().splitlines()]
+        uploads=[call for call in calls if call[:2]==['release','upload']]
+        self.assertEqual(uploads,[['release','upload','v0.10.0',str(assets[1]),'--repo','SkunkWerkx/HyperCast']])
+        os.environ['REMOTE_ASSETS']=json.dumps({assets[0].name:'different bytes'})
+        with self.assertRaisesRegex(ValueError,assets[0].name):
             self.finalize()
 
     def test_rejects_conflicting_existing_release_inventory(self):

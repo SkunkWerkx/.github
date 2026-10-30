@@ -16,7 +16,11 @@ and linked with each payload; default `.github/scripts/abi_probe.c`), `cdylib_sm
 Python script given a shared library and `rust/Cargo.toml`: each RID's in hyper-check-core.yml's
 check-cdylib, the committed linux-x64 one in release_guard.py), `wheels` (count,
 default 17), `sdist` (boolean, default false: also publish the Python source
-distribution), `wasm.toolchain` (`stable`, the default, or a dated `nightly-YYYY-MM-DD`
+distribution), `swift_remote` (boolean, default false: the Swift core ships as two zips
+on the GitHub Release, named by URL and checksum in the root Package.swift, instead of being
+committed under swift/; see swift_release.py), `c_assets` (boolean, default false: the
+release attaches one C archive per platform to the GitHub Release, from the consumer's `c/`;
+see c_package.py), `wasm.toolchain` (`stable`, the default, or a dated `nightly-YYYY-MM-DD`
 that builds the emscripten archive with build-std), `ruby.abis` and `ruby.platforms`, `node.platforms` (RID -> napi platform
 name), `go_targets`, `swift_targets`, `xcframework_slices`, `version_files` (path -> regex
 with one group around the version; the default list adds `typescript/package.json` and
@@ -81,6 +85,12 @@ class HyperConfig:
         self.sdist = data.get('sdist', False)
         if not isinstance(self.sdist, bool):
             raise ValueError('sdist must be true or false')
+        self.swift_remote = data.get('swift_remote', False)
+        if not isinstance(self.swift_remote, bool):
+            raise ValueError('swift_remote must be true or false')
+        self.c_assets = data.get('c_assets', False)
+        if not isinstance(self.c_assets, bool):
+            raise ValueError('c_assets must be true or false')
         wasm = data.get('wasm', {})
         if not isinstance(wasm, dict) or set(wasm) - {'toolchain'}:
             raise ValueError('wasm must be an object with only a toolchain key')
@@ -145,6 +155,13 @@ class HyperConfig:
         return f'{self.crate}.h'
 
     @property
+    def swift_assets(self):
+        """With swift_remote: the release's two Swift zips, the bundle's and the XCFramework's."""
+        if not self.swift_remote:
+            return ()
+        return (f'{self.project}Core.artifactbundle.zip', f'{self.project}CoreApple.xcframework.zip')
+
+    @property
     def version_env(self):
         return f'{self.crate.upper()}_VERSION'
 
@@ -176,12 +193,13 @@ class HyperConfig:
         paths = {f'php/src/native/{rid}/{name}': artifacts / 'native' / f'native-{rid}' / name
                  for rid, name in self.php_libs.items()}
         static = [f'go/staticlib/{target}/lib{self.crate}.a' for target in self.go_targets]
-        static += [f'{self.bundle}/{target}/{self.archive_name(target)}' for target in self.swift_targets]
-        static += [f'{self.bundle}/info.json', f'{self.xcframework}/Info.plist']
-        for slice_ in self.xcframework_slices:
-            static.append(f'{self.xcframework}/{slice_}/lib{self.crate}.a')
-            static += [f'{self.xcframework}/{slice_}/Headers/{self.project}Core/{name}'
-                       for name in (self.header, 'module.modulemap')]
+        if not self.swift_remote:
+            static += [f'{self.bundle}/{target}/{self.archive_name(target)}' for target in self.swift_targets]
+            static += [f'{self.bundle}/info.json', f'{self.xcframework}/Info.plist']
+            for slice_ in self.xcframework_slices:
+                static.append(f'{self.xcframework}/{slice_}/lib{self.crate}.a')
+                static += [f'{self.xcframework}/{slice_}/Headers/{self.project}Core/{name}'
+                           for name in (self.header, 'module.modulemap')]
         paths.update({path: artifacts / 'static-libs' / path for path in static})
         return paths
 
@@ -193,14 +211,22 @@ class HyperConfig:
 
     @property
     def payload_trees(self):
+        if self.swift_remote:
+            return ('php/src/native', 'go/staticlib')
         return ('php/src/native', self.bundle, self.xcframework, 'go/staticlib')
 
     @property
+    def staged_edits(self):
+        """Source files staging rewrites beside the payloads: with swift_remote, the root
+        Package.swift's release version and checksums (swift_release.py)."""
+        return ('Package.swift',) if self.swift_remote else ()
+
+    @property
     def probe_payloads(self):
-        """The three payload kinds the ABI probe links against: a PHP shared library, a
-        Swift archive and a Go archive, each the linux-x64 one."""
-        return (f'php/src/native/linux-x64/{self.lib_name("linux-x64")}',
-                f'{self.bundle}/x86_64-unknown-linux-gnu/lib{self.crate}.a',
+        """The payload kinds the ABI probe links against, each the linux-x64 one: a PHP shared
+        library, a Swift archive while those are committed, and a Go archive."""
+        swift = () if self.swift_remote else (f'{self.bundle}/x86_64-unknown-linux-gnu/lib{self.crate}.a',)
+        return (f'php/src/native/linux-x64/{self.lib_name("linux-x64")}', *swift,
                 f'go/staticlib/linux_amd64/lib{self.crate}.a')
 
     def core_exports(self, root=None):
@@ -235,15 +261,18 @@ def shell(cfg):
         return f'declare -A {name}=({pairs})'
     lines = [f'CRATE={cfg.crate}', f'PROJECT={cfg.project}', f'WHEELS={cfg.wheels}',
              f'SDIST={"true" if cfg.sdist else "false"}', f'WASM_TOOLCHAIN={cfg.wasm_toolchain}',
+             f'SWIFT_REMOTE={"true" if cfg.swift_remote else "false"}',
+             f'C_ASSETS={"true" if cfg.c_assets else "false"}',
              f'BUNDLE={cfg.bundle}', f'XCFRAMEWORK={cfg.xcframework}', f'HEADER={cfg.header}',
              f'NATIVE_EXTENSION={cfg.native_extension}',
              'RUBY_ABIS=(' + ' '.join(cfg.ruby_abis) + ')',
              assoc('LIB_NAMES', cfg.lib_names), assoc('JNI_LIB_NAMES', cfg.jni_lib_names),
              assoc('PHP_LIBS', cfg.php_libs),
              assoc('RUBY_PLATFORMS', cfg.ruby_platforms), assoc('NODE_PLATFORMS', cfg.node_platforms),
-             assoc('STATIC_TREES', {cfg.bundle: len(cfg.swift_targets),
-                                    cfg.xcframework: len(cfg.xcframework_slices),
-                                    'go/staticlib': len(cfg.go_targets)})]
+             assoc('STATIC_TREES', {'go/staticlib': len(cfg.go_targets)} if cfg.swift_remote
+                   else {cfg.bundle: len(cfg.swift_targets),
+                         cfg.xcframework: len(cfg.xcframework_slices),
+                         'go/staticlib': len(cfg.go_targets)})]
     return '\n'.join(lines) + '\n'
 
 
@@ -285,6 +314,7 @@ def main():
             print(path)
     else:
         print(json.dumps(dict(crate=cfg.crate, project=cfg.project, wheels=cfg.wheels, sdist=cfg.sdist,
+                              swift_remote=cfg.swift_remote, c_assets=cfg.c_assets,
                               wasm_toolchain=cfg.wasm_toolchain,
                               ruby_abis=cfg.ruby_abis, ruby_platforms=cfg.ruby_platforms,
                               node_platforms=cfg.node_platforms,

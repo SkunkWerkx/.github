@@ -73,7 +73,7 @@ class ProducerContracts(unittest.TestCase):
     def test_every_composite_job_checks_out_the_executing_forge_revision(self):
         for name in ('hyper-build-native.yml', 'hyper-build-wasm.yml',
                      'hyper-build-wheels.yml', 'hyper-build-static.yml',
-                     'hyper-test-swift-static.yml'):
+                     'hyper-test-swift-static.yml', 'hyper-test-c.yml'):
             path = WORKFLOWS / name
             self.assertTrue(path.exists(), name)
             text = path.read_text()
