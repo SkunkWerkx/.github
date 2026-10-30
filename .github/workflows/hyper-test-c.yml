@@ -12,9 +12,18 @@ name: HyperForge — test the C archives
 # find_package: linked for an iOS device, run in an iOS simulator, and run as Mac Catalyst on
 # both architectures (c/smoke/apple-mobile.sh). Android and WebAssembly are packed, not run:
 # neither has a runner that executes them.
+#
+# In pr mode hyper-build-native.yml builds no osx-x64 library (it is release-only there), so
+# the pack leaves that archive out and its smoke leg says so and stops; a release-mode run,
+# which every master push and tag is, packs and tests all of them.
 
 on:
   workflow_call:
+    inputs:
+      mode:
+        description: "`release` (the default) packs and tests every platform; `pr` leaves out osx-x64, which hyper-build-native.yml builds only in release mode"
+        type: string
+        default: release
 
 jobs:
   pack:
@@ -63,7 +72,16 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y llvm
 
       - name: Pack one archive per platform
-        run: python3 .hyperforge/.github/scripts/c_package.py pack --artifacts artifacts --out c-packages
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            release) skip=() ;;
+            pr) skip=(--skip osx-x64) ;;
+            *) echo "::error::mode must be release or pr, not $MODE"; exit 1 ;;
+          esac
+          python3 .hyperforge/.github/scripts/c_package.py pack --artifacts artifacts --out c-packages "${skip[@]}"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -105,8 +123,14 @@ jobs:
         id: unpack
         env:
           RID: ${{ matrix.rid }}
+          MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
+          if [ "$MODE" = pr ] && [ "$RID" = osx-x64 ]; then
+            echo "::notice::pr mode builds no osx-x64 library, so there is no osx-x64 archive to test"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -n 1)
           shopt -s nullglob
           archives=(c-packages/*-"$version-$RID".tar.gz c-packages/*-"$version-$RID".zip)
@@ -121,13 +145,13 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install pkg-config
-        if: ${{ !matrix.alpine && !startsWith(matrix.rid, 'win-') }}
+        if: ${{ steps.unpack.outputs.skip != 'true' && !matrix.alpine && !startsWith(matrix.rid, 'win-') }}
         run: |
           command -v pkg-config >/dev/null && exit 0
           if [ "$RUNNER_OS" = macOS ]; then brew install pkgconf; else sudo apt-get update && sudo apt-get install -y pkg-config; fi
 
       - name: Install Rosetta
-        if: matrix.smoke_arch == 'x86_64'
+        if: steps.unpack.outputs.skip != 'true' && matrix.smoke_arch == 'x86_64'
         run: |
           if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
             softwareupdate --install-rosetta --agree-to-license
@@ -137,7 +161,7 @@ jobs:
       # SMOKE_CXX: every runner's compiler has C++23's <expected>, so the C++ header's build
       # is required, never skipped.
       - name: Smoke-test the ${{ matrix.rid }} archive
-        if: ${{ !matrix.alpine }}
+        if: ${{ steps.unpack.outputs.skip != 'true' && !matrix.alpine }}
         env:
           SMOKE_CXX: "1"
           SMOKE_ARCH: ${{ matrix.smoke_arch }}

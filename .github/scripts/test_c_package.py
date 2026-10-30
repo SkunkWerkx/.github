@@ -3,6 +3,7 @@ Windows import library and the archives' bytes."""
 import importlib.util
 from pathlib import Path
 import subprocess
+import shutil
 import tarfile
 import tempfile
 import unittest
@@ -252,6 +253,19 @@ class PackTests(Fixture):
         listed = c_package.inputs(self.cfg, artifacts)
         self.assertEqual(len(listed), 25)  # 15 static, 10 shared: wasi and Apple mobile have none
         self.assertEqual(sorted(listed), sorted(p for p in artifacts.rglob('*') if p.is_file()))
+
+    def test_a_pr_mode_run_packs_without_osx_x64(self):
+        artifacts = self.artifacts()
+        shutil.rmtree(artifacts / 'native-osx-x64')
+        with self.assertRaisesRegex(ValueError, 'missing library: .*native-osx-x64'):
+            c_package.pack(self.cfg, self.root, artifacts, Path(self.tmp.name) / 'strict')
+        built = c_package.pack(self.cfg, self.root, artifacts, Path(self.tmp.name) / 'pr', skip=['osx-x64'])
+        self.assertEqual(sorted(p.name for p in built),
+                         sorted(n for n in c_package.asset_names(self.cfg, '1.1.0') if '-osx-x64.' not in n))
+
+    def test_skip_names_only_c_platforms(self):
+        with self.assertRaisesRegex(ValueError, 'not a C platform: osx-x86'):
+            c_package.pack(self.cfg, self.root, self.artifacts(), Path(self.tmp.name) / 'out', skip=['osx-x86'])
 
     def test_a_missing_input_stops_the_pack(self):
         artifacts = self.artifacts()

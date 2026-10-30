@@ -219,13 +219,20 @@ def inputs(cfg, artifacts):
     return [path for rid in C_RIDS for path in artifact_inputs(cfg, artifacts, rid) if path is not None]
 
 
-def pack(cfg, root, artifacts, out):
+def pack(cfg, root, artifacts, out, skip=()):
+    """Every C_RIDS archive but those in skip. A release skips none; a pr-mode CI run skips
+    osx-x64, whose library hyper-build-native.yml builds only in release mode."""
+    unknown = sorted(set(skip) - set(C_RIDS))
+    if unknown:
+        raise ValueError(f'not a C platform: {", ".join(unknown)}')
     version = swift_release.crate_version(root)
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     staging = out / '.trees'
     built = []
     for rid in C_RIDS:
+        if rid in skip:
+            continue
         shared, static = artifact_inputs(cfg, artifacts, rid)
         built.append(pack_tree(assemble(cfg, root, rid, version, static, shared, staging), rid, out))
     shutil.rmtree(staging)
@@ -241,13 +248,15 @@ def main():
     parser.add_argument('--rid', help='assemble: the platform')
     parser.add_argument('--static', type=Path, help='assemble: the static library')
     parser.add_argument('--shared', type=Path, help='assemble: the shared library (none for wasi-wasm32)')
+    parser.add_argument('--skip', action='append', default=[], metavar='RID',
+                        help='pack: leave this platform out (repeatable; CI in pr mode, never a release)')
     args = parser.parse_args()
     cfg = hyper_config.load(args.root)
     if args.mode == 'inputs':
         for path in inputs(cfg, args.artifacts):
             print(path)
     elif args.mode == 'pack':
-        for path in pack(cfg, args.root, args.artifacts, args.out):
+        for path in pack(cfg, args.root, args.artifacts, args.out, args.skip):
             print(f'{swift_release.sha256(path)}  {path.name}')
     else:
         print(assemble(cfg, args.root, args.rid, swift_release.crate_version(args.root), args.static, args.shared,
