@@ -1,0 +1,561 @@
+name: HyperForge — the core, seven legs
+
+# The first thing a consumer's PR board forks: the core crate built, tested and uploaded as
+# `native-<rid>` on each of the seven real-hardware legs (five in the `core` matrix, the two
+# musl RIDs in Alpine containers, and Intel macOS cross-built under Rosetta, release mode
+# only), with nothing of any binding in it. A binding's suite is its own `hyper-test-<binding>.yml`,
+# needing this workflow's one caller job and downloading the leg's `native-<rid>`; it starts
+# the moment every leg here is done, and only when the board says that binding changed.
+#
+# Each leg also does what the core alone can prove, so no later job has to come back for it:
+# the glibc floor on Linux, the cdylib's export surface (exactly the C ABI the source
+# declares, by nm, then every export dlopened and called through the consumer's
+# `cdylib_smoke` script when hyper.json names one), this leg's static archive through the
+# static-libs composite (not uploaded; hyper-build-static.yml's single job is the one
+# producer of `static-libs`), and the C archive: assembled from the leg's own shared and
+# static libraries by the same c_package.py the release packs with, then c/smoke/run.sh
+# builds the consumer's C and C++ smoke programs against it. The musl legs run that smoke in
+# Alpine, where the archive's libraries are the platform's own; osx-x64 under Rosetta.
+#
+# Labels are explicit on purpose (`xcode-27`, `windows-2025-vs2026`, `windows-11-vs2026-arm`,
+# `ubuntu-26.04`, `ubuntu-26.04-arm`), never `-latest`: the toolchain a leg builds with is a
+# commit here, not a label rollout landing mid-release, and the name says which Xcode or
+# Visual Studio is there.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: >
+          `release` (the default) builds, tests and attests every leg a release ships.
+          `pr` keeps every leg but osx-x64 (release only) and drops the attestations: a
+          consumer's stage-native-binaries.yml commits bytes from a release's own run, never a
+          PR's, so a `pr`-mode run has nothing that will ever ship and nothing to sign.
+        required: false
+        type: string
+        default: release
+      project:
+        description: "PascalCase project name (Swift target, e.g. HyperCast)"
+        required: true
+        type: string
+      crate:
+        description: "Lowercase core name (lib{crate}.so / {crate}.dll — the one crate every leg builds)"
+        required: true
+        type: string
+      osx_x64:
+        description: >
+          Also cross-build the core for osx-x64 on the Apple silicon runner, run the crate's
+          own suite on it under Rosetta, and upload and attest it as `native-osx-x64`. There
+          is no Intel macOS leg; hyper-build-native.yml has the sunset. Release mode only.
+        required: false
+        type: boolean
+        default: true
+      musl:
+        description: >
+          Also build the core for linux-musl-x64 and linux-musl-arm64 inside Alpine
+          containers, and upload and attest each as `native-{rid}` like the other five.
+        required: false
+        type: boolean
+        default: true
+      static_libs:
+        description: >
+          Build each leg's own static archive through the static-libs composite (never
+          uploaded: hyper-build-static.yml is the producer of `static-libs`). The C smoke
+          needs it, since the archive carries both libraries.
+        required: false
+        type: boolean
+        default: true
+      attest_native:
+        description: >
+          Emit a signed SLSA build-provenance attestation for each leg's native library.
+          Release mode only; the caller must hold id-token and attestations write.
+        required: false
+        type: boolean
+        default: true
+      c_smoke:
+        description: >
+          Assemble this leg's C archive and build the consumer's c/smoke/ programs against
+          it. Needs `static_libs`; off for a consumer without c/ (hyper.json's `c_assets`).
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # static_targets are the Rust targets whose static library this leg builds: its
+          # own triple, for the C archive here and for the suites that link it later.
+          - os: ubuntu-26.04
+            rid: linux-x64
+            lib_name: lib${{ inputs.crate }}.so
+            target: x86_64-unknown-linux-gnu
+            manylinux: "2_28"
+            static_targets: x86_64-unknown-linux-gnu
+          - os: ubuntu-26.04-arm
+            rid: linux-arm64
+            lib_name: lib${{ inputs.crate }}.so
+            target: aarch64-unknown-linux-gnu
+            manylinux: "2_28"
+            static_targets: aarch64-unknown-linux-gnu
+          - os: xcode-27
+            rid: osx-arm64
+            lib_name: lib${{ inputs.crate }}.dylib
+            target: aarch64-apple-darwin
+            manylinux: ""
+            static_targets: aarch64-apple-darwin
+          - os: windows-2025-vs2026
+            rid: win-x64
+            lib_name: ${{ inputs.crate }}.dll
+            target: x86_64-pc-windows-msvc
+            manylinux: ""
+            static_targets: x86_64-pc-windows-msvc
+          - os: windows-11-vs2026-arm
+            rid: win-arm64
+            lib_name: ${{ inputs.crate }}.dll
+            target: aarch64-pc-windows-msvc
+            manylinux: ""
+            static_targets: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+
+      # The plain core is built through the crate's own `cargo cdylib` alias (rust/.cargo/
+      # config.toml), because how it is built is the crate's call: every Hyper* alias today
+      # builds the library without std, abort-on-panic, output in target/release/.
+      - name: Build native core (release)
+        working-directory: rust
+        run: cargo cdylib
+
+      # Every binding's README promises these two RIDs load on glibc 2.34 or newer, and that
+      # number is a property of the build image as much as of the source: a newer image can
+      # resolve the same calls to newer symbol versions and raise the floor without a line of
+      # Rust changing. This keeps the next image bump, or the next std, from moving it silently.
+      - name: glibc floor — nothing newer than GLIBC_2.34 is referenced
+        if: runner.os == 'Linux'
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          newest=$(objdump -T "target/release/${{ matrix.lib_name }}" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "newest glibc symbol version referenced: $newest"
+          if [ "$(printf '%s\n' GLIBC_2.34 "$newest" | sort -V | tail -1)" != GLIBC_2.34 ]; then
+            echo "::error::${{ matrix.lib_name }} references $newest; the documented floor for ${{ matrix.rid }} is glibc 2.34"
+            objdump -T "target/release/${{ matrix.lib_name }}" | grep -F "$newest"
+            exit 1
+          fi
+
+      # Unit tests, each repo's shared conformance corpus, and its counting-allocator
+      # allocation proof, per leg.
+      - name: Run Rust test suite
+        working-directory: rust
+        run: cargo test --release
+
+      - name: Collect native artifact
+        id: native_lib
+        run: |
+          mkdir -p out
+          cp "rust/target/release/${{ matrix.lib_name }}" "out/${{ matrix.lib_name }}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-${{ matrix.rid }}
+          path: out/${{ matrix.lib_name }}
+
+      # Provenance for an artifact a consumer can't reproduce; hyper-build-native.yml has the
+      # whole argument and the verifying command (`--signer-repo SkunkWerkx/.github`, since
+      # the signing workflow lives here, not in the caller). Release mode only, and never
+      # from a fork, whose token cannot sign.
+      - name: Attest native build provenance
+        if: >-
+          inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out/${{ matrix.lib_name }}
+
+      # This leg's own static archive, from this commit, for the C archive below. Not
+      # uploaded: what ships is hyper-build-static.yml's output.
+      - name: Build this leg's static libraries
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
+        uses: ./.hyperforge/.github/actions/static-libs
+        with:
+          crate: ${{ inputs.crate }}
+          project: ${{ inputs.project }}
+          targets: ${{ matrix.static_targets }}
+          upload: "false"
+
+      # The export surface, from hyper.json's exports rule through hyper_config.py, and the
+      # consumer's cdylib_smoke script when it names one.
+      - name: Name this RID's library and the smoke script
+        id: names
+        env:
+          RID: ${{ matrix.rid }}
+        run: |
+          set -euo pipefail
+          python3 - "$RID" >> "$GITHUB_OUTPUT" <<'PY'
+          import sys
+          sys.path.insert(0, '.hyperforge/.github/scripts')
+          import hyper_config
+          cfg = hyper_config.load('.')
+          print(f'lib={cfg.lib_name(sys.argv[1])}')
+          print(f'smoke={cfg.cdylib_smoke or ""}')
+          print('exports=' + ' '.join(sorted(cfg.core_exports())))
+          PY
+
+      # Exactly the C ABI symbols the source declares, and nothing else, where the platform's
+      # nm can list them (not Windows).
+      - name: Check the cdylib exports
+        if: runner.os != 'Windows'
+        working-directory: rust
+        env:
+          LIB: ${{ steps.names.outputs.lib }}
+          WANT: ${{ steps.names.outputs.exports }}
+        run: |
+          set -euo pipefail
+          lib="target/release/$LIB"
+          if [ "$RUNNER_OS" = macOS ]; then
+            exports=$(nm -gU "$lib" | awk '$2 == "T" {print $3}' | sed 's/^_//' | sort)
+          else
+            exports=$(nm -D --defined-only "$lib" | awk '$2 == "T" {print $3}' | sort)
+          fi
+          echo "$exports"
+          want=$(tr ' ' '\n' <<<"$WANT" | sort)
+          if [ "$exports" != "$want" ]; then
+            echo "::error::exports differ from the source's C ABI: $(diff <(echo "$want") <(echo "$exports") | grep '^[<>]' | tr '\n' ' ')"
+            exit 1
+          fi
+
+      - name: Load it and call every export
+        if: steps.names.outputs.smoke != ''
+        env:
+          LIB: ${{ steps.names.outputs.lib }}
+          SMOKE: ${{ steps.names.outputs.smoke }}
+        run: python -I "$SMOKE" "rust/target/release/$LIB" rust/Cargo.toml
+
+      - name: Install pkg-config
+        if: ${{ inputs.c_smoke && inputs.static_libs && runner.os != 'Windows' }}
+        run: |
+          command -v pkg-config >/dev/null && exit 0
+          if [ "$RUNNER_OS" = macOS ]; then brew install pkgconf; else sudo apt-get update && sudo apt-get install -y pkg-config; fi
+
+      # The archive as the release packs it, from this leg's two libraries, then the smoke
+      # consumers built against it every way a consumer would (c/smoke/run.sh says what each
+      # build must show). SMOKE_CXX: every runner's compiler has C++23's <expected>, so the
+      # C++ header's build is required, never skipped. Windows' import library takes LLVM's
+      # llvm-readobj and llvm-dlltool, which the image ships.
+      - name: Smoke-test the C archive
+        if: ${{ inputs.c_smoke && inputs.static_libs }}
+        env:
+          CRATE: ${{ inputs.crate }}
+          PROJECT: ${{ inputs.project }}
+          RID: ${{ matrix.rid }}
+          LIB: ${{ steps.names.outputs.lib }}
+          SMOKE_CXX: "1"
+        run: |
+          set -euo pipefail
+          case "$RID" in
+            win-*)
+              static="csharp/$PROJECT/staticlibs/$RID/$CRATE.lib"
+              command -v llvm-dlltool >/dev/null || export PATH="/c/Program Files/LLVM/bin:$PATH"
+              command -v llvm-dlltool >/dev/null || { echo "::error::llvm-dlltool not found; the import library needs LLVM"; exit 1; }
+              ;;
+            *) static="csharp/$PROJECT/staticlibs/$RID/lib$CRATE.a" ;;
+          esac
+          [ -f "$static" ] || { echo "::error::no static archive at $static (csharp/$PROJECT must exist for the static-libs composite to place one)"; exit 1; }
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -n 1)
+          tree=$(python3 .hyperforge/.github/scripts/c_package.py assemble --rid "$RID" --out c-archive \
+                   --static "$static" --shared "rust/target/release/$LIB")
+          c/smoke/run.sh "$tree" "$version"
+
+  # ===========================================================================
+  # The two musl RIDs: built and tested inside Alpine containers by the musl-native composite,
+  # which uploads and attests `native-{rid}` itself (hyper-build-native.yml has why a separate
+  # job rather than two more matrix rows). The static archive is built on the runner, not in a
+  # container: it is not linked here, so it is the same bytes wherever it is compiled. The
+  # smokes run in Alpine, where the archive's libraries are the platform's own.
+  # ===========================================================================
+  core-musl:
+    if: inputs.musl
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-musl-x64
+            static_target: x86_64-unknown-linux-musl
+          - os: ubuntu-26.04-arm
+            rid: linux-musl-arm64
+            static_target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      # The crate's own suite runs inside the container as part of this step, and the
+      # library is held to one NEEDED entry, musl's libc; see build-musl.sh for the three
+      # linker facts it encodes.
+      - name: Build, test, upload and attest the core
+        id: native_lib
+        uses: ./.hyperforge/.github/actions/musl-native
+        with:
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
+
+      - name: Build this leg's static library
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
+        uses: ./.hyperforge/.github/actions/static-libs
+        with:
+          crate: ${{ inputs.crate }}
+          project: ${{ inputs.project }}
+          targets: ${{ matrix.static_target }}
+          upload: "false"
+
+      - name: Name this RID's library and the smoke script
+        id: names
+        env:
+          RID: ${{ matrix.rid }}
+        run: |
+          set -euo pipefail
+          python3 - "$RID" >> "$GITHUB_OUTPUT" <<'PY'
+          import sys
+          sys.path.insert(0, '.hyperforge/.github/scripts')
+          import hyper_config
+          cfg = hyper_config.load('.')
+          print(f'lib={cfg.lib_name(sys.argv[1])}')
+          print(f'smoke={cfg.cdylib_smoke or ""}')
+          print('exports=' + ' '.join(sorted(cfg.core_exports())))
+          PY
+
+      # nm on the runner reads the musl ELF the composite built; the ctypes load runs in a
+      # python:3-alpine container, the only place that library loads.
+      - name: Check the cdylib exports
+        env:
+          LIB: ${{ steps.native_lib.outputs.lib }}
+          WANT: ${{ steps.names.outputs.exports }}
+        run: |
+          set -euo pipefail
+          exports=$(nm -D --defined-only "$LIB" | awk '$2 == "T" {print $3}' | sort)
+          echo "$exports"
+          want=$(tr ' ' '\n' <<<"$WANT" | sort)
+          if [ "$exports" != "$want" ]; then
+            echo "::error::exports differ from the source's C ABI: $(diff <(echo "$want") <(echo "$exports") | grep '^[<>]' | tr '\n' ' ')"
+            exit 1
+          fi
+
+      - name: Load it and call every export in Alpine
+        if: steps.names.outputs.smoke != ''
+        env:
+          LIB: ${{ steps.native_lib.outputs.lib }}
+          SMOKE: ${{ steps.names.outputs.smoke }}
+        run: |
+          docker run --rm -v "$PWD:/work:ro" -w /work -e LIB -e SMOKE python:3-alpine \
+            sh -c 'python -I "$SMOKE" "$LIB" rust/Cargo.toml'
+
+      - name: Smoke-test the C archive
+        if: ${{ inputs.c_smoke && inputs.static_libs }}
+        env:
+          CRATE: ${{ inputs.crate }}
+          PROJECT: ${{ inputs.project }}
+          RID: ${{ matrix.rid }}
+          LIB: ${{ steps.native_lib.outputs.lib }}
+        run: |
+          set -euo pipefail
+          static="csharp/$PROJECT/staticlibs/$RID/lib$CRATE.a"
+          [ -f "$static" ] || { echo "::error::no static archive at $static (csharp/$PROJECT must exist for the static-libs composite to place one)"; exit 1; }
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -n 1)
+          PACKAGE=$(python3 .hyperforge/.github/scripts/c_package.py assemble --rid "$RID" --out c-archive \
+                      --static "$static" --shared "$LIB")
+          export PACKAGE VERSION
+          docker run --rm -v "$PWD:/work" -w /work -e PACKAGE -e VERSION -e SMOKE_CXX=1 alpine:3.22 sh -c \
+            'apk add -q bash build-base cmake pkgconf && bash c/smoke/run.sh "$PACKAGE" "$VERSION"'
+
+  # ===========================================================================
+  # Intel macOS, in its sunset: cross-built on the Apple silicon runner, the crate's suite and
+  # the smokes under Rosetta (hyper-build-native.yml's osx-x64 job has what is and is not
+  # tested there, and the end date). Release mode only.
+  # ===========================================================================
+  core-osx-x64:
+    if: inputs.osx_x64 && inputs.mode != 'pr'
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: x86_64-apple-darwin
+
+      # The hosted arm64 images ship with Rosetta 2; this is for the day one does not, so
+      # the failure is "installing Rosetta" rather than a test binary that will not start.
+      - name: Make sure Rosetta 2 is there to run the x86_64 tests
+        run: |
+          set -euo pipefail
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            softwareupdate --install-rosetta --agree-to-license
+          fi
+          arch -x86_64 /usr/bin/true
+
+      - name: Build native core for x86_64 (release)
+        working-directory: rust
+        run: cargo cdylib --target x86_64-apple-darwin
+
+      # A cross-build that quietly produced the host's architecture would pass every test
+      # below and ship an arm64 library under an x64 name.
+      - name: The library is x86_64, and nothing else
+        run: |
+          set -euo pipefail
+          archs="$(lipo -archs "rust/target/x86_64-apple-darwin/release/lib${{ inputs.crate }}.dylib")"
+          echo "architectures: $archs"
+          [ "$archs" = x86_64 ] || { echo "::error::expected an x86_64 library, got: $archs"; exit 1; }
+
+      - name: Run Rust test suite on x86_64, under Rosetta
+        working-directory: rust
+        run: cargo test --release --target x86_64-apple-darwin
+
+      - name: Collect native artifact
+        id: native_lib
+        run: |
+          mkdir -p out
+          cp "rust/target/x86_64-apple-darwin/release/lib${{ inputs.crate }}.dylib" "out/lib${{ inputs.crate }}.dylib"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-osx-x64
+          path: out/lib${{ inputs.crate }}.dylib
+
+      # Same attestation, for the same reason, as the matrix legs' libraries.
+      - name: Attest native build provenance
+        if: >-
+          inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out/lib${{ inputs.crate }}.dylib
+
+      # The x86_64 static archive, for the C archive below; today's release leg builds none.
+      - name: Build this leg's static libraries
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
+        uses: ./.hyperforge/.github/actions/static-libs
+        with:
+          crate: ${{ inputs.crate }}
+          project: ${{ inputs.project }}
+          targets: x86_64-apple-darwin
+          upload: "false"
+
+      - name: Name this RID's library and the smoke script
+        id: names
+        run: |
+          set -euo pipefail
+          python3 - osx-x64 >> "$GITHUB_OUTPUT" <<'PY'
+          import sys
+          sys.path.insert(0, '.hyperforge/.github/scripts')
+          import hyper_config
+          cfg = hyper_config.load('.')
+          print(f'lib={cfg.lib_name(sys.argv[1])}')
+          print(f'smoke={cfg.cdylib_smoke or ""}')
+          print('exports=' + ' '.join(sorted(cfg.core_exports())))
+          PY
+
+      - name: Check the cdylib exports
+        env:
+          LIB: ${{ steps.names.outputs.lib }}
+          WANT: ${{ steps.names.outputs.exports }}
+        run: |
+          set -euo pipefail
+          lib="rust/target/x86_64-apple-darwin/release/$LIB"
+          exports=$(nm -gU "$lib" | awk '$2 == "T" {print $3}' | sed 's/^_//' | sort)
+          echo "$exports"
+          want=$(tr ' ' '\n' <<<"$WANT" | sort)
+          if [ "$exports" != "$want" ]; then
+            echo "::error::exports differ from the source's C ABI: $(diff <(echo "$want") <(echo "$exports") | grep '^[<>]' | tr '\n' ' ')"
+            exit 1
+          fi
+
+      # An x86_64 library loads only into an x86_64 process: the system python3 is
+      # universal, so it runs under Rosetta; a toolcache Python is arm64 only.
+      - name: Load it and call every export, under Rosetta
+        if: steps.names.outputs.smoke != ''
+        env:
+          LIB: ${{ steps.names.outputs.lib }}
+          SMOKE: ${{ steps.names.outputs.smoke }}
+        run: arch -x86_64 /usr/bin/python3 -I "$SMOKE" "rust/target/x86_64-apple-darwin/release/$LIB" rust/Cargo.toml
+
+      - name: Install pkg-config
+        if: ${{ inputs.c_smoke && inputs.static_libs }}
+        run: command -v pkg-config >/dev/null || brew install pkgconf
+
+      - name: Smoke-test the C archive
+        if: ${{ inputs.c_smoke && inputs.static_libs }}
+        env:
+          CRATE: ${{ inputs.crate }}
+          PROJECT: ${{ inputs.project }}
+          LIB: ${{ steps.names.outputs.lib }}
+          SMOKE_CXX: "1"
+          SMOKE_ARCH: x86_64
+        run: |
+          set -euo pipefail
+          static="csharp/$PROJECT/staticlibs/osx-x64/lib$CRATE.a"
+          [ -f "$static" ] || { echo "::error::no static archive at $static (csharp/$PROJECT must exist for the static-libs composite to place one)"; exit 1; }
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -n 1)
+          tree=$(python3 .hyperforge/.github/scripts/c_package.py assemble --rid osx-x64 --out c-archive \
+                   --static "$static" --shared "rust/target/x86_64-apple-darwin/release/$LIB")
+          c/smoke/run.sh "$tree" "$version"

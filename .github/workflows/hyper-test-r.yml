@@ -1,0 +1,161 @@
+name: HyperForge — test the R binding
+
+# One of the hyper-test-<binding>.yml workflows: this binding's suite on every leg, against
+# the core hyper-core.yml built and uploaded as `native-<rid>`, in a job of its own so a
+# consumer's board runs it only when the binding (or the core, or the workflows) changed,
+# after its hyper-lint-<binding>.yml gate. It never builds a second core: the bindings that
+# load the shared library download it, the ones that link the static archive download
+# `static-libs`, and the ones that compile their own extension from rust/ download nothing.
+# The steps are hyper-build-native.yml's, with that job's `!cancelled()` and shard guards
+# gone: here a red step is the binding's own, and the job stops on it.
+#
+# R: R CMD check --as-cran on every leg but win-arm64 (R on Windows ARM64 is experimental;
+# CRAN builds no binaries for it), building the core from the vendor tarball as CRAN will, and
+# on the floor R on linux-x64 in release mode (a PR board runs that once, in hyper-lint-r.yml).
+# No musl legs (a source package, compiled on the user's machine) and no osx-x64.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "`release` (the default) attests every artifact the binding ships and runs its osx-x64 leg; `pr` drops both and trims what the PR board does once per board"
+        required: false
+        type: string
+        default: release
+      project:
+        description: "PascalCase project name (Swift target, e.g. HyperCast)"
+        required: true
+        type: string
+      crate:
+        description: "Lowercase core name (lib{crate}.so / {crate}.dll)"
+        required: true
+        type: string
+      attest_native:
+        description: "Sign SLSA build provenance for every compiled artifact this binding ships, in `release` mode and never from a fork; the CALLING job must grant `id-token: write` and `attestations: write`"
+        required: false
+        type: boolean
+        default: true
+      r:
+        description: "R CMD check --as-cran the R package on every leg but win-arm64, and on r_floor_version on linux-x64"
+        required: false
+        type: boolean
+        default: true
+      r_version:
+        description: "The R setup-r installs for R CMD check on every leg (`release` is the current one)"
+        required: false
+        type: string
+        default: "release"
+      r_floor_version:
+        description: "An older R checked a second time, on linux-x64 in release mode (`oldrel` is the previous minor). Empty skips it."
+        required: false
+        type: string
+        default: "oldrel"
+
+jobs:
+  test:
+    if: inputs.r
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-x64
+          - os: ubuntu-26.04-arm
+            rid: linux-arm64
+          - os: xcode-27
+            rid: osx-arm64
+          - os: windows-2025-vs2026
+            rid: win-x64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      # On Windows R builds with Rtools' MinGW, so the package's Rust half needs the gnu target.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: ${{ runner.os == 'Windows' && 'x86_64-pc-windows-gnu' || '' }}
+
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          r-version: ${{ inputs.r_version }}
+          use-public-rspm: true
+          # Off, or on Windows Rtools' MSYS usr/bin leads PATH for the rest of the job and every
+          # later step gets GNU tar, find and sort. R 4.2+ finds Rtools 4.2+ through
+          # RTOOLS4x_HOME when it builds a package, so the check needs nothing on PATH.
+          windows-path-include-rtools: false
+
+      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          working-directory: r
+          extra-packages: any::rcmdcheck
+
+      # R CMD check --as-cran, failing on a NOTE as CRAN's incoming checks would, from the
+      # tree vendor.sh leaves (the crates vendored with this checkout's core among them, the
+      # lock derived, the corpus staged). The package compiles the core itself, from that
+      # tarball, as CRAN will: no core artifact is downloaded.
+      - name: Vendor the R package's core, crates and corpus
+        id: r_vendor
+        run: |
+          bash r/tools/vendor.sh
+
+      - name: R CMD check the R package
+        uses: r-lib/actions/check-r-package@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          working-directory: r
+          args: 'c("--no-manual", "--as-cran")'
+          error-on: '"note"'
+
+      # The same check on the previous R minor, the floor the package's users are likeliest to
+      # still run. Linux x64 only: what differs between R minors is R, not the platform. In pr
+      # mode hyper-lint-r.yml runs it, once per board; here in release mode. The three steps
+      # carry their own library paths: setup-r-dependencies writes R_LIBS_SITE, R_LIBS_USER and
+      # R_LIB_FOR_PAK to GITHUB_ENV only when they are unset, so without these the floor R
+      # would search the first R's libraries, find its pak missing and fail to load its
+      # compiled packages. The check writes to its own directory so it cannot meet the first one's.
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: ${{ inputs.mode != 'pr' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version }}
+        env:
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
+        with:
+          r-version: ${{ inputs.r_floor_version }}
+          use-public-rspm: true
+          windows-path-include-rtools: false
+
+      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: ${{ inputs.mode != 'pr' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version }}
+        env:
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
+        with:
+          working-directory: r
+          extra-packages: any::rcmdcheck
+
+      - name: R CMD check the R package — the floor R
+        if: ${{ inputs.mode != 'pr' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.r_vendor.conclusion == 'success' }}
+        env:
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
+        uses: r-lib/actions/check-r-package@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          working-directory: r
+          args: 'c("--no-manual", "--as-cran")'
+          error-on: '"note"'
+          check-dir: '"check-floor"'

@@ -1,0 +1,138 @@
+name: HyperForge — lint the R binding
+
+# One of the nine hyper-lint-<binding>.yml workflows: the binding's doc linter and formatter,
+# moved out of hyper-check-core.yml into a job of its own so a consumer's board runs it the
+# moment its `changes` job says this binding moved, with nothing to wait for and no artifact
+# to download. On ubuntu-26.04-arm, the host that finishes first on every board and the one
+# nothing else queues for; a red lint cancels the binding's suite before any leg has paid for
+# a toolchain. Each step has its hyper-check-core.yml toggle, so a repository can say, in its
+# ci.yml and with a reason, why a check does not apply.
+#
+# lintr reads r/.lintr. The Rust half is a wrapper crate pinning the core by version; cargo
+# fmt reads its manifest without resolving it. In pr mode the job ends with R CMD check on
+# the floor R (r_floor_version), the one place on a PR board that check runs: what differs
+# between R minors is R, not the platform, so once per board is the proof. In release mode
+# hyper-test-r.yml runs it on linux-x64 beside the current R's check, as it always has.
+on:
+  workflow_call:
+    inputs:
+      crate:
+        description: "Lowercase core name, from the caller's .github/hyper.json"
+        required: true
+        type: string
+      project:
+        description: "PascalCase project name, from the caller's .github/hyper.json"
+        required: true
+        type: string
+      mode:
+        description: "`release` or `pr`; the lint is the same in both unless a step says otherwise"
+        required: false
+        type: string
+        default: release
+      lint_r:
+        description: "lintr over the R package, failing on any lint, rustfmt over its Rust half (r/src/rust) and clang-format over its C shim"
+        required: false
+        type: boolean
+        default: false
+      r_version:
+        description: "The R lintr runs under, and the floor check is compared against (`release` is the current one)"
+        required: false
+        type: string
+        default: "release"
+      r_floor_version:
+        description: "An older R the package is checked on in pr mode (`oldrel` is the previous minor). Empty skips it."
+        required: false
+        type: string
+        default: "oldrel"
+
+jobs:
+  lint:
+    runs-on: ubuntu-26.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: inputs.lint_r
+        with:
+          r-version: ${{ inputs.r_version }}
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: inputs.lint_r
+        with:
+          working-directory: r
+          extra-packages: any::lintr
+          needs: lint
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: inputs.lint_r
+        with:
+          components: rustfmt
+      # lintr's object_usage linter loads the package it lints: without an installed copy
+      # every exported name is a false positive (34 on HyperUuid), so the package is
+      # installed into a scratch library first. The install builds from the vendor tarball
+      # vendor.sh writes (the core among the crates); it refuses to build without one. The
+      # floor check below builds from the same tarball.
+      - name: Install the package for lintr
+        id: r_vendor
+        if: inputs.lint_r
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash r/tools/vendor.sh --stage
+          mkdir -p "$RUNNER_TEMP/rlib"
+          R CMD INSTALL --library="$RUNNER_TEMP/rlib" r
+      - name: lintr
+        if: inputs.lint_r
+        shell: Rscript {0}
+        env:
+          R_LIBS: ${{ runner.temp }}/rlib
+        run: |
+          lints <- c(lintr::lint_package("r"), lintr::lint_dir("r/bench"), lintr::lint_dir("r/tools"))
+          print(lints)
+          if (length(lints) > 0) quit(status = 1)
+      - name: cargo fmt --check
+        if: inputs.lint_r
+        shell: bash
+        run: cargo fmt --check --manifest-path r/src/rust/Cargo.toml
+      # The C shim's formatter (r/.clang-format); the runner image ships clang-format.
+      - name: clang-format --dry-run
+        if: inputs.lint_r
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang-format --version
+          clang-format --dry-run -Werror r/src/*.c r/src/*.h
+
+      # The floor R, pr mode. The three steps carry their own library paths:
+      # setup-r-dependencies writes R_LIBS_SITE, R_LIBS_USER and R_LIB_FOR_PAK to GITHUB_ENV
+      # only when they are unset, so without these the floor R would search the first R's
+      # libraries, find its pak missing and fail to load its compiled packages (rlang's .so,
+      # built under the newer R). The check writes to its own directory.
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: inputs.lint_r && inputs.mode == 'pr' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version
+        env:
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
+        with:
+          r-version: ${{ inputs.r_floor_version }}
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: inputs.lint_r && inputs.mode == 'pr' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version
+        env:
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
+        with:
+          working-directory: r
+          extra-packages: any::rcmdcheck
+      - name: R CMD check the R package — the floor R
+        if: inputs.lint_r && inputs.mode == 'pr' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.r_vendor.conclusion == 'success'
+        env:
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
+        uses: r-lib/actions/check-r-package@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        with:
+          working-directory: r
+          args: 'c("--no-manual", "--as-cran")'
+          error-on: '"note"'
+          check-dir: '"check-floor"'

@@ -1,0 +1,147 @@
+name: HyperForge — lint the Go binding
+
+# One of the nine hyper-lint-<binding>.yml workflows: the binding's doc linter and formatter,
+# moved out of hyper-check-core.yml into a job of its own so a consumer's board runs it the
+# moment its `changes` job says this binding moved, with nothing to wait for and no artifact
+# to download. On ubuntu-26.04-arm, the host that finishes first on every board and the one
+# nothing else queues for; a red lint cancels the binding's suite before any leg has paid for
+# a toolchain. Each step has its hyper-check-core.yml toggle, so a repository can say, in its
+# ci.yml and with a reason, why a check does not apply.
+#
+# Two tiers. `fast` (the PR board's gate, under a minute): gofmt, go vet, revive on both
+# modules, and the proof that the committed core is this commit's crate, regenerated with the
+# pinned toolchain and diffed, so a core change without `go generate` is red here, before any
+# leg builds. `full` adds the 23-platform cross-compile sweep and the race detector, the two
+# that take minutes and catch what only a platform or a scheduler shows. There is no
+# golangci-lint: revive is the doc-comment linter, and the rest is the Go toolchain's own.
+on:
+  workflow_call:
+    inputs:
+      crate:
+        description: "Lowercase core name, from the caller's .github/hyper.json"
+        required: true
+        type: string
+      project:
+        description: "PascalCase project name, from the caller's .github/hyper.json"
+        required: true
+        type: string
+      mode:
+        description: "`release` or `pr`; the lint is the same in both unless a step says otherwise"
+        required: false
+        type: string
+        default: release
+      lint_go:
+        description: "revive, gofmt, go vet and the regeneration check over go/"
+        required: false
+        type: boolean
+        default: true
+      linters:
+        description: "`fast` (gofmt, go vet, revive, the regeneration check) or `full` (those plus the cross-compile sweep and the race detector)"
+        required: false
+        type: string
+        default: "fast"
+
+jobs:
+  lint:
+    runs-on: ubuntu-26.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: inputs.lint_go
+        with:
+          go-version-file: go/go.mod
+          # go-version-file only says where the Go version is read from; the module cache needs
+          # cache-dependency-path pointed at go.sum or setup-go searches the repository root.
+          cache-dependency-path: go/go.sum
+      # gofmt walks directories, not modules, so this covers internal/wasm2go as well.
+      - name: gofmt
+        if: inputs.lint_go
+        working-directory: go
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::not gofmt-formatted (run gofmt -w .): $unformatted"
+            exit 1
+          fi
+      - name: go vet
+        if: inputs.lint_go
+        working-directory: go
+        run: go vet ./...
+      - name: Install revive
+        if: inputs.lint_go
+        run: go install github.com/mgechev/revive@v1.16.0
+      # The generator (go/internal/wasm2go) is its own module, so revive is pointed at it too.
+      - name: revive
+        if: inputs.lint_go
+        working-directory: go
+        run: |
+          set -euo pipefail
+          revive -config revive.toml ./...
+          if [ -f internal/wasm2go/go.mod ]; then
+            (cd internal/wasm2go && revive -config ../../revive.toml ./...)
+          fi
+      # The committed core is what this commit's crate translates to. The generator's pinned
+      # toolchain (go/internal/wasm2go/rust-toolchain.toml) is installed with the wasip1
+      # target, then the two host-only regeneration tests run with <CRATE>_CHECK_CORE=1, so
+      # they fail instead of skipping: TestCoreIsCurrent regenerates and diffs, and
+      # TestRegenerationCarriesTheCrateVersion proves a bumped crate version reaches the
+      # generated <crate>_version. The prefix is the crate's package name, upper-cased.
+      - name: The committed core is current
+        if: inputs.lint_go && hashFiles('go/internal/wasm2go/go.mod') != ''
+        working-directory: go
+        run: |
+          set -euo pipefail
+          pin="$(sed -n 's/^channel = "\(.*\)"/\1/p' internal/wasm2go/rust-toolchain.toml)"
+          [ -n "$pin" ] || { echo "::error::go/internal/wasm2go/rust-toolchain.toml names no channel"; exit 1; }
+          rustup toolchain install "$pin" --profile minimal --target wasm32-wasip1
+          crate="$(sed -n 's/^name = "\(.*\)"/\1/p' ../rust/Cargo.toml | head -1)"
+          prefix="$(printf '%s' "$crate" | tr '[:lower:]-' '[:upper:]_')"
+          env "${prefix}_CHECK_CORE=1" go test -count=1 -v -run '^(TestCoreIsCurrent|TestRegenerationCarriesTheCrateVersion)$' .
+      # The core is plain Go, translated from the crate's wasm32-wasip1 build, so every
+      # GOOS/GOARCH pair Go has compiles it without cgo; a platform-specific slip (a constant
+      # that overflows a 32-bit int, a syscall that is not there) is a vet error here rather
+      # than a consumer's build failure. ios/arm64 and android/amd64 are absent because Go
+      # requires external (cgo) linking on those two, and the consumer's own device jobs
+      # build them with the SDKs' compilers. The purego build is the AES-accelerated random
+      # source's fallback, vetted once on the host.
+      - name: Cross-compile sweep
+        if: inputs.lint_go && inputs.linters == 'full'
+        working-directory: go
+        run: |
+          set -euo pipefail
+          while read -r goos goarch; do
+            echo "::group::$goos/$goarch"
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go vet ./...
+            echo "::endgroup::"
+          done <<'EOF'
+          linux amd64
+          linux 386
+          linux arm
+          linux arm64
+          linux riscv64
+          linux ppc64le
+          linux s390x
+          linux loong64
+          linux mips64le
+          windows amd64
+          windows arm64
+          windows 386
+          darwin amd64
+          darwin arm64
+          freebsd amd64
+          openbsd amd64
+          netbsd amd64
+          illumos amd64
+          aix ppc64
+          plan9 amd64
+          android arm64
+          js wasm
+          wasip1 wasm
+          EOF
+          go vet -tags purego ./...
+      # The instance pool and the random source's rekey are the two places goroutines share
+      # state; the race detector runs the suite once, on the host.
+      - name: Race
+        if: inputs.lint_go && inputs.linters == 'full'
+        working-directory: go
+        run: go test -race -count=1 ./...

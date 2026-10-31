@@ -1,0 +1,209 @@
+name: HyperForge — test the Swift binding
+
+# One of the hyper-test-<binding>.yml workflows: this binding's suite on every leg, against
+# the core hyper-core.yml built and uploaded as `native-<rid>`, in a job of its own so a
+# consumer's board runs it only when the binding (or the core, or the workflows) changed,
+# after its hyper-lint-<binding>.yml gate. It never builds a second core: the bindings that
+# load the shared library download it, the ones that link the static archive download
+# `static-libs`, and the ones that compile their own extension from rust/ download nothing.
+# The steps are hyper-build-native.yml's, with that job's `!cancelled()` and shard guards
+# gone: here a red step is the binding's own, and the job stops on it.
+#
+# Swift: the core linked in from the SwiftPM binary target on every leg, from the archives
+# hyper-build-static.yml uploaded; the root manifest built; Windows' pre-6.4 build system
+# link; and on the Linux legs the static-link suite (glibc consumer, musl through the static
+# Linux SDK, WebAssembly and the browser, then the declared floor), which is where musl is
+# covered. No osx-x64 leg.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "`release` (the default) attests every artifact the binding ships and runs its osx-x64 leg; `pr` drops both and trims what the PR board does once per board"
+        required: false
+        type: string
+        default: release
+      project:
+        description: "PascalCase project name (Swift target, e.g. HyperCast)"
+        required: true
+        type: string
+      crate:
+        description: "Lowercase core name (lib{crate}.so / {crate}.dll)"
+        required: true
+        type: string
+      attest_native:
+        description: "Sign SLSA build provenance for every compiled artifact this binding ships, in `release` mode and never from a fork; the CALLING job must grant `id-token: write` and `attestations: write`"
+        required: false
+        type: boolean
+        default: true
+      swift:
+        description: "Run the Swift binding's suite on every leg, and the static-link suite on the Linux legs"
+        required: false
+        type: boolean
+        default: true
+      swift_version:
+        description: "Current Swift toolchain: the image's on Linux and macOS, setup-swift's on Windows, and the static suite's containers"
+        required: false
+        type: string
+        default: "6.4"
+      swift_floor_version:
+        description: "Declared Swift floor, for the static suite; empty skips it"
+        required: false
+        type: string
+        default: "6.2"
+
+jobs:
+  test:
+    if: inputs.swift
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-x64
+          - os: ubuntu-26.04-arm
+            rid: linux-arm64
+          - os: xcode-27
+            rid: osx-arm64
+          - os: windows-2025-vs2026
+            rid: win-x64
+          - os: windows-11-vs2026-arm
+            rid: win-arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      # Over the checkout: the artifact is laid out by repository path, so the Swift bundle's
+      # archives and info.json land in the bundle, beside the header and module map that are
+      # source. The suite links this commit's core from it.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: static-libs
+          path: .
+
+      # Linux and macOS take the image's Swift, held to swift_version (a substring of the
+      # banner: a patch release passes, the next minor does not, and the banner is printed
+      # either way). Windows has no Swift on the image, so setup-swift installs one there, with
+      # the tool cache kept between runs: setup-swift's own cache holds the installed toolchain
+      # (1.7 GB) and copies it file by file on a hit, 2m10s of a 3.1-minute step on win-x64
+      # (HyperUuid run 37710502986); caching the tool-cache directory lets it find the toolchain
+      # in place. The key names the toolchain directory setup-swift actually used.
+      - name: The image's Swift is the matrix's
+        if: runner.os != 'Windows'
+        env:
+          SWIFT_MINOR: ${{ inputs.swift_version }}
+        run: |
+          set -euo pipefail
+          swift --version 2>&1 | tee /dev/stderr | grep -q "Swift version ${SWIFT_MINOR}" \
+            || { echo "::error::the image's Swift is not ${SWIFT_MINOR}; move swift_version or the runner image"; exit 1; }
+
+      - name: Restore the installed Swift toolchain (Windows)
+        id: swift_toolcache
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.tool_cache }}/swift-*
+          key: swift-toolcache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.swift_version }}-
+          restore-keys: swift-toolcache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.swift_version }}-
+
+      - uses: SwiftyLab/setup-swift@d60245579ea3836a3f2fa65ebbe1e8891d577c76 # v1.14.2
+        if: runner.os == 'Windows'
+        with:
+          swift-version: ${{ inputs.swift_version }}
+          cache-snapshot: false
+
+      - name: Key the installed Swift toolchain (Windows)
+        id: swift_toolcache_key
+        if: runner.os == 'Windows'
+        env:
+          WANT: ${{ inputs.swift_version }}
+        run: |
+          set -euo pipefail
+          tool_cache=$(cygpath -u "$RUNNER_TOOL_CACHE")
+          swift_bin=$(cygpath -u "$(command -v swift)")
+          used=${swift_bin#"$tool_cache"/}
+          used=${used%%/*}
+          case "$used" in
+            swift-*) ;;
+            *) echo "::error::swift ($swift_bin) is not under the tool cache ($tool_cache)"; exit 1 ;;
+          esac
+          # Any other swift-* directory is an older toolchain the restore brought back.
+          for dir in "$tool_cache"/swift-*; do
+            [ "$(basename "$dir")" = "$used" ] || rm -rf "$dir"
+          done
+          echo "key=swift-toolcache-$RUNNER_OS-$RUNNER_ARCH-$WANT-$used" >> "$GITHUB_OUTPUT"
+
+      - name: Save the installed Swift toolchain (Windows)
+        if: ${{ !cancelled() && steps.swift_toolcache_key.outcome == 'success' && steps.swift_toolcache.outputs.cache-matched-key != steps.swift_toolcache_key.outputs.key }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.tool_cache }}/swift-*
+          key: ${{ steps.swift_toolcache_key.outputs.key }}
+
+      # The Swift binding links the core in on every platform, from its artifact bundle, which
+      # the static-libs download above filled with this commit's archives.
+      - name: Test Swift bindings, the core linked in
+        working-directory: swift
+        run: swift test
+
+      # Swift 6.4 made Swift Build SwiftPM's default build system; consumers on 6.2 and 6.3
+      # still get the one before it, which links a binary target's archive differently: it
+      # copies the archive beside the products and links it by `-l` name, which on Windows
+      # means MSVC's `{crate}.lib` convention and a case-insensitive file system, where Swift
+      # Build passes the path. So Windows keeps a run on the old build system. x64 only,
+      # because a second Swift build on Windows costs minutes. When a future toolchain removes
+      # `--build-system native` (6.4 already warns), this step goes with it.
+      - name: Test Swift bindings — the pre-6.4 build system's link
+        if: matrix.rid == 'win-x64'
+        working-directory: swift
+        run: swift test --build-system native
+
+      # The manifest a consumer's `.package(url:)` actually resolves is the one at the repo
+      # root, and `swift test` above runs swift/Package.swift, a different file that merely
+      # has to stay in step with it.
+      - name: Build the root Swift manifest (the one consumers resolve)
+        run: swift build
+
+      # The static-link suite on the Linux legs, in Swift's own containers (the runner image
+      # has a Swift toolchain for neither the SDKs nor the floor version): on swift_version the
+      # smoke executable on glibc and through the static Linux SDK, then the whole suite and
+      # the smoke executable for WebAssembly, and that same wasm executable again in headless
+      # Chrome through a WASI shim (x64 only, where the image's Chrome is); on
+      # swift_floor_version the whole suite and the smoke executable on glibc, and the smoke
+      # executable on musl and WebAssembly. The two SDKs are 380 MB per Swift version and
+      # immutable once published, so the cache key is the versions and nothing else.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: runner.os == 'Linux'
+        with:
+          path: ~/.cache/hyper-swift-sdk
+          key: swift-sdk-${{ runner.arch }}-${{ inputs.swift_version }}-${{ inputs.swift_floor_version }}
+
+      - name: Swift ${{ inputs.swift_version }} — glibc consumer, musl, WebAssembly and the browser
+        if: runner.os == 'Linux'
+        uses: ./.hyperforge/.github/actions/swift-static-suite
+        with:
+          project: ${{ inputs.project }}
+          swift-version: ${{ inputs.swift_version }}
+          checks: smoke-glibc smoke-musl test-wasm smoke-wasm ${{ matrix.rid == 'linux-x64' && 'browser-wasm' || '' }}
+
+      - name: Swift ${{ inputs.swift_floor_version }} — the declared floor, on glibc, musl and WebAssembly
+        if: ${{ runner.os == 'Linux' && inputs.swift_floor_version != '' && inputs.swift_floor_version != inputs.swift_version }}
+        uses: ./.hyperforge/.github/actions/swift-static-suite
+        with:
+          project: ${{ inputs.project }}
+          swift-version: ${{ inputs.swift_floor_version }}
+          checks: test smoke-glibc smoke-musl smoke-wasm

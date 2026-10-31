@@ -113,19 +113,31 @@ def minor_key(minor):
     return tuple(int(part) for part in minor.split('.'))
 
 
-def matrix(mode, versions, floor):
+PR_LEGS = ('newest-plus-floor', 'two-paths')
+
+
+def matrix(mode, versions, floor, pr_legs='newest-plus-floor'):
     """The build legs. `release`: every platform on every minor, the zips a release ships.
     `pr`: every platform on the newest minor, plus linux-x64 and win-x64 on the floor (win-x64
     because the floor's Windows build can take another toolset). The stub diff runs on one leg,
-    linux-x64 on the newest minor. A Windows leg names its MSVC toolset and component."""
+    linux-x64 on the newest minor. A Windows leg names its MSVC toolset and component.
+    `pr_legs` trims pr mode further and means nothing in release: `two-paths` is the PR
+    board's, the glibc path on linux-x64 at the newest minor and the Windows path on win-x64 at
+    the floor (the newest, with no floor), one leg per toolchain; macOS, arm64 and musl are the
+    release board's."""
     minors = versions.split()
     if not minors or len(set(minors)) != len(minors) or not all(MINOR.match(m) for m in minors):
         raise ValueError(f'php_versions must be distinct X.Y minors, space-separated, not {versions!r}')
     if floor and not MINOR.match(floor):
         raise ValueError(f'php_floor_version must be an X.Y minor or empty, not {floor!r}')
     newest = max(minors, key=minor_key)
+    if pr_legs not in PR_LEGS:
+        raise ValueError(f'pr_legs is one of {", ".join(PR_LEGS)}, not {pr_legs!r}')
     if mode == 'release':
         pairs = [(platform, minor) for minor in sorted(minors, key=minor_key) for platform in PLATFORMS]
+    elif mode == 'pr' and pr_legs == 'two-paths':
+        by_rid = {platform[0]: platform for platform in PLATFORMS}
+        pairs = [(by_rid['linux-x64'], newest), (by_rid['win-x64'], floor or newest)]
     elif mode == 'pr':
         pairs = [(platform, newest) for platform in PLATFORMS]
         if floor and floor != newest:
@@ -310,6 +322,8 @@ def main():
     legs.add_argument('--mode', dest='leg_mode', required=True, help='pr or release')
     legs.add_argument('--versions', required=True, help='the PHP minors, space-separated')
     legs.add_argument('--floor', default='', help='the floor minor (pr mode adds it on linux-x64)')
+    legs.add_argument('--pr-legs', dest='pr_legs', default='newest-plus-floor', choices=PR_LEGS,
+                      help="pr mode's legs: newest-plus-floor (the default) or two-paths (the PR board's two)")
     sub.add_parser('pie-pin', help='print PIE_VERSION and PIE_SHA256')
     args = parser.parse_args()
     try:
@@ -322,7 +336,7 @@ def main():
 
 def run(args):
     if args.mode == 'matrix':
-        print(json.dumps(matrix(args.leg_mode, args.versions, args.floor)))
+        print(json.dumps(matrix(args.leg_mode, args.versions, args.floor, args.pr_legs)))
     elif args.mode == 'pie-pin':
         print(PIE_VERSION, PIE_SHA256)
     elif args.mode == 'asset':

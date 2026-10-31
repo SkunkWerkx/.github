@@ -24,6 +24,14 @@ on:
         description: "`release` (the default) packs and tests every platform; `pr` leaves out osx-x64, which hyper-build-native.yml builds only in release mode"
         type: string
         default: release
+      smokes:
+        description: "Run the smoke consumers against the packed archives (the `smoke` and `smoke-apple-mobile` jobs). A consumer's PR board smokes each archive on the core leg that built it (hyper-core.yml) and passes false; the default keeps today's jobs."
+        type: boolean
+        default: true
+      lint:
+        description: "clang-format and shellcheck the smoke consumers and the C++ header before packing. A consumer's PR board lints them once in hyper-core-checks.yml and passes false; the default keeps the step."
+        type: boolean
+        default: true
 
 jobs:
   pack:
@@ -50,6 +58,7 @@ jobs:
       # c/.clang-format for C and C++ (the cbindgen header is generated, and checked by
       # rust/tests/header.rs instead), shellcheck for the scripts. The runner image ships both.
       - name: clang-format --dry-run and shellcheck
+        if: inputs.lint
         run: |
           set -euo pipefail
           clang-format --version
@@ -91,6 +100,7 @@ jobs:
 
   smoke:
     needs: pack
+    if: inputs.smokes
     strategy:
       fail-fast: false
       matrix:
@@ -181,6 +191,7 @@ jobs:
 
   smoke-apple-mobile:
     needs: pack
+    if: inputs.smokes
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

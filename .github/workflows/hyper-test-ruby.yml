@@ -1,0 +1,292 @@
+name: HyperForge — test the Ruby binding
+
+# One of the hyper-test-<binding>.yml workflows: this binding's suite on every leg, against
+# the core hyper-core.yml built and uploaded as `native-<rid>`, in a job of its own so a
+# consumer's board runs it only when the binding (or the core, or the workflows) changed,
+# after its hyper-lint-<binding>.yml gate. It never builds a second core: the bindings that
+# load the shared library download it, the ones that link the static archive download
+# `static-libs`, and the ones that compile their own extension from rust/ download nothing.
+# The steps are hyper-build-native.yml's, with that job's `!cancelled()` and shard guards
+# gone: here a red step is the binding's own, and the job stops on it.
+#
+# Ruby, both backends: Magnus (the compiled extension, once per Ruby ABI, shipped as
+# ruby-native-{rid}-{abi}) and Fiddle (the universal zero-compile fallback) on every leg, and
+# both again in each Ruby's Alpine image plus the Fiddle suite on the declared floor. No
+# osx-x64 leg: a Magnus extension there needs an x86_64 Ruby to compile against, which is the
+# leg hyper-core.yml retired; the universal gem runs on Fiddle over the library.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "`release` (the default) attests every artifact the binding ships and runs its osx-x64 leg; `pr` drops both and trims what the PR board does once per board"
+        required: false
+        type: string
+        default: release
+      project:
+        description: "PascalCase project name (Swift target, e.g. HyperCast)"
+        required: true
+        type: string
+      crate:
+        description: "Lowercase core name (lib{crate}.so / {crate}.dll)"
+        required: true
+        type: string
+      attest_native:
+        description: "Sign SLSA build provenance for every compiled artifact this binding ships, in `release` mode and never from a fork; the CALLING job must grant `id-token: write` and `attestations: write`"
+        required: false
+        type: boolean
+        default: true
+      ruby:
+        description: "Run the Ruby binding's suite (Fiddle, and Magnus where `magnus` is on) on every leg and on Alpine"
+        required: false
+        type: boolean
+        default: true
+      magnus:
+        description: "Build and test the Ruby Magnus extension backend (every leg, and both musl RIDs)"
+        required: false
+        type: boolean
+        default: true
+      pure_env:
+        description: "Env var that forces the zero-compile fallback backend (e.g. HYPERCAST_PURE)"
+        required: true
+        type: string
+      ruby_version:
+        description: "Primary Ruby — the current release. The ABI every Magnus artifact and the Fiddle suite run against."
+        required: false
+        type: string
+        default: "4.0"
+      ruby_compat_version:
+        description: "A second, older Ruby minor to ALSO build and test the Magnus extension against, so a caller can ship a fat platform gem covering two ABIs. Empty means one ABI only. Release mode only."
+        required: false
+        type: string
+        default: ""
+      ruby_floor_version:
+        description: "Oldest Ruby the gemspec declares — the musl job runs the Fiddle suite on it as well as on ruby_version. Empty skips the floor run."
+        required: false
+        type: string
+        default: "3.3"
+
+jobs:
+  test:
+    if: inputs.ruby
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-x64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: ubuntu-26.04-arm
+            rid: linux-arm64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: xcode-27
+            rid: osx-arm64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: windows-2025-vs2026
+            rid: win-x64
+            lib_name: ${{ inputs.crate }}.dll
+          - os: windows-11-vs2026-arm
+            rid: win-arm64
+            lib_name: ${{ inputs.crate }}.dll
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-${{ matrix.rid }}
+          path: out
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      # macOS: three things, all so that mkmf can link the test program it builds before it
+      # will compile a native gem (fiddle here). hyper-build-native.yml's Ruby section has the
+      # history (a Command Line Tools-only developer directory, and what a Swift toolchain on
+      # PATH did to `clang`); here nothing has put another toolchain on PATH, and the probe
+      # proves the link either way.
+      - name: Point Xcode at a full toolchain (works around a Ruby native-extension mkmf issue)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          plist="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/ToolchainInfo.plist"
+          toolchain="$(/usr/libexec/PlistBuddy -c 'Print :Identifier' "$plist" 2>/dev/null || echo com.apple.dt.toolchain.XcodeDefault)"
+          echo "TOOLCHAINS was '${TOOLCHAINS:-}', now '$toolchain'"
+          echo "TOOLCHAINS=$toolchain" >> "$GITHUB_ENV"
+          export TOOLCHAINS="$toolchain"
+
+          probe="$RUNNER_TEMP/mkmf-probe"
+          printf 'int main(void) { return 0; }\n' > "$probe.c"
+          links() { clang "$probe.c" -o "$probe" >/dev/null 2>&1 && "$probe"; }
+
+          if links; then
+            echo "before: clang is $(command -v clang) and links an executable"
+          else
+            echo "before: clang is $(command -v clang) and does NOT link an executable"
+          fi
+
+          shims="$RUNNER_TEMP/xcode-clang"
+          mkdir -p "$shims"
+          ln -sf /usr/bin/clang "$shims/clang"
+          ln -sf /usr/bin/clang++ "$shims/clang++"
+          echo "$shims" >> "$GITHUB_PATH"
+          export PATH="$shims:$PATH"
+
+          if ! links; then
+            clang "$probe.c" -o "$probe" || true
+            echo "::error::clang ($(command -v clang) -> $(xcrun -f clang)) cannot link an executable; Ruby's mkmf will fail the same way"
+            exit 1
+          fi
+          echo "after: clang is $(command -v clang) -> $(xcrun -f clang) and links an executable"
+
+      # bindgen (the Magnus build) loads the newest libclang it finds but asks whichever
+      # `clang` is first on PATH where the compiler's own headers are; the ubuntu-26.04 image
+      # carries a Swift toolchain with a clang of its own, and a mismatched pair fails on x64
+      # (HyperUuid run 36893952091). CLANG_PATH and LIBCLANG_PATH are clang-sys's own
+      # overrides; naming one system LLVM for both keeps the pair matched.
+      - name: Point bindgen at one system LLVM, not at Swift's clang
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          for prefix in $(ls -d /usr/lib/llvm-* 2>/dev/null | sort -t- -k2 -n -r); do
+            if [ -x "$prefix/bin/clang" ] && ls "$prefix"/lib/libclang*.so* >/dev/null 2>&1; then
+              echo "bindgen: clang and libclang from $prefix ($("$prefix/bin/clang" --version | head -1))"
+              echo "CLANG_PATH=$prefix/bin/clang" >> "$GITHUB_ENV"
+              echo "LIBCLANG_PATH=$prefix/lib" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "::warning::No /usr/lib/llvm-*/ carries both clang and libclang; bindgen is left to find its own, which is how the mismatch above happens."
+
+      # One placement, three consumers. The Fiddle suite loads this library directly; both
+      # Magnus suites load it too, for their cross-backend agreement checks ("agrees with the
+      # Fiddle backend on...") which compare the two backends in one process.
+      - name: Place native lib for Ruby in-repo testing
+        run: |
+          mkdir -p "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}"
+          cp "out/${{ matrix.lib_name }}" "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}/"
+
+      # Magnus runs once per Ruby ABI, through the Forge's ruby-magnus composite (setup-ruby,
+      # the win-x64 CLANG64 install, the build script, rspec, upload, attest): a Magnus
+      # extension is bound to a single Ruby minor, so a platform gem covering two Rubies
+      # carries two compiled files, each uploaded as ruby-native-{rid}-{abi}.
+      # `ruby_compat_version` runs FIRST and `ruby_version` LAST: setup-ruby swaps the active
+      # Ruby for the rest of the job, and the Fiddle suite at the end inherits the primary one.
+      # The compat ABI is release mode only: a `pr` run ships no gem.
+      - name: Ruby (Magnus) — compat ABI
+        if: ${{ inputs.magnus && inputs.ruby_compat_version != '' && inputs.mode != 'pr' }}
+        uses: ./.hyperforge/.github/actions/ruby-magnus
+        with:
+          ruby-version: ${{ inputs.ruby_compat_version }}
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+
+      - name: Ruby (Magnus) — primary ABI
+        if: inputs.magnus
+        uses: ./.hyperforge/.github/actions/ruby-magnus
+        with:
+          ruby-version: ${{ inputs.ruby_version }}
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+
+      # The Fiddle backend, forced explicitly: the universal zero-compile path every platform
+      # must keep green regardless of whether a Magnus extension exists there. The primary-ABI
+      # call above leaves its Ruby active; the step below exists only for `magnus: false`.
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
+        if: ${{ !inputs.magnus }}
+        with:
+          ruby-version: ${{ inputs.ruby_version }}
+          bundler: default
+          bundler-cache: true
+          working-directory: ruby
+
+      # (bash + export because an env: mapping key can't be an expression.)
+      - name: Test Ruby bindings (Fiddle backend) against this platform's native lib
+        working-directory: ruby
+        run: |
+          export ${{ inputs.pure_env }}=1
+          bundle exec rspec
+
+  test-musl:
+    if: inputs.ruby
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-musl-x64
+          - os: ubuntu-26.04-arm
+            rid: linux-musl-arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-${{ matrix.rid }}
+          path: out-musl
+      # Compat ABI first and primary last, as on the matrix legs. Each builds in its Ruby's
+      # Alpine image and runs the suite on a bare copy of it — see build-magnus-musl.sh.
+      - name: Ruby (Magnus) on Alpine — compat ABI
+        if: ${{ inputs.magnus && inputs.ruby_compat_version != '' && inputs.mode != 'pr' }}
+        uses: ./.hyperforge/.github/actions/ruby-magnus-musl
+        with:
+          ruby-version: ${{ inputs.ruby_compat_version }}
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+
+      - name: Ruby (Magnus) on Alpine — primary ABI
+        if: inputs.magnus
+        uses: ./.hyperforge/.github/actions/ruby-magnus-musl
+        with:
+          ruby-version: ${{ inputs.ruby_version }}
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+
+      - name: Ruby on Alpine (Fiddle)
+        uses: ./.hyperforge/.github/actions/musl-suite
+        with:
+          binding: ruby
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: ruby:${{ inputs.ruby_version }}-alpine
+
+      - name: Ruby on Alpine (Fiddle) — the declared floor
+        if: ${{ inputs.ruby_floor_version != '' && inputs.ruby_floor_version != inputs.ruby_version }}
+        uses: ./.hyperforge/.github/actions/musl-suite
+        with:
+          binding: ruby
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: ruby:${{ inputs.ruby_floor_version }}-alpine

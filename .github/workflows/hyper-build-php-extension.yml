@@ -60,6 +60,10 @@ on:
         description: "The oldest minor the package declares: pr mode adds it on linux-x64. Empty adds nothing."
         type: string
         default: ""
+      pr_legs:
+        description: "pr mode's legs: `newest-plus-floor` (the default: every platform on the newest minor, linux-x64 and win-x64 on the floor) or `two-paths` (the PR board's: linux-x64 on the newest minor from the image's own PHP, win-x64 on the floor from setup-php). Ignored in release mode."
+        type: string
+        default: "newest-plus-floor"
       attest_native:
         description: "Sign build provenance for each zip in release mode (the calling job must grant id-token and attestations write)"
         type: boolean
@@ -125,9 +129,10 @@ jobs:
           MODE: ${{ inputs.mode }}
           PHP_VERSIONS: ${{ inputs.php_versions }}
           PHP_FLOOR_VERSION: ${{ inputs.php_floor_version }}
+          PR_LEGS: ${{ inputs.pr_legs }}
         run: |
           set -euo pipefail
-          matrix=$(python3 ".hyperforge/.github/scripts/php_ext_package.py" matrix --mode "$MODE" --versions "$PHP_VERSIONS" --floor "$PHP_FLOOR_VERSION")
+          matrix=$(python3 ".hyperforge/.github/scripts/php_ext_package.py" matrix --mode "$MODE" --versions "$PHP_VERSIONS" --floor "$PHP_FLOOR_VERSION" --pr-legs "$PR_LEGS")
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "$matrix" | jq -r '.include[] | "\(.rid) PHP \(.minor)"'
 
@@ -196,14 +201,32 @@ jobs:
           gh attestation verify "$phar" --owner php
           echo "PIE_PHAR=$phar" >> "$GITHUB_ENV"
 
+      # Under the PR board's `two-paths`, the linux-x64 leg takes the PHP the ubuntu-26.04
+      # image ships (the newest minor, with php-config and Composer beside it) and skips the
+      # setup-php minutes; the step after it holds the image to the leg's minor, so an image
+      # that moves ahead of `php_versions` turns the leg red instead of building for a minor
+      # the matrix never named.
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
-        if: matrix.kind == 'glibc' || matrix.kind == 'windows'
+        if: (matrix.kind == 'glibc' || matrix.kind == 'windows') && !(inputs.pr_legs == 'two-paths' && inputs.mode == 'pr' && matrix.rid == 'linux-x64')
         env:
           phpts: nts
         with:
           php-version: ${{ matrix.minor }}
           tools: composer
           coverage: none
+
+      - name: The image's PHP is the leg's minor
+        if: inputs.pr_legs == 'two-paths' && inputs.mode == 'pr' && matrix.rid == 'linux-x64'
+        shell: bash
+        env:
+          MINOR: ${{ matrix.minor }}
+        run: |
+          set -euo pipefail
+          got=$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')
+          [ "$got" = "$MINOR" ] || { echo "::error::the image's PHP is $got, the leg wants $MINOR: move php_versions or drop two-paths"; exit 1; }
+          command -v php-config >/dev/null || { echo "::error::the image's PHP $got has no php-config"; exit 1; }
+          command -v composer >/dev/null || { echo "::error::the image has no composer"; exit 1; }
+          php -v | head -1; php-config --version; composer --version
 
       # The leg's PHP, which also runs Composer.
       - name: PHP from the shivammathur/php tap (macOS)

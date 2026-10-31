@@ -260,6 +260,36 @@ class Matrix(unittest.TestCase):
         self.assertEqual(len(self.legs('pr', floor='8.5')), 6)
         self.assertEqual(len(self.legs('pr', floor='')), 6)
 
+    def test_matrix_two_paths_in_pr_mode(self):
+        # The PR board's PHP: the glibc path on the newest minor and the Windows path on the
+        # floor (the floor's Windows build takes another toolset); macOS, arm64 and musl wait
+        # for the release board.
+        legs = php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3', 'two-paths')['include']
+        self.assertEqual([(leg['rid'], leg['minor']) for leg in legs], [('linux-x64', '8.5'), ('win-x64', '8.3')])
+        self.assertEqual([leg['stubs'] for leg in legs], [True, False])
+        self.assertEqual(legs[1]['msvc_toolset'], '14.29')
+        # No floor, or the floor is the newest: the Windows path takes the newest minor.
+        for floor in ('', '8.5'):
+            legs = php_ext_package.matrix('pr', '8.3 8.4 8.5', floor, 'two-paths')['include']
+            self.assertEqual([(leg['rid'], leg['minor']) for leg in legs], [('linux-x64', '8.5'), ('win-x64', '8.5')], floor)
+
+    def test_matrix_two_paths_ignored_in_release(self):
+        self.assertEqual(php_ext_package.matrix('release', '8.3 8.4 8.5', '8.3', 'two-paths'),
+                         php_ext_package.matrix('release', '8.3 8.4 8.5', '8.3'))
+        self.assertEqual(len(php_ext_package.matrix('release', '8.3 8.4 8.5', '8.3', 'two-paths')['include']), 18)
+
+    def test_matrix_default_unchanged(self):
+        self.assertEqual(php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3', 'newest-plus-floor'),
+                         php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3'))
+        with self.assertRaises(ValueError):
+            php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3', 'everything')
+        import json
+        run = lambda *args: subprocess.run(['python3', str(SCRIPTS / 'php_ext_package.py'), *args],
+                                           check=True, capture_output=True, text=True).stdout
+        self.assertEqual(json.loads(run('matrix', '--mode', 'pr', '--versions', '8.3 8.4 8.5', '--floor', '8.3',
+                                        '--pr-legs', 'two-paths')),
+                         php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3', 'two-paths'))
+
     def test_the_stub_diff_runs_on_linux_x64_newest_only(self):
         for mode in ('pr', 'release'):
             stubs = [(leg['rid'], leg['minor']) for leg in self.legs(mode) if leg['stubs']]

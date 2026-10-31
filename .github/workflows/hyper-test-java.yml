@@ -1,0 +1,381 @@
+name: HyperForge — test the Java binding
+
+# One of the hyper-test-<binding>.yml workflows: this binding's suite on every leg, against
+# the core hyper-core.yml built and uploaded as `native-<rid>`, in a job of its own so a
+# consumer's board runs it only when the binding (or the core, or the workflows) changed,
+# after its hyper-lint-<binding>.yml gate. It never builds a second core: the bindings that
+# load the shared library download it, the ones that link the static archive download
+# `static-libs`, and the ones that compile their own extension from rust/ download nothing.
+# The steps are hyper-build-native.yml's, with that job's `!cancelled()` and shard guards
+# gone: here a red step is the binding's own, and the job stops on it.
+#
+# Java: the JNI base on the floor JDK plus the FFM tree (`java_jni`), the shim built beside
+# the core on every leg and shipped as `jni-<rid>`; or, without it, the FFM downcall path
+# alone. The osx-x64 shim is cross-built on the Apple silicon runner and tested on an x64
+# JDK under Rosetta, release mode only (hyper-core.yml's osx-x64 leg has the sunset).
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "`release` (the default) attests every artifact the binding ships and runs its osx-x64 leg; `pr` drops both and trims what the PR board does once per board"
+        required: false
+        type: string
+        default: release
+      project:
+        description: "PascalCase project name (Swift target, e.g. HyperCast)"
+        required: true
+        type: string
+      crate:
+        description: "Lowercase core name (lib{crate}.so / {crate}.dll)"
+        required: true
+        type: string
+      attest_native:
+        description: "Sign SLSA build provenance for every compiled artifact this binding ships, in `release` mode and never from a fork; the CALLING job must grant `id-token: write` and `attestations: write`"
+        required: false
+        type: boolean
+        default: true
+      java:
+        description: "Run the Java binding's suite, on every leg and on Alpine"
+        required: false
+        type: boolean
+        default: true
+      java_jni:
+        description: "The Java binding is a JNI base on the floor JDK plus an FFM tree: build java/jni beside the core on every leg (osx-x64 cross-built, both musl RIDs in Alpine), place both libraries under java_resources_dir, run `gradlew test testFloor checkSuiteParity javadoc` (on Alpine, the same without javadoc plus the smoke program), and upload and attest each shim as `jni-{rid}`. Replaces the FFM-only Java steps; needs jdk_floor_version."
+        required: false
+        type: boolean
+        default: false
+      jdk_version:
+        description: "JDK major version — Temurin on every leg except win-arm64, which takes Microsoft's build"
+        required: false
+        type: string
+        default: "25"
+      jdk_floor_version:
+        description: "The Temurin major of the Java binding's floor (java_jni): the suite runs on it a second time (testFloor), on every leg and on Alpine. Empty with java_jni on is a failed run, not a skipped floor."
+        required: false
+        type: string
+        default: ""
+      java_resources_dir:
+        description: "If set, place the native lib at {dir}/{rid}/ before gradlew test (repos whose Gradle stages from rust/target/release leave this empty)"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  test:
+    if: inputs.java
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-x64
+            lib_name: lib${{ inputs.crate }}.so
+            jni_lib_name: lib${{ inputs.crate }}_jni.so
+            jdk_distribution: temurin
+          - os: ubuntu-26.04-arm
+            rid: linux-arm64
+            lib_name: lib${{ inputs.crate }}.so
+            jni_lib_name: lib${{ inputs.crate }}_jni.so
+            jdk_distribution: temurin
+          - os: xcode-27
+            rid: osx-arm64
+            lib_name: lib${{ inputs.crate }}.dylib
+            jni_lib_name: lib${{ inputs.crate }}_jni.dylib
+            jdk_distribution: temurin
+          - os: windows-2025-vs2026
+            rid: win-x64
+            lib_name: ${{ inputs.crate }}.dll
+            jni_lib_name: ${{ inputs.crate }}_jni.dll
+            jdk_distribution: temurin
+          - os: windows-11-vs2026-arm
+            rid: win-arm64
+            lib_name: ${{ inputs.crate }}.dll
+            jni_lib_name: ${{ inputs.crate }}_jni.dll
+            jdk_distribution: microsoft
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-${{ matrix.rid }}
+          path: out
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      # Java (JNI): the binding is a JNI base on the floor JDK plus an FFM tree, so the shim
+      # java/jni is built beside the core and the suite runs on the primary JDK and, again, on
+      # the floor (`testFloor`). The floor JDK is Temurin on every leg, win-arm64 included (21
+      # ships it), and Gradle is told to use exactly that install, never to go looking for
+      # another.
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        id: jdk_floor
+        if: inputs.java_jni
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.jdk_floor_version }}
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: ${{ matrix.jdk_distribution }}
+          java-version: ${{ inputs.jdk_version }}
+
+      - name: Build the JNI library
+        if: inputs.java_jni
+        working-directory: java/jni
+        env:
+          CRATE: ${{ inputs.crate }}
+          JNI_LIB: ${{ matrix.jni_lib_name }}
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --lib
+          lib="target/release/$JNI_LIB"
+          [ -f "$lib" ] || { echo "::error::no $lib was produced"; exit 1; }
+          # The core's glibc floor is the shim's: it links the same libc and nothing else.
+          if [ "$RUNNER_OS" = Linux ]; then
+            newest=$(objdump -T "$lib" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+            echo "newest glibc symbol version referenced: $newest"
+            if [ "$(printf '%s\n' GLIBC_2.34 "$newest" | sort -V | tail -1)" != GLIBC_2.34 ]; then
+              echo "::error::$JNI_LIB references $newest; the documented floor is glibc 2.34"
+              objdump -T "$lib" | grep -F "$newest"
+              exit 1
+            fi
+            # JNI_OnLoad plus the core's C exports, and nothing else.
+            nm -D --defined-only "$lib" | awk '$2 == "T" {print $3}' | python3 -c '
+          import sys
+          sys.path.insert(0, "../../.hyperforge/.github/scripts")
+          import hyper_config
+          want = {"JNI_OnLoad"} | hyper_config.load("../..").core_exports()
+          have = set(sys.stdin.read().split())
+          if have != want:
+              sys.exit(f"::error::exports differ from JNI_OnLoad plus the core C ABI: missing {sorted(want - have)}, extra {sorted(have - want)}")
+          print(f"{len(have)} exports, all expected")
+          '
+          fi
+
+      - name: Place both libraries for the Java suites
+        if: inputs.java_jni
+        env:
+          RESOURCES_DIR: ${{ inputs.java_resources_dir }}
+          JNI_LIB: ${{ matrix.jni_lib_name }}
+        run: |
+          set -euo pipefail
+          : "${RESOURCES_DIR:?java_jni needs java_resources_dir}"
+          dest="$RESOURCES_DIR/${{ matrix.rid }}"
+          mkdir -p "$dest"
+          cp "out/${{ matrix.lib_name }}" "$dest/"
+          cp "java/jni/target/release/$JNI_LIB" "$dest/"
+
+      # `javadoc` rides along: a caller's build.gradle.kts sets `javadoc -Xwerror`, the
+      # binding's doc gate, and HyperUuid v0.2.0 is what it costs to run that only at
+      # publish time (sixteen missing @param tags through every PR, then a half-released
+      # version). The floor JDK is the install Gradle is told to use for testFloor;
+      # auto-detect is off so a runner's other JDKs can never stand in for it.
+      - name: Test Java (JNI) on the primary JDK and the floor
+        if: inputs.java_jni
+        working-directory: java
+        env:
+          JDK_FLOOR_PATH: ${{ steps.jdk_floor.outputs.path }}
+        run: |
+          chmod +x gradlew
+          ./gradlew test testFloor checkSuiteParity javadoc --console=plain -Porg.gradle.java.installations.paths="$JDK_FLOOR_PATH" -Porg.gradle.java.installations.auto-detect=false
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.java_jni
+        with:
+          name: jni-${{ matrix.rid }}
+          path: java/jni/target/release/${{ matrix.jni_lib_name }}
+          if-no-files-found: error
+
+      - name: Attest the JNI library's build provenance
+        if: >-
+          inputs.java_jni && inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: java/jni/target/release/${{ matrix.jni_lib_name }}
+
+      # Java without the JNI base: the FFM downcall path alone, per OS.
+      - name: Place native lib for Java in-repo testing
+        if: ${{ inputs.java_resources_dir != '' && !inputs.java_jni }}
+        run: |
+          mkdir -p "${{ inputs.java_resources_dir }}/${{ matrix.rid }}"
+          cp "out/${{ matrix.lib_name }}" "${{ inputs.java_resources_dir }}/${{ matrix.rid }}/"
+
+      - name: Test Java bindings against this platform's native lib
+        if: ${{ !inputs.java_jni }}
+        working-directory: java
+        run: |
+          chmod +x gradlew
+          ./gradlew test javadoc --console=plain
+
+  test-musl:
+    if: inputs.java
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-musl-x64
+          - os: ubuntu-26.04-arm
+            rid: linux-musl-arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      # The core, from hyper-core.yml's musl leg; the JNI shim is built beside it below.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-${{ matrix.rid }}
+          path: out-musl
+      # The JNI shim for this RID, built in Alpine by the same script that builds the core
+      # there, held to the same NEEDED gate, uploaded and attested as `jni-<rid>`. `core:
+      # "false"`: the core is the artifact above, and this job must not produce a second.
+      - name: Build, upload and attest the JNI shim
+        if: inputs.java_jni
+        uses: ./.hyperforge/.github/actions/musl-native
+        with:
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          core: "false"
+          jni: "true"
+          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+
+      # The suite copies the floor JDK out of its own Alpine image, so the floor runs on musl
+      # too; only the shim and the core are on the classpath, and the smoke program runs as well.
+      - name: Java (JNI) on Alpine (JDK 21 and 25, plus the smoke program)
+        if: inputs.java_jni
+        uses: ./.hyperforge/.github/actions/musl-suite
+        with:
+          binding: java-jni
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: eclipse-temurin:${{ inputs.jdk_version }}-jdk-alpine
+          jdk_floor_version: ${{ inputs.jdk_floor_version }}
+
+      - name: Java on Alpine (FFM suite + smoke program)
+        if: ${{ !inputs.java_jni }}
+        uses: ./.hyperforge/.github/actions/musl-suite
+        with:
+          binding: java
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: eclipse-temurin:${{ inputs.jdk_version }}-jdk-alpine
+
+  test-osx-x64:
+    if: inputs.java && inputs.java_jni && inputs.mode != 'pr'
+    runs-on: xcode-27
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-osx-x64
+          path: out
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: x86_64-apple-darwin
+
+      # The JNI shim for this RID, cross-built like the core, then the suites on an x64 JDK
+      # under Rosetta: the primary and the floor. The same steps the matrix legs run, so the
+      # osx-x64 jar entries are tested, not just built.
+      - name: Cross-build the JNI library for x86_64
+        working-directory: java/jni
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --lib --target x86_64-apple-darwin
+          archs="$(lipo -archs "target/x86_64-apple-darwin/release/lib${{ inputs.crate }}_jni.dylib")"
+          echo "architectures: $archs"
+          [ "$archs" = x86_64 ] || { echo "::error::expected an x86_64 JNI library, got: $archs"; exit 1; }
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        id: jdk_floor
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.jdk_floor_version }}
+          architecture: x64
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.jdk_version }}
+          architecture: x64
+
+      - name: Place both libraries for the Java suites
+        env:
+          RESOURCES_DIR: ${{ inputs.java_resources_dir }}
+        run: |
+          set -euo pipefail
+          : "${RESOURCES_DIR:?java_jni on osx-x64 needs java_resources_dir}"
+          mkdir -p "$RESOURCES_DIR/osx-x64"
+          cp "out/lib${{ inputs.crate }}.dylib" "java/jni/target/x86_64-apple-darwin/release/lib${{ inputs.crate }}_jni.dylib" "$RESOURCES_DIR/osx-x64/"
+
+      # Gradle picks the library directory from the JVM's own os.arch: an arm64 JVM here would
+      # look for osx-arm64 and the x86_64 libraries would never load.
+      - name: Test Java (JNI) on an x64 JDK, primary and floor
+        working-directory: java
+        env:
+          JDK_FLOOR_PATH: ${{ steps.jdk_floor.outputs.path }}
+        run: |
+          set -euo pipefail
+          java -XshowSettings:properties -version 2>&1 | grep 'os.arch = x86_64'
+          chmod +x gradlew
+          ./gradlew test testFloor checkSuiteParity javadoc --console=plain -Porg.gradle.java.installations.paths="$JDK_FLOOR_PATH" -Porg.gradle.java.installations.auto-detect=false
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: jni-osx-x64
+          path: java/jni/target/x86_64-apple-darwin/release/lib${{ inputs.crate }}_jni.dylib
+          if-no-files-found: error
+
+      - name: Attest the JNI library's build provenance
+        if: >-
+          inputs.java_jni && inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: java/jni/target/x86_64-apple-darwin/release/lib${{ inputs.crate }}_jni.dylib

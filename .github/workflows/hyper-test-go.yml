@@ -1,0 +1,115 @@
+name: HyperForge — test the Go binding
+
+# One of the hyper-test-<binding>.yml workflows: this binding's suite on every leg, in a job
+# of its own so a consumer's board runs it only when the binding (or the core, or the
+# workflows) changed, after its hyper-lint-<binding>.yml gate. The steps are
+# hyper-build-native.yml's, with that job's `!cancelled()` and shard guards gone: here a red
+# step is the binding's own, and the job stops on it.
+#
+# Go: the binding is wasm2go's translation of the core, committed as Go source, so the suite
+# links nothing, downloads nothing and waits for nothing but its lint: `go test ./...` with
+# CGO_ENABLED=0 on the five desktop hosts and, from the Go version go.mod declares, on the two
+# Alpine images. That the committed translation is this commit's core is hyper-lint-go.yml's
+# regeneration check, not this workflow's.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "`release` (the default) or `pr`; Go ships no compiled artifact and runs the same legs in both, so the value is the board's convention only"
+        required: false
+        type: string
+        default: release
+      crate:
+        description: "Lowercase core name (the musl suite's CRATE)"
+        required: true
+        type: string
+      go_version_file:
+        description: "The go.mod setup-go reads the toolchain from; its `go` line also names the Alpine image"
+        required: false
+        type: string
+        default: go/go.mod
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-x64
+          - os: ubuntu-26.04-arm
+            rid: linux-arm64
+          - os: xcode-27
+            rid: osx-arm64
+          - os: windows-2025-vs2026
+            rid: win-x64
+          - os: windows-11-vs2026-arm
+            rid: win-arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # No module cache: the binding's go.sum is the standard library and a test dependency
+      # or two, and restoring a cache costs more than the download it saves.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ inputs.go_version_file }}
+          cache: false
+
+      - name: Test Go bindings, the translated core
+        working-directory: go
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./...
+
+  test-musl:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-musl-x64
+          - os: ubuntu-26.04-arm
+            rid: linux-musl-arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      - name: Resolve the Alpine image that follows go.mod
+        id: images
+        env:
+          GO_MOD: ${{ inputs.go_version_file }}
+        run: |
+          set -euo pipefail
+          minor=$(sed -n 's/^go \([0-9]*\.[0-9]*\).*/\1/p' "$GO_MOD")
+          [ -n "$minor" ] || { echo "::error::$GO_MOD has no go line"; exit 1; }
+          echo "go=golang:$minor-alpine" >> "$GITHUB_OUTPUT"
+
+      # The suite on the image, CGO_ENABLED=0, nothing linked, no library mounted — see
+      # suite-musl.sh.
+      - name: Go on Alpine (the suite, CGO_ENABLED=0)
+        uses: ./.hyperforge/.github/actions/musl-suite
+        with:
+          binding: go
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: ${{ steps.images.outputs.go }}

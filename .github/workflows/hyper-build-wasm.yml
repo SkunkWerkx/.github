@@ -124,6 +124,15 @@ on:
         required: false
         type: string
         default: '["3.4", "4.0"]'
+      archive:
+        description: >
+          Build the browser-wasm static archive (the `build-wasm` job; `test-blazor` needs it
+          and skips with it). A consumer's PR board passes false for a pull request that
+          touches neither the core, the workflows nor C#, so the WASI, Rust browser and Go
+          wasm jobs run here without the build-std archive; the default keeps every call as it was.
+        required: false
+        type: boolean
+        default: true
       node_wasi:
         description: >
           Build the TypeScript binding's napi-rs module for threadless wasm32-wasip1 (the
@@ -257,6 +266,7 @@ jobs:
           if-no-files-found: error
 
   build-wasm:
+    if: inputs.archive
     runs-on: ubuntu-26.04
     permissions:
       contents: read
