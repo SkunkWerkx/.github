@@ -75,14 +75,16 @@ FACTS = '''echo json_encode([
 
 # The platforms a zip is built for, each on its own runner: (rid, runner label, how the leg gets
 # its PHP). Windows ARM64 has no native PHP build (PHP runs there as an x64 process), so win-x64
-# serves it. osx-x64 builds on the Apple silicon runner against an x86_64 PHP under Rosetta 2:
-# Homebrew bottles nothing for Intel macOS any more, and the Intel runner is in its sunset.
+# serves it. There is no osx-x64 zip: Homebrew bottles nothing for Intel macOS any more, and the
+# leg that compiled an x86_64 PHP from php.net's source under Rosetta on every uncached run
+# stalled 15 minutes at link before the run was cancelled (HyperUuid run 41188206120,
+# 2026-10-31). The rule since: a leg takes the PHP its platform packages, or there is no leg. No
+# leg builds a language runtime.
 PLATFORMS = (
     ('linux-x64', 'ubuntu-26.04', 'glibc'),
     ('linux-arm64', 'ubuntu-26.04-arm', 'glibc'),
     ('linux-musl-x64', 'ubuntu-26.04', 'musl'),
     ('linux-musl-arm64', 'ubuntu-26.04-arm', 'musl'),
-    ('osx-x64', 'macos-latest', 'macos'),
     ('osx-arm64', 'macos-latest', 'macos'),
     ('win-x64', 'windows-latest', 'windows'),
 )

@@ -1408,8 +1408,9 @@ jobs:
   #    against, which is the leg again. Ruby there installs the universal gem and runs on
   #    Fiddle over this library — the fallback every platform without a precompiled gem
   #    already takes — and a caller's release.yml no longer packs an x86_64-darwin platform
-  #    gem. The PHP extension's osx-x64 zips are the build-php-extension job's, built against
-  #    an x86_64 PHP it compiles from source and runs under Rosetta the same way.
+  #    gem. The PHP extension has no osx-x64 zip: the leg that compiled an x86_64 PHP from
+  #    source to test against was retired on 2026-10-31 (php_ext_package.py has the receipt);
+  #    no leg builds a language runtime.
   #
   # Rosetta has an end date of its own (Apple keeps it through macOS 27), and this job goes
   # when it does or when the RID is retired, whichever is first.

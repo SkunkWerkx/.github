@@ -157,6 +157,16 @@ class PhpExtensionContracts(unittest.TestCase):
     def step(self, name):
         return next(step for step in self.steps if step.get('name') == name)
 
+    def test_no_leg_builds_a_php_runtime(self):
+        # The osx-x64 leg compiled PHP from php.net's source under Rosetta on every uncached run
+        # (HyperUuid run 41188206120: 15 minutes stalled at link, then cancelled). The rule since
+        # 2026-10-31: a leg takes the runtime its platform packages, or there is no leg.
+        for needle in ('php_macos_x86_64', 'osx-x64', 'x86_64-apple-darwin', 'Rosetta'):
+            with self.subTest(needle=needle):
+                self.assertNotIn(needle, self.text)
+                self.assertNotIn(needle, (WORKFLOWS / 'hyper-pie-acceptance.yml').read_text())
+        self.assertFalse((WORKFLOWS.parent / 'scripts/php_macos_x86_64.sh').exists())
+
     def test_inputs(self):
         inputs = self.workflow['on']['workflow_call']['inputs']
         self.assertEqual(set(inputs), {'crate', 'mode', 'php_versions', 'php_floor_version', 'attest_native'})

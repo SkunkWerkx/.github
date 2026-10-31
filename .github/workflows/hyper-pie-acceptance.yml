@@ -28,10 +28,9 @@ name: HyperForge — PIE installs the released PHP extension
 # comparison runs.
 #
 # How each platform gets its PHP mirrors the build workflow: setup-php on Linux glibc and Windows
-# (NTS), Alpine's php8X packages in a bare alpine:3.24 container on musl, the shivammathur/php tap
-# on osx-arm64, and on osx-x64 the same x86_64 PHP from php.net's source under Rosetta 2. That
-# PHP has no openssl, so on osx-x64 PIE runs on the tap's arm64 PHP of the same minor and installs
-# into the x86_64 one (--with-php-path). PIE itself needs openssl, iconv and phar, and `unzip`
+# (NTS), Alpine's php8X packages in a bare alpine:3.24 container on musl, and the shivammathur/php
+# tap on osx-arm64. No leg builds a PHP (the build workflow has why there is no Intel macOS leg).
+# PIE itself needs openssl, iconv and phar, and `unzip`
 # (Composer extracts a zip with it on Unix; macOS and the Ubuntu runners ship it, Alpine adds it),
 # and `otool` on macOS to see bsdlibc (on the runners with Xcode).
 on:
@@ -228,7 +227,6 @@ jobs:
           tools: none
           coverage: none
 
-      # osx-arm64's PHP, and the PHP that runs PIE on osx-x64.
       - name: PHP from the shivammathur/php tap (macOS)
         if: matrix.kind == 'macos'
         shell: bash
@@ -253,47 +251,6 @@ jobs:
           "$bin/php" -v
           echo "PIE_PHP=$bin/php" >> "$GITHUB_ENV"
           echo "TARGET_PHP=$bin/php" >> "$GITHUB_ENV"
-
-      - name: Resolve the x86_64 PHP release (osx-x64)
-        id: php_x64
-        if: matrix.rid == 'osx-x64'
-        shell: bash
-        run: |
-          set -euo pipefail
-          read -r version sha256 < <("$FORGE_SCRIPTS/php_macos_x86_64.sh" resolve "$MINOR")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
-
-      # The build workflow's key: the PHP that leg built against, cached by its run.
-      - name: Restore the x86_64 PHP (osx-x64)
-        id: php_x64_cache
-        if: matrix.rid == 'osx-x64'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/php-x86_64
-          key: php-x86_64-macos-${{ steps.php_x64.outputs.version }}-${{ hashFiles('.hyperforge/.github/scripts/php_macos_x86_64.sh') }}
-
-      - name: Build the x86_64 PHP (osx-x64)
-        if: matrix.rid == 'osx-x64' && steps.php_x64_cache.outputs.cache-hit != 'true'
-        shell: bash
-        env:
-          VERSION: ${{ steps.php_x64.outputs.version }}
-          SHA256: ${{ steps.php_x64.outputs.sha256 }}
-        run: '"$FORGE_SCRIPTS/php_macos_x86_64.sh" build "$VERSION" "$SHA256" "$RUNNER_TEMP/php-x86_64"'
-
-      # It is built with no php.ini, so PIE would have nowhere to enable the extension; an
-      # installed PHP has one. An empty file at its configured path is what a user's would be.
-      - name: Target the x86_64 PHP (osx-x64)
-        if: matrix.rid == 'osx-x64'
-        shell: bash
-        run: |
-          set -euo pipefail
-          php="$RUNNER_TEMP/php-x86_64/bin/php"
-          file "$php"
-          ini_dir=$("$php" -r 'echo PHP_CONFIG_FILE_PATH;')
-          mkdir -p "$ini_dir"
-          touch "$ini_dir/php.ini"
-          echo "TARGET_PHP=$php" >> "$GITHUB_ENV"
 
       - name: Install with PIE, then check from a fresh PHP
         if: matrix.kind != 'musl'

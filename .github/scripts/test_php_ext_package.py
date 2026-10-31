@@ -242,7 +242,7 @@ class Probe(unittest.TestCase):
 
 class Matrix(unittest.TestCase):
     """The build legs hyper-build-php-extension.yml runs, from its mode and minors."""
-    RIDS = ['linux-x64', 'linux-arm64', 'linux-musl-x64', 'linux-musl-arm64', 'osx-x64', 'osx-arm64', 'win-x64']
+    RIDS = ['linux-x64', 'linux-arm64', 'linux-musl-x64', 'linux-musl-arm64', 'osx-arm64', 'win-x64']
 
     def legs(self, mode, versions='8.3 8.4 8.5', floor='8.3'):
         return php_ext_package.matrix(mode, versions, floor)['include']
@@ -250,15 +250,15 @@ class Matrix(unittest.TestCase):
     def test_release_is_every_platform_on_every_minor(self):
         legs = self.legs('release')
         pairs = [(leg['rid'], leg['minor']) for leg in legs]
-        self.assertEqual(len(pairs), 21)
+        self.assertEqual(len(pairs), 18)
         self.assertEqual(set(pairs), {(rid, minor) for rid in self.RIDS for minor in ('8.3', '8.4', '8.5')})
 
     def test_pr_is_every_platform_on_the_newest_plus_the_floor_on_linux_x64_and_win_x64(self):
         pairs = [(leg['rid'], leg['minor']) for leg in self.legs('pr')]
         self.assertEqual(pairs, [(rid, '8.5') for rid in self.RIDS] + [('linux-x64', '8.3'), ('win-x64', '8.3')])
         # A floor that is the newest minor adds no second leg.
-        self.assertEqual(len(self.legs('pr', floor='8.5')), 7)
-        self.assertEqual(len(self.legs('pr', floor='')), 7)
+        self.assertEqual(len(self.legs('pr', floor='8.5')), 6)
+        self.assertEqual(len(self.legs('pr', floor='')), 6)
 
     def test_the_stub_diff_runs_on_linux_x64_newest_only(self):
         for mode in ('pr', 'release'):
@@ -270,7 +270,7 @@ class Matrix(unittest.TestCase):
         self.assertEqual(kinds, {
             'linux-x64': ('ubuntu-26.04', 'glibc'), 'linux-arm64': ('ubuntu-26.04-arm', 'glibc'),
             'linux-musl-x64': ('ubuntu-26.04', 'musl'), 'linux-musl-arm64': ('ubuntu-26.04-arm', 'musl'),
-            'osx-x64': ('macos-latest', 'macos'), 'osx-arm64': ('macos-latest', 'macos'),
+            'osx-arm64': ('macos-latest', 'macos'),
             'win-x64': ('windows-latest', 'windows')})
 
     def test_windows_legs_link_with_their_php_builds_toolset(self):
@@ -330,13 +330,13 @@ class ReleaseAssetNames(unittest.TestCase):
     MACHINES = {'x64': 'x86_64', 'arm64': 'aarch64'}
     BUILD = {'8.3': 'API20230831,NTS,VS16', '8.4': 'API20240924,NTS,VS17', '8.5': 'API20250925,NTS,VS17'}
 
-    def test_twenty_one_names_each_what_the_packer_names_that_leg(self):
+    def test_eighteen_names_each_what_the_packer_names_that_leg(self):
         names = php_ext_package.release_asset_names(TAG, EXT)
-        self.assertEqual(len(names), 21)
+        self.assertEqual(len(names), 18)
         self.assertEqual(names, [php_ext_package.leg_asset_name(leg['rid'], leg['minor'], TAG, EXT)
                                  for leg in php_ext_package.matrix('release', ' '.join(php_ext_package.MINORS),
                                                                    '')['include']])
-        self.assertEqual(len(set(names)), 21)
+        self.assertEqual(len(set(names)), 18)
         packed = []
         for leg in php_ext_package.matrix('release', ' '.join(php_ext_package.MINORS), '')['include']:
             family, libc = self.FACTS[leg['kind']]

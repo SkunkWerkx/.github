@@ -5,13 +5,16 @@ name: HyperForge — build, test and pack the PHP extension for PIE
 # the GitHub Release (php_ext_package.py has the names). This workflow builds those zips, one job
 # per (platform, minor), each against the PHP it is named for:
 #
-#   * `release`: the seven platforms, linux-x64, linux-arm64, linux-musl-x64, linux-musl-arm64,
-#     osx-x64, osx-arm64 and win-x64, on every minor in php_versions; the zips a release ships.
-#   * `pr`: the seven platforms on the newest minor, plus linux-x64 and win-x64 on
+#   * `release`: the six platforms, linux-x64, linux-arm64, linux-musl-x64, linux-musl-arm64,
+#     osx-arm64 and win-x64, on every minor in php_versions; the zips a release ships.
+#   * `pr`: the six platforms on the newest minor, plus linux-x64 and win-x64 on
 #     php_floor_version (win-x64 because the floor's Windows build can take another toolset).
 #
 # NTS only. There is no win-arm64 leg: PHP has never shipped a native Windows ARM64 build, and an
-# x64 PHP running under emulation there loads the win-x64 zip.
+# x64 PHP running under emulation there loads the win-x64 zip. There is no Intel macOS leg
+# either: Homebrew bottles nothing for it, and the leg that compiled an x86_64 PHP from source
+# to test against was retired on 2026-10-31 (php_ext_package.py has the receipt). A leg takes
+# the PHP its platform packages, or there is no leg; no leg builds a language runtime.
 #
 # Each leg, in order: build; on glibc, hold the library to the glibc floor; load-check it into
 # its PHP, which is where an extension built for the wrong ABI is refused; run the binding's
@@ -34,11 +37,6 @@ name: HyperForge — build, test and pack the PHP extension for PIE
 #     installed with brew directly: setup-php installs from the same tap but discards brew's
 #     output, and on 2026-10-08 failed there with nothing but "Could not setup PHP 8.5"
 #     (HyperUuid run 37710502986).
-#   * osx-x64: an x86_64 PHP built from php.net's source and run under Rosetta 2 on the Apple
-#     silicon runner (php_macos_x86_64.sh), because Homebrew bottles nothing for Intel macOS any
-#     more and the Intel runner is in its sunset. Composer runs on the tap's arm64 PHP of the
-#     same minor; the extension is cross-built for x86_64-apple-darwin and tested on the x86_64
-#     PHP.
 #
 # A Windows leg links with the MSVC toolset its minor's php.net build used (php_ext_package.py's
 # WINDOWS_TOOLSETS: 14.29 for vs16, 14.44 for vs17), never the runner's newest: PHP refuses an
@@ -170,7 +168,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         if: matrix.kind != 'musl'
         with:
-          targets: ${{ matrix.rid == 'osx-x64' && 'x86_64-apple-darwin' || '' }}
           components: ${{ matrix.stubs && 'clippy' || '' }}
 
       # The phar the packer runs PIE's own naming code from: the version and sha256 are
@@ -208,8 +205,7 @@ jobs:
           tools: composer
           coverage: none
 
-      # On osx-arm64 this is the leg's PHP. On osx-x64 it only runs Composer, which resolves
-      # for its minor; the suite runs on the x86_64 PHP built below.
+      # The leg's PHP, which also runs Composer.
       - name: PHP from the shivammathur/php tap (macOS)
         if: matrix.kind == 'macos'
         shell: bash
@@ -233,51 +229,10 @@ jobs:
           fi
           "$bin/php" -v
           echo "COMPOSER_PHP=$bin/php" >> "$GITHUB_ENV"
-          if [ "$RID" = osx-arm64 ]; then echo "$bin" >> "$GITHUB_PATH"; fi
-
-      - name: Resolve the x86_64 PHP release (osx-x64)
-        id: php_x64
-        if: matrix.rid == 'osx-x64'
-        shell: bash
-        run: |
-          set -euo pipefail
-          read -r version sha256 < <("$FORGE_SCRIPTS/php_macos_x86_64.sh" resolve "$MINOR")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
-
-      - name: Restore the x86_64 PHP (osx-x64)
-        id: php_x64_cache
-        if: matrix.rid == 'osx-x64'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/php-x86_64
-          key: php-x86_64-macos-${{ steps.php_x64.outputs.version }}-${{ hashFiles('.hyperforge/.github/scripts/php_macos_x86_64.sh') }}
-
-      - name: Build the x86_64 PHP (osx-x64)
-        if: matrix.rid == 'osx-x64' && steps.php_x64_cache.outputs.cache-hit != 'true'
-        shell: bash
-        env:
-          VERSION: ${{ steps.php_x64.outputs.version }}
-          SHA256: ${{ steps.php_x64.outputs.sha256 }}
-        run: '"$FORGE_SCRIPTS/php_macos_x86_64.sh" build "$VERSION" "$SHA256" "$RUNNER_TEMP/php-x86_64"'
-
-      - name: Save the x86_64 PHP (osx-x64)
-        if: matrix.rid == 'osx-x64' && steps.php_x64_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/php-x86_64
-          key: ${{ steps.php_x64_cache.outputs.cache-primary-key }}
-
-      - name: Put the x86_64 PHP first on PATH (osx-x64)
-        if: matrix.rid == 'osx-x64'
-        shell: bash
-        run: |
-          set -euo pipefail
-          file "$RUNNER_TEMP/php-x86_64/bin/php"
-          echo "$RUNNER_TEMP/php-x86_64/bin" >> "$GITHUB_PATH"
+          echo "$bin" >> "$GITHUB_PATH"
 
       # Composer from its installer, checked against the published signature, run by the
-      # leg's (on osx-x64, the tap's arm64) PHP.
+      # leg's PHP.
       - name: Composer (macOS)
         if: matrix.kind == 'macos'
         shell: bash
@@ -344,12 +299,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$RID" = osx-x64 ]; then
-            PHP=$(command -v php)
-            export PHP PHP_CONFIG="${PHP%/php}/php-config"
-            cargo php-ext --target x86_64-apple-darwin
-            lib="target/php/x86_64-apple-darwin/release/lib$CRATE.dylib"
-          elif [ "$RUNNER_OS" = macOS ]; then
+          if [ "$RUNNER_OS" = macOS ]; then
             cargo php-ext
             lib="target/php/release/lib$CRATE.dylib"
           else

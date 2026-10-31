@@ -8,8 +8,8 @@
 #     [repository] [entry_sha256]
 #
 # <pie-php> runs PIE; <target-php> is the PHP it installs into and the one the checks run on.
-# They differ only on osx-x64, whose x86_64 PHP is built without openssl, so PIE runs on the
-# arm64 PHP of the same minor and targets it with --with-php-path. <package_version> is the bare
+# Every leg passes the same PHP for both today; the split stays for a leg whose PIE would need
+# an extension its target lacks, targeted with --with-php-path. <package_version> is the bare
 # X.Y.Z; the release tag `v<package_version>` is derived here and is the version PIE is asked
 # for, as Composer's pretty version for that tag is what PIE looks the Release up by. An empty
 # <repository> means Packagist; otherwise it is added as a `vcs` repository first. <extension> is
