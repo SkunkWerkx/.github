@@ -422,7 +422,18 @@ jobs:
         run: |
           set -euo pipefail
           node --version
-          PATH="$(go env GOROOT)/lib/wasm:$PATH" GOOS=js GOARCH=wasm go test -count=1 ./...
+          # Go's go_js_wasm_exec hands the whole process environment to the wasm instance, and
+          # wasm_exec.js caps argv plus environment at 8 KiB; a hosted runner's environment is
+          # larger, so every test binary dies with "exceeds limit" before main. This wrapper,
+          # first on PATH, forwards only what Go's own wasip1 wrapper forwards.
+          exec_dir="$RUNNER_TEMP/go_js_wasm_exec"
+          mkdir -p "$exec_dir"
+          cat > "$exec_dir/go_js_wasm_exec" <<EOF
+          #!/usr/bin/env bash
+          exec env -i PATH="\$PATH" HOME="\$HOME" PWD="\$PWD" node --stack-size=8192 "$(go env GOROOT)/lib/wasm/wasm_exec_node.js" "\$@"
+          EOF
+          chmod +x "$exec_dir/go_js_wasm_exec"
+          PATH="$exec_dir:$PATH" GOOS=js GOARCH=wasm go test -count=1 ./...
 
       - name: Stock Go on wasip1/wasm under wasmtime
         if: inputs.go_wasm_suite

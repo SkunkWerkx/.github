@@ -583,7 +583,7 @@ class GoTranslatedCoreContracts(unittest.TestCase):
         text = ' '.join(self.describe(s) for s in job['steps'])
         for needle in ('tinygo test -target=wasip1 -c', 'wasmtime run --dir', '_CORPUS=', '_CRATE_VERSION=',
                        '"$GITHUB_WORKSPACE::/repo"', 'GOOS=js GOARCH=wasm go test', 'GOOS=wasip1 GOARCH=wasm go test',
-                       'internal/exhaustiontest', 'sha256sum -c -'):
+                       'internal/exhaustiontest', 'sha256sum -c -', 'go_js_wasm_exec', 'env -i PATH='):
             with self.subTest(needle=needle):
                 self.assertIn(needle, text)
         self.assertNotIn('static-libs', text)
