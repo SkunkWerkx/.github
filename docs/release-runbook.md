@@ -95,8 +95,8 @@ failed only on the real registries.
     --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1
   ```
 
-  Run it on at least a wheel and a Go archive from the module cache (the two that fail
-  without the predicate type), the served `.nupkg` and a gem. Build provenance is the
+  Run it on at least a wheel and a Swift archive or zip (the two that fail without the
+  predicate type), the served `.nupkg` and a gem. Build provenance is the
   second check: the gems, the inventory and the pre-push `.nupkg` verify with `--repo` alone
   (signed at the tag by the consumer's `release.yml`); the wheels and the sdist, the committed natives,
   the PHP extension's zips and the natives inside the `.nupkg` and the jar were built at A by the Forge's workflows and
@@ -108,8 +108,8 @@ failed only on the real registries.
 - `gh attestation verify` prints nothing on success when stdout is not a TTY: check the exit
   code or use `--format json`, whose `predicate` is the inventory for the release attestation.
 - Where each package carries its native: nupkg `runtimes/<rid>/native`, `staticlibs/<rid>`
-  and `runtimes/browser-wasm/nativeassets/net11.0`; Go
-  `$(go env GOMODCACHE)/github.com/!skunk!werkx/<repo>/go@vX/staticlib/<os_arch>`; Swift
+  and `runtimes/browser-wasm/nativeassets/net11.0`; Go has none (the core is Go source at
+  `$(go env GOMODCACHE)/github.com/!skunk!werkx/<repo>/go@vX/internal/core/core.go`); Swift
   `.build/checkouts/<Repo>/swift/<Repo>Core.artifactbundle/<triple>` (with `swift_remote`, the
   GitHub Release's two zips, unpacked under `.build/artifacts/`); PHP the target PHP's
   `extension_dir` (`php -r 'echo ini_get("extension_dir");'`), where `pie install

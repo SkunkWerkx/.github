@@ -298,13 +298,14 @@ class InventoryAndNotesTests(unittest.TestCase):
     def test_the_notes_count_the_archives(self):
         notes = load('release_notes')
         files = [{'path': 'nuget/hyperuuid.0.9.0.nupkg', 'location': 'packages'},
-                 {'path': 'go/staticlib/linux_amd64/libhyperuuid.a', 'location': 'source', 'signer_repo': 'x'},
+                 {'path': 'swift/HyperUuidCore.artifactbundle/x86_64-unknown-linux-gnu/libhyperuuid.a',
+                  'location': 'source', 'signer_repo': 'x'},
                  {'path': 'c/hyperuuid-0.9.0-linux-x64.tar.gz', 'location': 'packages'},
                  {'path': 'c/hyperuuid-0.9.0-win-x64.zip', 'location': 'packages'}]
         inventory = dict(repository='SkunkWerkx/HyperUuid', version='0.9.0', source_sha='a' * 40, ci_run_id='42',
                          files=files)
         text = ' '.join(notes.verifying(inventory).split())
-        self.assertIn('committed for Go and Swift, and 2 C archives, one per platform, attached below.', text)
+        self.assertIn('committed for Swift, and 2 C archives, one per platform, attached below.', text)
 
 
 if __name__ == '__main__':

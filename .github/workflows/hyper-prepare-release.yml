@@ -2,8 +2,9 @@ name: HyperForge — prepare a release
 
 # Bumps the version everywhere it lives as committed text (the files `.github/hyper.json`
 # names, by default rust/Cargo.toml, the C# project, java/build.gradle.kts, the gemspec and
-# the Ruby VERSION constant, plus typescript/package.json and r/DESCRIPTION where those
-# directories exist), regenerates rust/Cargo.lock's self-referential entry (cargo package
+# the Ruby VERSION constant, plus typescript/package.json, and r/DESCRIPTION with the R
+# wrapper crate's exact pin on the core, where those directories exist), regenerates
+# rust/Cargo.lock's self-referential entry (cargo package
 # --locked fails on a stale one), typescript/package-lock.json (npm, lock only), the
 # lockfile of every companion crate present (rust/fuzz, rust/browser-test, typescript:
 # nothing else regenerates them, and HyperCast's fuzz lockfile once sat at 0.1.0 through
@@ -12,9 +13,9 @@ name: HyperForge — prepare a release
 # rebuild fails every Node leg's `git diff --exit-code` wrapper guard on the release-mode
 # run), commits straight to master and dispatches the caller's ci.yml against that commit.
 # Python needs nothing: pyproject.toml declares its version dynamic, sourced from
-# rust/Cargo.toml. Nor does the R wrapper crate: r/tools/vendor.sh --stage derives its
-# r/src/rust/Cargo.lock from rust/Cargo.lock wherever the package is built, and it is
-# never committed.
+# rust/Cargo.toml. The R wrapper crate's lock needs nothing either: r/tools/vendor.sh
+# derives r/src/rust/Cargo.lock from rust/Cargo.lock wherever the package is built, and it
+# is never committed.
 #
 # PHP, Swift and Go have no version field of their own (Packagist, SwiftPM and Go modules
 # resolve from the git tag), but the native libraries committed for them embed the crate
@@ -102,6 +103,26 @@ jobs:
         if: hashFiles('typescript/package.json') != ''
         run: (cd typescript && npm ci --ignore-scripts && npm run build)
 
+      # The Go core is translated from the crate, and the crate's version is baked into its
+      # <crate>_version: after the bump, regenerate so the committed core reports the new
+      # one (hyper-check-core.yml's "The committed core is current" would otherwise fail the
+      # release-mode run). The generator's pinned toolchain is installed with the wasip1
+      # target; `go generate` runs it.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: hashFiles('go/internal/wasm2go/go.mod') != ''
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Regenerate the Go core at the version
+        if: hashFiles('go/internal/wasm2go/go.mod') != ''
+        run: |
+          set -euo pipefail
+          pin="$(sed -n 's/^channel = "\(.*\)"/\1/p' go/internal/wasm2go/rust-toolchain.toml)"
+          [ -n "$pin" ] || { echo "::error::go/internal/wasm2go/rust-toolchain.toml names no channel"; exit 1; }
+          rustup toolchain install "$pin" --profile minimal --target wasm32-wasip1
+          (cd go && go generate)
+
       - name: Show what changed
         run: git diff --stat
 
@@ -119,6 +140,7 @@ jobs:
             if [ -f "$lock" ]; then git add "$lock"; fi
           done
           if [ -f typescript/package.json ]; then git add typescript/binding.js typescript/binding.d.ts; fi
+          if [ -f go/internal/wasm2go/go.mod ]; then git add go/internal/core/core.go; fi
           if git diff --cached --quiet; then
             echo "::notice::Every manifest already says $VERSION — nothing to commit."
           else

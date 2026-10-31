@@ -352,10 +352,10 @@ on:
         default: "6.4"
       static_libs:
         description: >
-          Three bindings link the core rather than load it, each from a no_std static library:
-          Swift on every RID and WebAssembly (swift/{project}Core.artifactbundle), Go under cgo on
-          Linux, macOS and Windows (go/staticlib), and a C# Native AOT publish on every RID
-          (csharp/{project}/staticlibs). With this on, each leg builds its own targets'
+          Two bindings link the core rather than load it, each from a no_std static library:
+          Swift on every RID and WebAssembly (swift/{project}Core.artifactbundle) and a C#
+          Native AOT publish on every RID (csharp/{project}/staticlibs). (Go neither loads
+          nor links it: its core is committed Go source.) With this on, each leg builds its own targets'
           archives before the suites that link them. The nine shipped archives, the
           `static-libs` artifact, and the Swift static suite are the caller's own jobs,
           hyper-build-static.yml and hyper-test-swift-static.yml.
@@ -411,8 +411,7 @@ jobs:
           # the step after the build holds that at 2.34.
           #
           # static_targets are the Rust targets whose static library this leg's own suites
-          # link: Swift and a C# Native AOT publish take the leg's own triple, and Go's cgo
-          # backend on Linux takes the musl build on both C libraries.
+          # link: Swift and a C# Native AOT publish take the leg's own triple.
           - os: ubuntu-26.04
             rid: linux-x64
             lib_name: lib${{ inputs.crate }}.so
@@ -420,7 +419,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             manylinux: "2_28"
             jdk_distribution: temurin
-            static_targets: x86_64-unknown-linux-gnu x86_64-unknown-linux-musl
+            static_targets: x86_64-unknown-linux-gnu
             shard: all
           - os: ubuntu-26.04-arm
             rid: linux-arm64
@@ -429,7 +428,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             manylinux: "2_28"
             jdk_distribution: temurin
-            static_targets: aarch64-unknown-linux-gnu aarch64-unknown-linux-musl
+            static_targets: aarch64-unknown-linux-gnu
             shard: all
           - os: macos-latest
             rid: osx-arm64
@@ -585,11 +584,10 @@ jobs:
         with:
           subject-path: out/${{ matrix.lib_name }}
 
-      # The static libraries this leg's own suites link — the C# Native AOT publish, Go's
-      # cgo backend, Swift — built from this commit before any of them runs. The
-      # archives committed in the tree (Go's, and Swift's unless `swift_remote`) are whatever
-      # was staged last, and C#'s are not committed at all; without this a leg would link the
-      # previous core, or none.
+      # The static libraries this leg's own suites link — the C# Native AOT publish and
+      # Swift — built from this commit before either of them runs. The archives committed in
+      # the tree (Swift's, unless `swift_remote`) are whatever was staged last, and C#'s are
+      # not committed at all; without this a leg would link the previous core, or none.
       # What ships is the caller's hyper-build-static.yml output, not this.
       - name: Build this leg's static libraries
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
@@ -599,11 +597,31 @@ jobs:
           project: ${{ inputs.project }}
           targets: ${{ matrix.static_targets }}
 
+      # Go: the core is committed Go source (go/internal/core, translated by wasm2go from the
+      # crate's wasm32-wasip1 build), so the suite needs no C compiler and links no archive.
+      # CGO_ENABLED=0 is explicit so a binding that quietly grew a cgo dependency fails here,
+      # on Go's own error, rather than on a consumer's machine without a compiler. It runs
+      # first among the bindings for the fail-fast rule: the newest code is where a run fails,
+      # and a failure in the first minutes lets the owner cancel the rest. That the committed
+      # core is this commit's is hyper-check-core.yml's lint-go, which regenerates and diffs it.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Test Go bindings, the translated core
+        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
+        working-directory: go
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./...
+
       # Java (JNI): the binding is a JNI base on the floor JDK plus an FFM tree, so the shim
       # java/jni is built beside the core and the suite runs on the primary JDK and, again, on
-      # the floor (`testFloor`). They sit ahead of TypeScript for the fail-fast rule: the newest
-      # code is where a run fails, and a failure in the first minutes lets the owner cancel the
-      # rest. The floor JDK is Temurin on every leg, win-arm64 included (21 ships it), and
+      # the floor (`testFloor`). They sit behind Go and ahead of TypeScript for the fail-fast
+      # rule: the newest code is where a run fails, and a failure in the first minutes lets
+      # the owner cancel the rest. The floor JDK is Temurin on every leg, win-arm64 included (21 ships it), and
       # Gradle is told to use exactly that install, never to go looking for another.
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         id: jdk_floor
@@ -771,7 +789,8 @@ jobs:
           subject-path: typescript/*.node
 
       # R: R CMD check --as-cran, failing on a NOTE as CRAN's incoming checks would, from the
-      # tree vendor.sh leaves (the core copied in, the crates vendored, the corpus staged). On
+      # tree vendor.sh leaves (the crates vendored with this checkout's core among them, the
+      # lock derived, the corpus staged). On
       # Windows R builds with Rtools' MinGW, so the package's Rust half needs the gnu target.
       # R on Windows ARM64 is experimental (CRAN builds no binaries for it), so that leg skips
       # the R steps; revisit when R and Rtools ship it as a supported platform.
@@ -1095,41 +1114,6 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew test javadoc --console=plain
-
-      # Go links the core in on every leg: cgo names this leg's archive, which "Build this
-      # leg's static libraries" has just written over the committed one, so the suite runs
-      # against this commit's core. cgo needs a C compiler: the Linux and macOS images have
-      # one, windows-latest has MinGW-w64 gcc on PATH, and windows-11-arm has nothing that
-      # targets ARM64 Windows, so llvm-mingw is fetched for it. CGO_ENABLED=1 is explicit so
-      # a leg whose compiler went missing fails here, on the binding's own "needs cgo" error,
-      # rather than somewhere less legible.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
-        with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
-
-      - name: llvm-mingw, the C compiler cgo needs on ARM64 Windows
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go && runner.os == 'Windows' && runner.arch == 'ARM64' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          LLVM_MINGW: llvm-mingw-20260922-ucrt-aarch64
-          LLVM_MINGW_SHA256: a317514a7a63badd692032c0c2b8e165f630bbaebbe7a3254348051f43a64949
-        run: |
-          set -euo pipefail
-          gh release download 20260922 --repo mstorsjo/llvm-mingw --pattern "$LLVM_MINGW.zip" --dir "$RUNNER_TEMP"
-          echo "$LLVM_MINGW_SHA256  $RUNNER_TEMP/$LLVM_MINGW.zip" | sha256sum -c -
-          unzip -q "$RUNNER_TEMP/$LLVM_MINGW.zip" -d "$RUNNER_TEMP"
-          cygpath -w "$RUNNER_TEMP/$LLVM_MINGW/bin" >> "$GITHUB_PATH"
-          echo "CC=aarch64-w64-mingw32-clang" >> "$GITHUB_ENV"
-
-      - name: Test Go bindings, the core linked in
-        if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
-        working-directory: go
-        env:
-          CGO_ENABLED: "1"
-        run: go test ./...
 
       # Swift: the core linked in from a SwiftPM binary target, called through @convention(c).
       # SwiftyLab/setup-swift for its verified windows-11-arm support.
@@ -1627,7 +1611,10 @@ jobs:
   # well as new, so the Ruby, Python and Node suites run twice or more — on the version the
   # matrix job uses and on the oldest one (for Node, each older major) the package declares. Before this job nothing ran a declared floor
   # at all: HyperCast claimed PHP 8.1 while using 8.2 syntax, and no run could have noticed.
-  # Go needs no second run: its image is the version go.mod names, which is the floor.
+  # Go runs once here, on the floor image go.mod names, with CGO_ENABLED=0: a cgo-free Go
+  # binary takes nothing from the C library, so there is no link to prove, and the run is the
+  # suite on a musl host (its OS random source, its CPU-feature read). That one run is also
+  # the floor run.
   #
   # Not here, and why: Swift (its musl target links the core from a SwiftPM binary
   # static-library target, SE-0482, and is tested through the static Linux SDK in
@@ -1683,9 +1670,9 @@ jobs:
           jni: ${{ inputs.java && inputs.java_jni }}
           attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
-      # The musl static library, for the two suites that link the core in (Go under cgo, and
-      # the C# Native AOT publish). Built on the runner, not in a container: it is not linked
-      # here, so it is the same bytes wherever it is compiled.
+      # The musl static library, for the one suite that links the core in (the C# Native AOT
+      # publish). Built on the runner, not in a container: it is not linked here, so it is the
+      # same bytes wherever it is compiled.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
 
@@ -1728,6 +1715,17 @@ jobs:
           if [ -f go/go.mod ]; then
             echo "go=golang:$(sed -n 's/^go \([0-9]*\.[0-9]*\).*/\1/p' go/go.mod)-alpine" >> "$GITHUB_OUTPUT"
           fi
+
+      # Go first, as on the matrix legs: the newest binding leads, so a failure is minutes in.
+      # The suite on the floor image, CGO_ENABLED=0, nothing linked — see suite-musl.sh.
+      - name: Go on Alpine (the suite, CGO_ENABLED=0)
+        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
+        uses: ./.hyperforge/.github/actions/musl-suite
+        with:
+          binding: go
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: ${{ steps.images.outputs.go }}
 
       # Builds the TypeScript addon in Node's Alpine image, runs the suite there and again on
       # Bun's, and leaves the .node in out-musl for the upload below — see suite-musl.sh.
@@ -1807,15 +1805,6 @@ jobs:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
           image: eclipse-temurin:${{ inputs.jdk_version }}-jdk-alpine
-
-      - name: Go on Alpine (the core linked in, then with libgcc removed)
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.go }}
-        uses: ./.hyperforge/.github/actions/musl-suite
-        with:
-          binding: go
-          crate: ${{ inputs.crate }}
-          rid: ${{ matrix.rid }}
-          image: ${{ steps.images.outputs.go }}
 
       # Compat ABI first and primary last, as on the matrix legs. Each builds in its Ruby's
       # Alpine image and runs the suite on a bare copy of it — see build-magnus-musl.sh.

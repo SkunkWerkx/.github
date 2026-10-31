@@ -20,9 +20,10 @@ Subjects are every file in `inventory.json`:
   inside it (the jar, the sources and javadoc jars, the `.pom`, their signatures), and, from
   a consumer with those bindings, the nine npm tarballs (the root package and one per
   platform) and the CRAN source tarball, which no job uploads (the maintainer submits it);
-- the native libraries committed at the tagged commit for Go (`go/staticlib/**`) and Swift
-  (the artifact bundle and the XCFramework), and the metadata staged beside them: the
-  bundle's `info.json` and the XCFramework's `Info.plist`, headers and module maps;
+- the native libraries committed at the tagged commit for Swift (the artifact bundle and
+  the XCFramework), and the metadata staged beside them: the bundle's `info.json` and the
+  XCFramework's `Info.plist`, headers and module maps (Go commits no library: its core is
+  Go source in the tree, part of the tagged commit like any other source);
 - the files under `php/`: the PHP extension's PIE zips, one per platform and PHP minor
   (`php_<crate>-v<version>_php<minor>-<arch>-<os>-<libc>-nts.zip`, and on Windows
   `php_<crate>-v<version>-<minor>-nts-<vs16|vs17>-x86_64.zip`), built and attested by the
@@ -34,8 +35,8 @@ Subjects are every file in `inventory.json`:
   packed and attested by the consumer's `release.yml` at the tagged commit, which the GitHub
   Release carries.
 
-Equal bytes under two paths (a static archive Swift and Go both carry) stay two subjects;
-`gh attestation verify` matches by digest, so either path verifies.
+Equal bytes under two paths (the one wasip1 archive the bundle and a zip both carry) stay
+two subjects; `gh attestation verify` matches by digest, so either path verifies.
 
 A second statement of the same type and predicate covers the **finalized** NuGet package,
 the bytes nuget.org serves after adding its repository signature, made by the publisher after
@@ -80,8 +81,8 @@ files carry under the Forge's identity:
 gh attestation verify <file> --repo SkunkWerkx/<Repo> --signer-repo SkunkWerkx/.github --source-digest <A>
 ```
 
-Negative controls, each of which must fail: the default predicate type on a wheel or a Go
-archive (built at A on a branch, so `--source-ref refs/tags/...` is not theirs); a wrong
+Negative controls, each of which must fail: the default predicate type on a wheel or a
+Swift archive (built at A on a branch, so `--source-ref refs/tags/...` is not theirs); a wrong
 `--source-ref`; a file whose bytes are not in the inventory.
 
 ## Where it is made and checked

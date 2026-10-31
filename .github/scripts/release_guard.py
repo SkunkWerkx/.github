@@ -223,7 +223,10 @@ def validate_staged_tree(root, cfg, commit):
     """Validate every shipped path, including files unchanged by staging."""
     expected = payload_paths(cfg, Path('artifacts'))
     entries = {}
-    for line in git(root, 'ls-tree', '-r', commit, '--', *cfg.payload_trees).splitlines():
+    # No tree (swift_remote: nothing is committed) means nothing to list; `ls-tree -r` with
+    # no path would list the whole tree.
+    listing = git(root, 'ls-tree', '-r', commit, '--', *cfg.payload_trees) if cfg.payload_trees else ''
+    for line in listing.splitlines():
         metadata, path = line.split('\t', 1)
         entries[path] = metadata.split()[0]
     for path in expected:

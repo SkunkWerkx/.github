@@ -12,6 +12,7 @@ and CRAN groups are optional: a consumer without those bindings ships neither.
 from email import policy
 from email.parser import BytesParser
 import gzip
+import io
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -253,18 +254,34 @@ def npm_tarball(path, crate, version, platforms):
 
 
 def r_source_tarball(path, crate, version):
-    """The R source package as `R CMD build` wrote it: DESCRIPTION, the vendored crates,
-    the wrapper's lock (derived at staging, never committed, so only the tarball carries
-    it), the core copy and the five corpus files under one top-level `{crate}/`."""
+    """The R source package as `R CMD build` wrote it: DESCRIPTION, the wrapper crate's
+    manifest pinning the core at exactly this version, the vendored crates with the core
+    itself among them at that version, the wrapper's lock (derived at staging, never
+    committed, so only the tarball carries it) and the five corpus files under one top-level
+    `{crate}/`."""
     entries = tar_entries(path)
-    required = [f'{crate}/DESCRIPTION', f'{crate}/src/rust/vendor.tar.xz', f'{crate}/src/rust/Cargo.lock',
-                f'{crate}/src/rust/core/Cargo.toml']
+    required = [f'{crate}/DESCRIPTION', f'{crate}/src/rust/Cargo.toml', f'{crate}/src/rust/vendor.tar.xz',
+                f'{crate}/src/rust/Cargo.lock']
     required += [f'{crate}/tests/testthat/corpus/{name}' for name in R_CORPUS_FILES]
     for name in required:
         if name not in entries:
             raise ValueError(f'R source tarball member missing: {name}')
     if any(name.split('/')[0] != crate for name in entries):
         raise ValueError('R source tarball has entries outside its package directory')
+    pin = rf'^{re.escape(crate)} = \{{ version = "=([^"]+)"'
+    pinned = re.findall(pin, entries[f'{crate}/src/rust/Cargo.toml'].decode('utf-8'), re.M)
+    if pinned != [version]:
+        raise ValueError(f'R wrapper crate must pin {crate} at exactly {version}, found {pinned}')
+    try:
+        with tarfile.open(fileobj=io.BytesIO(entries[f'{crate}/src/rust/vendor.tar.xz']), mode='r:xz') as vendored:
+            core = vendored.extractfile(f'vendor/{crate}/Cargo.toml')
+            if core is None:
+                raise ValueError(f'R source tarball vendors no {crate} crate')
+            manifest = core.read().decode('utf-8')
+    except (tarfile.TarError, KeyError) as error:
+        raise ValueError(f'R source tarball vendors no {crate} crate: {error}') from error
+    if not re.search(rf'^version = "{re.escape(version)}"$', manifest, re.M):
+        raise ValueError(f'R source tarball vendors {crate} at another version than {version}')
     lines = entries[f'{crate}/DESCRIPTION'].decode('utf-8').splitlines()
     fields = {key: [line.split(':', 1)[1].strip() for line in lines if line.startswith(key + ':')]
               for key in ('Package', 'Version')}

@@ -2,10 +2,11 @@ name: Static libraries — build the core for the bindings that link it in
 description: >
   Builds the core crate as a no_std static library for each target named (all nine by
   default) and places each archive where the binding that links it expects it: the Swift
-  artifact bundle (all eight RIDs and WebAssembly), go/staticlib (cgo on Linux, macOS and
-  Windows, and TinyGo on WebAssembly) and the C# package's staticlibs directory (Native AOT, all eight RIDs). With `upload`, the
-  archives leave the job as the `static-libs` artifact, laid out by those same repository
-  paths — what a caller's stage-native-binaries.yml commits and hyper-pack-nuget.yml packs.
+  artifact bundle (all eight RIDs and WebAssembly) and the C# package's staticlibs
+  directory (Native AOT, all eight RIDs). With `upload`, the archives leave the job as the
+  `static-libs` artifact, laid out by those same repository paths — what a caller's
+  stage-native-binaries.yml commits and hyper-pack-nuget.yml packs. (Go links no archive:
+  its core is committed Go source, translated from the crate's wasm32-wasip1 build.)
   The Rust toolchain and python3 must already be installed.
 
 inputs:
@@ -23,17 +24,15 @@ inputs:
     description: >-
       Also build the four Apple mobile targets when no targets are named ('true'/'false'):
       iOS, the iOS simulator on Apple silicon, and Mac Catalyst on both architectures. They
-      go to csharp/{Project}/staticlibs/ under their .NET RIDs, to go/staticlib/ (ios_arm64,
-      iossimulator_arm64, maccatalyst_arm64, maccatalyst_amd64) and to
+      go to csharp/{Project}/staticlibs/ under their .NET RIDs and to
       swift/{Project}CoreApple.xcframework, which is written whole (see build-static-libs.sh).
     required: false
     default: "false"
   android:
     description: >-
       Also build the two Android targets when no targets are named ('true'/'false'): arm64
-      and x86_64, to csharp/{Project}/staticlibs/android-* (a .NET Native AOT publish),
-      go/staticlib/android_* (cgo under GOOS=android) and the Swift bundle's
-      *-unknown-linux-android variants (see build-static-libs.sh).
+      and x86_64, to csharp/{Project}/staticlibs/android-* (a .NET Native AOT publish) and
+      the Swift bundle's *-unknown-linux-android variants (see build-static-libs.sh).
     required: false
     default: "false"
   upload:
@@ -63,7 +62,7 @@ runs:
       run: '"$GITHUB_ACTION_PATH/build-static-libs.sh" "$CRATE" "$PROJECT" . $TARGETS'
 
     # Copied out under their repository paths, so the artifact's root is the repository's
-    # whatever subset of the three bindings a caller has — upload-artifact roots an artifact
+    # whatever subset of the two bindings a caller has — upload-artifact roots an artifact
     # at its paths' common directory, which would otherwise move with that subset. The
     # Swift bundle's info.json rides along; its header and module map are source, already
     # in the tree. The XCFramework rides along whole, Info.plist and its copies of that
@@ -86,7 +85,6 @@ runs:
             "swift/${PROJECT}CoreApple.xcframework/Info.plist" \
             "swift/${PROJECT}CoreApple.xcframework"/*/"lib$CRATE.a" \
             "swift/${PROJECT}CoreApple.xcframework"/*/Headers/*/* \
-            go/staticlib/*/"lib$CRATE.a" \
             "csharp/$PROJECT/staticlibs"/*/"lib$CRATE.a" \
             "csharp/$PROJECT/staticlibs"/*/"$CRATE.lib"; do
           # nullglob drops a pattern that matches nothing, but info.json is a plain path,

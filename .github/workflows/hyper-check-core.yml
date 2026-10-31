@@ -558,11 +558,15 @@ jobs:
           # cache-dependency-path pointed at go.sum or setup-go searches the repository root.
           cache-dependency-path: go/go.sum
       - run: go install github.com/mgechev/revive@v1.16.0
+      # The generator (go/internal/wasm2go) is its own module, so revive is pointed at it too.
       - working-directory: go
-        run: revive -config revive.toml ./...
-      # Which archive each platform's build links; the script has why this needs a table.
-      - name: Every Go build selects its own platform's archive
-        run: .github/scripts/check_go_archives.sh
+        run: |
+          set -euo pipefail
+          revive -config revive.toml ./...
+          if [ -f internal/wasm2go/go.mod ]; then
+            (cd internal/wasm2go && revive -config ../../revive.toml ./...)
+          fi
+      # gofmt walks directories, not modules, so this covers internal/wasm2go as well.
       - name: gofmt
         working-directory: go
         run: |
@@ -571,6 +575,69 @@ jobs:
             echo "::error::not gofmt-formatted (run gofmt -w .): $unformatted"
             exit 1
           fi
+      # The core is plain Go, translated from the crate's wasm32-wasip1 build, so every
+      # GOOS/GOARCH pair Go has compiles it without cgo; a platform-specific slip (a constant
+      # that overflows a 32-bit int, a syscall that is not there) is a vet error here rather
+      # than a consumer's build failure. ios/arm64 and android/amd64 are absent because Go
+      # requires external (cgo) linking on those two, and the consumer's own device jobs
+      # build them with the SDKs' compilers. The purego build is the AES-accelerated random
+      # source's fallback, vetted once on the host.
+      - name: Cross-compile sweep
+        working-directory: go
+        run: |
+          set -euo pipefail
+          while read -r goos goarch; do
+            echo "::group::$goos/$goarch"
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go vet ./...
+            echo "::endgroup::"
+          done <<'EOF'
+          linux amd64
+          linux 386
+          linux arm
+          linux arm64
+          linux riscv64
+          linux ppc64le
+          linux s390x
+          linux loong64
+          linux mips64le
+          windows amd64
+          windows arm64
+          windows 386
+          darwin amd64
+          darwin arm64
+          freebsd amd64
+          openbsd amd64
+          netbsd amd64
+          illumos amd64
+          aix ppc64
+          plan9 amd64
+          android arm64
+          js wasm
+          wasip1 wasm
+          EOF
+          go vet -tags purego ./...
+      # The committed core is what this commit's crate translates to. The generator's pinned
+      # toolchain (go/internal/wasm2go/rust-toolchain.toml) is installed with the wasip1
+      # target, then the two host-only regeneration tests run with <CRATE>_CHECK_CORE=1, so
+      # they fail instead of skipping: TestCoreIsCurrent regenerates and diffs, and
+      # TestRegenerationCarriesTheCrateVersion proves a bumped crate version reaches the
+      # generated <crate>_version. The prefix is the crate's package name, upper-cased.
+      - name: The committed core is current
+        if: hashFiles('go/internal/wasm2go/go.mod') != ''
+        working-directory: go
+        run: |
+          set -euo pipefail
+          pin="$(sed -n 's/^channel = "\(.*\)"/\1/p' internal/wasm2go/rust-toolchain.toml)"
+          [ -n "$pin" ] || { echo "::error::go/internal/wasm2go/rust-toolchain.toml names no channel"; exit 1; }
+          rustup toolchain install "$pin" --profile minimal --target wasm32-wasip1
+          crate="$(sed -n 's/^name = "\(.*\)"/\1/p' ../rust/Cargo.toml | head -1)"
+          prefix="$(printf '%s' "$crate" | tr '[:lower:]-' '[:upper:]_')"
+          env "${prefix}_CHECK_CORE=1" go test -count=1 -v -run '^(TestCoreIsCurrent|TestRegenerationCarriesTheCrateVersion)$' .
+      # The instance pool and the random source's rekey are the two places goroutines share
+      # state; the race detector runs the suite once, on the host.
+      - name: Race
+        working-directory: go
+        run: go test -race -count=1 ./...
 
   lint-python:
     if: inputs.lint_python
@@ -672,9 +739,8 @@ jobs:
         shell: bash
         run: CARGO_PROFILE_RELEASE_PANIC=unwind cargo build --release --locked --example no_panic --features no-panic
 
-  # lintr reads r/.lintr. The Rust half's manifest depends on the core by a path the package
-  # copies in (src/rust/core, untracked), and cargo fmt resolves the manifest, so the core is
-  # staged first.
+  # lintr reads r/.lintr. The Rust half is a wrapper crate pinning the core by version;
+  # cargo fmt reads its manifest without resolving it.
   lint-r:
     if: inputs.lint_r
     runs-on: ubuntu-26.04
@@ -694,7 +760,8 @@ jobs:
           components: rustfmt
       # lintr's object_usage linter loads the package it lints: without an installed copy
       # every exported name is a false positive (34 on HyperUuid), so the package is
-      # installed into a scratch library first. The install needs the staged core.
+      # installed into a scratch library first. The install builds from the vendor tarball
+      # vendor.sh writes (the core among the crates); it refuses to build without one.
       - name: Install the package for lintr
         shell: bash
         run: |

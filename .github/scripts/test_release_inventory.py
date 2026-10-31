@@ -155,7 +155,8 @@ class InventoryTests(unittest.TestCase):
         self.addCleanup(outside.cleanup)
         workspace = Path(outside.name) / 'checkout'
         self.natives_list = Path(outside.name) / 'natives.txt'
-        natives = ['go/staticlib/darwin_arm64/libhypercast.a', 'go/staticlib/linux_amd64/libhypercast.a',
+        natives = ['swift/HyperCastCoreApple.xcframework/ios-arm64/libhypercast.a',
+                   'swift/HyperCastCore.artifactbundle/aarch64-unknown-linux-gnu/libhypercast.a',
                    'swift/HyperCastCore.artifactbundle/x86_64-unknown-linux-gnu/libhypercast.a',
                    'swift/HyperCastCore.artifactbundle/info.json']
         for index, relative in enumerate(natives):
@@ -198,7 +199,7 @@ class InventoryTests(unittest.TestCase):
             self.m.validate_inventory(self.root, saved, self.identity, workspace)
         with self.assertRaisesRegex(ValueError, 'workspace'):
             self.m.validate_inventory(self.root, saved, self.identity, None)
-        for bad in (['nuget/x.nupkg'], ['inventory.json'], natives[:1] * 2, []):
+        for bad in (['nuget/x.nupkg'], ['inventory.json'], natives[:1] * 2):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 self.m.build_inventory(self.root, self.identity, bad, workspace)
         (self.root / 'inventory.json').write_text(json.dumps({**saved, 'schema': 1}))
@@ -207,6 +208,20 @@ class InventoryTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('schema 2', result.stderr)
+
+    def test_no_committed_natives_is_a_complete_inventory(self):
+        # A consumer with swift_remote and the translated Go core commits no native payload:
+        # release_guard.py paths prints nothing, and the inventory holds the packages alone.
+        workspace, _ = self.natives()
+        result = self.m.build_inventory(self.root, self.identity, [], workspace)
+        self.assertEqual(len(result['files']), len(self.files))
+        self.assertFalse([e for e in result['files'] if e['location'] == 'source'])
+        self.m.validate_inventory(self.root, result, self.identity, workspace)
+        # release-gate feeds `create --natives` the file release_guard.py paths wrote, which
+        # is then empty; the list it reads from it is the empty one above.
+        self.natives_list.write_text('')
+        self.assertEqual(self.natives_list.read_text().split(), [])
+        self.assertEqual(self.m.native_files(workspace, []), [])
 
     def test_release_attestation_is_checked_per_file_against_one_downloaded_bundle(self):
         workspace, natives = self.natives()

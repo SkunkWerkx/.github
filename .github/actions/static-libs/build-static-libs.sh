@@ -17,8 +17,6 @@
 # Who links what:
 #
 #   Swift   swift/{Project}Core.artifactbundle/{triple}/      all eight RIDs, WebAssembly
-#   Go      go/staticlib/{goos}_{goarch}/                     Linux, macOS, Windows — cgo
-#           go/staticlib/wasm/                                WebAssembly — TinyGo's cgo
 #   C#      csharp/{Project}/staticlibs/{rid}/                all eight RIDs — Native AOT
 #
 # and with APPLE_MOBILE=1:
@@ -26,8 +24,6 @@
 #   Swift   swift/{Project}CoreApple.xcframework/{slice}/     iOS, its simulator, Mac Catalyst
 #   C#      csharp/{Project}/staticlibs/{rid}/                ios-arm64, iossimulator-arm64,
 #                                                             maccatalyst-arm64, maccatalyst-x64
-#   Go      go/staticlib/{dir}/                               ios_arm64, iossimulator_arm64,
-#                                                             maccatalyst_arm64, maccatalyst_amd64
 #
 # and with ANDROID=1:
 #
@@ -35,33 +31,33 @@
 #                                                             Native AOT on Android
 #   Swift   swift/{Project}Core.artifactbundle/{triple}/      aarch64-unknown-linux-android,
 #                                                             x86_64-unknown-linux-android
-#   Go      go/staticlib/{goos}_{goarch}/                     android_arm64, android_amd64
+#
+# Go takes nothing from here: its binding carries the core as committed Go source,
+# translated by wasm2go from the crate's wasm32-wasip1 build (`go generate` in the
+# consumer's go/), so a Go build links no archive on any platform and needs no cgo.
 #
 # A .NET Android app on CoreCLR loads the shared library out of its APK instead, which
 # hyper-build-native.yml's build-native-android job builds with the NDK's linker; these
-# archives are for what links the core in: a C# Native AOT publish, a Swift package built
-# with the Swift SDK for Android, and Go's cgo under GOOS=android. Like every other archive
-# here they are compiled and never linked, so they need no NDK.
+# archives are for what links the core in: a C# Native AOT publish and a Swift package built
+# with the Swift SDK for Android. Like every other archive here they are compiled and never
+# linked, so they need no NDK.
 #
 # Swift takes those three from an XCFramework and not from the artifact bundle because an iOS
 # or Catalyst app is built by Xcode, which has linked a static library out of an XCFramework
 # since Xcode 12 and is not known to read a static-library artifact bundle at all. Its
 # Catalyst slice is arm64 only: a slice holding two architectures is one universal file, and
-# nothing here can write one (lipo is Apple's). C# and Go take plain archives, one per
-# platform, so they have the x86_64 Catalyst one as well. Go builds all four as GOOS=ios, so
-# its directories are named by what its build tags tell apart (the binding's #cgo lines
-# pick one), not by GOOS.
+# nothing here can write one (lipo is Apple's). C# takes plain archives, one per platform,
+# so it has the x86_64 Catalyst one as well.
 #
 # A tree that is not in the repository is skipped, so a caller without one of those
 # bindings needs no flag for it.
 #
-# Why static at all. Each of these three produces, or can produce, an executable that has
+# Why static at all. Each of these two produces, or can produce, an executable that has
 # no business opening a shared library at run time: Swift's static Linux SDK and its
 # WebAssembly SDK have no loader to open one with, and a SwiftPM executable that links the
-# core has no resource bundle to deploy beside it; a Go binary that links the core needs no
-# embedded copies of every platform's library and no temp file to extract one into; a
-# Native AOT executable with the core linked in is one file. Everything else — the JIT,
-# the JVM, the interpreters — still loads the shared library, which is unchanged.
+# core has no resource bundle to deploy beside it; a Native AOT executable with the core
+# linked in is one file. Everything else — the JIT, the JVM, the interpreters — still loads
+# the shared library, which is unchanged.
 #
 # Three things here are load-bearing:
 #
@@ -85,17 +81,6 @@
 #    The same closure is deliberately not used elsewhere: off Windows those helper objects
 #    carry unwind tables naming `rust_eh_personality`, which a no_std archive does not
 #    define and two of them could not both define — the Blazor collision again.
-#
-#    Go's Windows copy leaves the helper objects out again and keeps only the crate's object
-#    and the import stubs. Go links with MinGW — gcc on amd64, llvm-mingw's clang on arm64 —
-#    whose libgcc or compiler-rt supplies the helpers, so Go never called the archive's
-#    copies; and Rust emits them as COFF weak externals (`__divti3` defaulting to
-#    `.weak.__divti3.default`), which GNU ld, unlike lld, does not settle on the first
-#    archive's: it pulls the same helper out of every Hyper* archive in the program and then
-#    refuses the identical `.weak.*.default` globals as a multiple definition. A Go program
-#    that imports two cores — HyperTabular's module imports HyperCast's — failed to link on
-#    windows/amd64 without `-Wl,--allow-multiple-definition`, a flag that silences every
-#    duplicate symbol in the program, not only these.
 #
 #  * llvm-ar and llvm-nm from the Rust toolchain. GNU ar cannot index a WebAssembly, Mach-O
 #    or COFF object, and each of those linkers refuses an archive without the symbol table
@@ -146,37 +131,28 @@ archive_name() {
 # the triples SwiftPM matches a variant against, which compares vendor as well as arch, OS
 # and environment: the musl pair is Swift's own vendor spelling for the static Linux SDK,
 # Windows is `unknown` where Rust says `pc`, and macOS is `macosx` (arm64 and aarch64 are
-# one architecture to both build systems). Go takes the musl build for Linux on both C
-# libraries: cgo has no build constraint that tells them apart, and of the two objects it
-# is the one that asks the C library for nothing but calls both have had for a decade.
-# Go under TinyGo (browser and WASI) takes the wasm32-wasip1 build, the same bytes as
-# Swift's: even TinyGo's browser target is wasm32-wasi underneath, and its wasm_exec.js
-# supplies the one WASI call the archive makes (random_get). Go on Windows links the MSVC
-# archive C# does, less Rust's 128-bit helpers (see the trim above): MinGW's linker (gcc, or
-# llvm-mingw's lld on arm64) reads MSVC's COFF objects, and the archive carries its own
-# import stub for the system random source, so cgo needs no extra library for it. Go's tree
-# spells every archive lib{crate}.a, the name its cgo lines use on every platform.
-# The Apple mobile slices are named the way `xcodebuild -create-xcframework` names them
-# (platform, architectures, then the variant), and the C# directories by .NET's RIDs.
+# one architecture to both build systems). The Apple mobile slices are named the way
+# `xcodebuild -create-xcframework` names them (platform, architectures, then the variant),
+# and the C# directories by .NET's RIDs.
 destinations() {
-  local swift="swift/${project}Core.artifactbundle" go="go/staticlib" csharp="csharp/$project/staticlibs"
+  local swift="swift/${project}Core.artifactbundle" csharp="csharp/$project/staticlibs"
   local apple="swift/${project}CoreApple.xcframework"
   case "$1" in
     x86_64-unknown-linux-gnu)   echo "$swift/x86_64-unknown-linux-gnu";  echo "$csharp/linux-x64" ;;
     aarch64-unknown-linux-gnu)  echo "$swift/aarch64-unknown-linux-gnu"; echo "$csharp/linux-arm64" ;;
-    x86_64-unknown-linux-musl)  echo "$swift/x86_64-swift-linux-musl";   echo "$csharp/linux-musl-x64";   echo "$go/linux_amd64" ;;
-    aarch64-unknown-linux-musl) echo "$swift/aarch64-swift-linux-musl";  echo "$csharp/linux-musl-arm64"; echo "$go/linux_arm64" ;;
-    x86_64-apple-darwin)        echo "$swift/x86_64-apple-macosx";           echo "$csharp/osx-x64";   echo "$go/darwin_amd64" ;;
-    aarch64-apple-darwin)       echo "$swift/arm64-apple-macosx";            echo "$csharp/osx-arm64"; echo "$go/darwin_arm64" ;;
-    x86_64-pc-windows-msvc)     echo "$swift/x86_64-unknown-windows-msvc";  echo "$csharp/win-x64";   echo "$go/windows_amd64" ;;
-    aarch64-pc-windows-msvc)    echo "$swift/aarch64-unknown-windows-msvc"; echo "$csharp/win-arm64"; echo "$go/windows_arm64" ;;
-    wasm32-wasip1)              echo "$swift/wasm32-unknown-wasip1"; echo "$go/wasm" ;;
-    aarch64-apple-ios)          echo "$apple/ios-arm64";              echo "$csharp/ios-arm64";          echo "$go/ios_arm64" ;;
-    aarch64-apple-ios-sim)      echo "$apple/ios-arm64-simulator";    echo "$csharp/iossimulator-arm64"; echo "$go/iossimulator_arm64" ;;
-    aarch64-apple-ios-macabi)   echo "$apple/ios-arm64-maccatalyst";  echo "$csharp/maccatalyst-arm64";  echo "$go/maccatalyst_arm64" ;;
-    x86_64-apple-ios-macabi)    echo "$csharp/maccatalyst-x64";       echo "$go/maccatalyst_amd64" ;;
-    aarch64-linux-android)      echo "$swift/aarch64-unknown-linux-android"; echo "$csharp/android-arm64"; echo "$go/android_arm64" ;;
-    x86_64-linux-android)       echo "$swift/x86_64-unknown-linux-android";  echo "$csharp/android-x64";   echo "$go/android_amd64" ;;
+    x86_64-unknown-linux-musl)  echo "$swift/x86_64-swift-linux-musl";   echo "$csharp/linux-musl-x64" ;;
+    aarch64-unknown-linux-musl) echo "$swift/aarch64-swift-linux-musl";  echo "$csharp/linux-musl-arm64" ;;
+    x86_64-apple-darwin)        echo "$swift/x86_64-apple-macosx";           echo "$csharp/osx-x64" ;;
+    aarch64-apple-darwin)       echo "$swift/arm64-apple-macosx";            echo "$csharp/osx-arm64" ;;
+    x86_64-pc-windows-msvc)     echo "$swift/x86_64-unknown-windows-msvc";  echo "$csharp/win-x64" ;;
+    aarch64-pc-windows-msvc)    echo "$swift/aarch64-unknown-windows-msvc"; echo "$csharp/win-arm64" ;;
+    wasm32-wasip1)              echo "$swift/wasm32-unknown-wasip1" ;;
+    aarch64-apple-ios)          echo "$apple/ios-arm64";              echo "$csharp/ios-arm64" ;;
+    aarch64-apple-ios-sim)      echo "$apple/ios-arm64-simulator";    echo "$csharp/iossimulator-arm64" ;;
+    aarch64-apple-ios-macabi)   echo "$apple/ios-arm64-maccatalyst";  echo "$csharp/maccatalyst-arm64" ;;
+    x86_64-apple-ios-macabi)    echo "$csharp/maccatalyst-x64" ;;
+    aarch64-linux-android)      echo "$swift/aarch64-unknown-linux-android"; echo "$csharp/android-arm64" ;;
+    x86_64-linux-android)       echo "$swift/x86_64-unknown-linux-android";  echo "$csharp/android-x64" ;;
     *) echo "unsupported rust target: $1" >&2; return 1 ;;
   esac
 }
@@ -204,19 +180,18 @@ for target in "${targets[@]}"; do
   full="$root/rust/target/$target/staticlib/$name"
   [ -f "$full" ] || { echo "error: $full was not produced" >&2; exit 1; }
 
-  mkdir -p "$work/$target/go"
+  mkdir -p "$work/$target"
   trimmed="$work/$target/$name"
-  go_windows="$work/$target/go/lib$crate.a"
   cp "$full" "$trimmed"
 
   # The trim. llvm-nm's posix format puts the member in brackets, which survives the
   # member names a Windows archive has (`C:\a\rust\...\ucmpti2.o`, with a colon, backslashes
   # and a forward slash). Members are removed from a copy rather than the survivors being
   # extracted and re-archived, for the same reason: those names do not make files.
-  "$python" - "$tools" "$trimmed" "$crate" "$target" "$go_windows" <<'PY'
-import re, shutil, subprocess, sys
+  "$python" - "$tools" "$trimmed" "$crate" "$target" <<'PY'
+import re, subprocess, sys
 
-tools, archive, crate, target, go_windows = sys.argv[1:6]
+tools, archive, crate, target = sys.argv[1:5]
 row = re.compile(r"^.*?\[(?P<member>.*)\]: (?P<symbol>\S+) (?P<kind>\S)")
 
 def symbols(flag):
@@ -278,33 +253,17 @@ if stray:
     sys.exit(f"error: {target} archive needs Rust symbols it does not carry: {' '.join(stray)}")
 plain = sorted(s for s in still if not mangled.match(s))
 print(f"{target}: {len(remaining)} of {len(members)} members kept; needs: {' '.join(plain)}")
-
-# Go's Windows copy: the crate's object and the import stubs (members named for their DLL),
-# without Rust's helper objects, which MinGW's own runtime library supplies (see above).
-if target.endswith("-windows-msvc"):
-    shutil.copyfile(archive, go_windows)
-    go_keep = {m for m in keep if m in own or m.lower().endswith(".dll")}
-    go_remaining = drop_members(go_windows, go_keep)
-    go_still = {s for m in go_keep for s in undefined.get(m, ()) if defined.get(s) not in go_keep}
-    go_stray = sorted(s for s in go_still if mangled.match(s))
-    if go_stray:
-        sys.exit(f"error: {target} Go archive needs Rust symbols it does not carry: {' '.join(go_stray)}")
-    print(f"{target} (Go): {len(go_remaining)} members kept; needs: {' '.join(sorted(go_still))}")
 PY
 
   while IFS= read -r dir; do
     # Only into a binding the repository has.
     case "$dir" in
       swift/*)  [ -d "$root/swift/${project}Core.artifactbundle/include" ] || continue ;;
-      go/*)     [ -d "$root/go" ] || continue ;;
       csharp/*) [ -d "$root/csharp/$project" ] || continue ;;
     esac
-    dest="$name" source="$trimmed"
-    case "$dir" in go/*) dest="lib$crate.a" ;; esac
-    case "$dir" in go/staticlib/windows_*) source="$go_windows" ;; esac
     mkdir -p "$root/$dir"
-    install -m 644 "$source" "$root/$dir/$dest"
-    echo "  -> $dir/$dest ($(wc -c < "$source") bytes)"
+    install -m 644 "$trimmed" "$root/$dir/$name"
+    echo "  -> $dir/$name ($(wc -c < "$trimmed") bytes)"
   done < <(destinations "$target")
 done
 

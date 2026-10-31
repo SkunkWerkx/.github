@@ -3,8 +3,7 @@
 Every Forge action, reusable workflow and script that needs to know a consumer's names
 reads them here, so the three repositories cannot drift apart one hard-coded table at a
 time. The file holds only what differs between repositories; everything the layout
-conventions fix (RIDs, library names, the Swift bundle, the Go archive set, the Ruby
-platform gems) is derived from `crate` and `project` and can be overridden by the same key.
+conventions fix (RIDs, library names, the Swift bundle, the Ruby platform gems) is derived from `crate` and `project` and can be overridden by the same key.
 
 Required keys: `crate` (lowercase core name), `project` (PascalCase binding name) and
 `exports` (how to read the C export list from the Rust source: `sources`, `patterns`,
@@ -21,9 +20,10 @@ on the GitHub Release, named by URL and checksum in the root Package.swift, inst
 committed under swift/; see swift_release.py), `c_assets` (boolean, default false: the
 release attaches one C archive per platform to the GitHub Release, from the consumer's `c/`;
 see c_package.py), `ruby.abis` and `ruby.platforms`, `node.platforms` (RID -> napi platform
-name), `go_targets`, `swift_targets`, `xcframework_slices`, `version_files` (path -> regex
-with one group around the version; the default list adds `typescript/package.json` and
-`r/DESCRIPTION` only when that binding's directory exists at the consumer's root).
+name), `swift_targets`, `xcframework_slices`, `version_files` (path -> regex
+with one group around the version; the default list adds `typescript/package.json`, and
+`r/DESCRIPTION` with the R wrapper crate's exact pin on the core in `r/src/rust/Cargo.toml`,
+only when that binding's directory exists at the consumer's root).
 """
 import json
 from pathlib import Path
@@ -31,9 +31,6 @@ import re
 
 RIDS = ('linux-x64', 'linux-arm64', 'linux-musl-x64', 'linux-musl-arm64',
         'osx-x64', 'osx-arm64', 'win-x64', 'win-arm64')
-GO_TARGETS = ('android_amd64', 'android_arm64', 'darwin_amd64', 'darwin_arm64', 'ios_arm64',
-              'iossimulator_arm64', 'linux_amd64', 'linux_arm64', 'maccatalyst_amd64',
-              'maccatalyst_arm64', 'wasm', 'windows_amd64', 'windows_arm64')
 SWIFT_TARGETS = ('aarch64-swift-linux-musl', 'aarch64-unknown-linux-android',
                  'aarch64-unknown-linux-gnu', 'aarch64-unknown-windows-msvc', 'arm64-apple-macosx',
                  'wasm32-unknown-wasip1', 'x86_64-apple-macosx', 'x86_64-swift-linux-musl',
@@ -92,7 +89,6 @@ class HyperConfig:
         self.ruby_abis = tuple(ruby.get('abis', RUBY_ABIS))
         self.ruby_platforms = dict(ruby.get('platforms', RUBY_PLATFORMS))
         self.node_platforms = dict(data.get('node', {}).get('platforms', NODE_PLATFORMS))
-        self.go_targets = tuple(data.get('go_targets', GO_TARGETS))
         self.swift_targets = tuple(data.get('swift_targets', SWIFT_TARGETS))
         self.xcframework_slices = tuple(data.get('xcframework_slices', XCFRAMEWORK_SLICES))
         self.version_files = data.get('version_files') or self.default_version_files()
@@ -171,15 +167,19 @@ class HyperConfig:
                 files['typescript/package.json'] = r'^  "version": "([^"]+)",$'
             if (self.root / 'r').is_dir():
                 files['r/DESCRIPTION'] = r'^Version: (.+)$'
+                # The wrapper crate's `=` pin on the core, which r/tools/vendor.sh resolves
+                # from the checkout's rust/ and refuses when it differs from the crate's.
+                files['r/src/rust/Cargo.toml'] = rf'^{self.crate} = \{{ version = "=([^"]+)"'
         return files
 
     def payload_paths(self, artifacts):
-        """Every committed native payload -> where the CI artifacts hold it. All are static
-        archives: no binding commits a shared library (PHP's extension ships as PIE zips on the
-        GitHub Release)."""
+        """Every committed native payload -> where the CI artifacts hold it. All are Swift's
+        static archives, and with swift_remote there are none: no binding commits a shared
+        library (PHP's extension ships as PIE zips on the GitHub Release), and Go carries the
+        core as committed Go source translated from its wasm32-wasip1 build, not as an archive."""
         artifacts = Path(artifacts)
         paths = {}
-        static = [f'go/staticlib/{target}/lib{self.crate}.a' for target in self.go_targets]
+        static = []
         if not self.swift_remote:
             static += [f'{self.bundle}/{target}/{self.archive_name(target)}' for target in self.swift_targets]
             static += [f'{self.bundle}/info.json', f'{self.xcframework}/Info.plist']
@@ -193,14 +193,14 @@ class HyperConfig:
     @property
     def source_paths(self):
         """Files under the payload trees that are source, not staged payload."""
-        return {'go/staticlib/README.md',
-                f'{self.bundle}/include/{self.header}', f'{self.bundle}/include/module.modulemap'}
+        return {f'{self.bundle}/include/{self.header}', f'{self.bundle}/include/module.modulemap'}
 
     @property
     def payload_trees(self):
+        """The committed trees staging writes and the guard lists; none with swift_remote."""
         if self.swift_remote:
-            return ('go/staticlib',)
-        return (self.bundle, self.xcframework, 'go/staticlib')
+            return ()
+        return (self.bundle, self.xcframework)
 
     @property
     def staged_edits(self):
@@ -210,10 +210,10 @@ class HyperConfig:
 
     @property
     def probe_payloads(self):
-        """The committed payload kinds the ABI probe links against, each the linux-x64 one: a
-        Swift archive while those are committed, and a Go archive."""
-        swift = () if self.swift_remote else (f'{self.bundle}/x86_64-unknown-linux-gnu/lib{self.crate}.a',)
-        return (*swift, f'go/staticlib/linux_amd64/lib{self.crate}.a')
+        """The committed payload kinds the ABI probe links against, each the linux-x64 one: the
+        Swift archive while those are committed. With swift_remote nothing is committed, and
+        the probe links the run's shared library alone (shared_payload)."""
+        return () if self.swift_remote else (f'{self.bundle}/x86_64-unknown-linux-gnu/lib{self.crate}.a',)
 
     def shared_payload(self, artifacts):
         """The CI run's linux-x64 shared library, under `artifacts`: uncommitted, but the ABI
@@ -260,10 +260,9 @@ def shell(cfg):
              'RUBY_ABIS=(' + ' '.join(cfg.ruby_abis) + ')',
              assoc('LIB_NAMES', cfg.lib_names), assoc('JNI_LIB_NAMES', cfg.jni_lib_names),
              assoc('RUBY_PLATFORMS', cfg.ruby_platforms), assoc('NODE_PLATFORMS', cfg.node_platforms),
-             assoc('STATIC_TREES', {'go/staticlib': len(cfg.go_targets)} if cfg.swift_remote
+             assoc('STATIC_TREES', {} if cfg.swift_remote
                    else {cfg.bundle: len(cfg.swift_targets),
-                         cfg.xcframework: len(cfg.xcframework_slices),
-                         'go/staticlib': len(cfg.go_targets)})]
+                         cfg.xcframework: len(cfg.xcframework_slices)})]
     return '\n'.join(lines) + '\n'
 
 
@@ -308,7 +307,7 @@ def main():
                               swift_remote=cfg.swift_remote, c_assets=cfg.c_assets,
                               ruby_abis=cfg.ruby_abis, ruby_platforms=cfg.ruby_platforms,
                               node_platforms=cfg.node_platforms,
-                              go_targets=cfg.go_targets, swift_targets=cfg.swift_targets,
+                              swift_targets=cfg.swift_targets,
                               xcframework_slices=cfg.xcframework_slices,
                               version_files=cfg.version_files), indent=2))
 

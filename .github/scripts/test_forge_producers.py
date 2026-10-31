@@ -521,6 +521,136 @@ class PrepareReleaseContracts(unittest.TestCase):
         self.assertNotIn('.node', steps[commit]['run'])
 
 
+class GoTranslatedCoreContracts(unittest.TestCase):
+    """The Go binding carries the core as committed Go source translated by wasm2go: no cgo,
+    no committed archive, one test step per leg right after the Rust steps, and its wasm
+    suites and core-freshness check in the jobs that own those toolchains."""
+    @classmethod
+    def setUpClass(cls):
+        import yaml_lite
+        cls.native_text = (WORKFLOWS / 'hyper-build-native.yml').read_text()
+        cls.native = yaml_lite.load(cls.native_text)
+        cls.wasm_text = (WORKFLOWS / 'hyper-build-wasm.yml').read_text()
+        cls.wasm = yaml_lite.load(cls.wasm_text)
+        cls.check_text = (WORKFLOWS / 'hyper-check-core.yml').read_text()
+        cls.check = yaml_lite.load(cls.check_text)
+        cls.prepare_text = (WORKFLOWS / 'hyper-prepare-release.yml').read_text()
+        cls.prepare = yaml_lite.load(cls.prepare_text)
+
+    @staticmethod
+    def describe(step):
+        return ' '.join(str(step.get(k, '')) for k in ('name', 'uses', 'run', 'working-directory', 'with', 'env'))
+
+    def test_go_runs_without_cgo_right_after_the_rust_compile_steps(self):
+        steps = self.native['jobs']['build-native']['steps']
+        go = [i for i, s in enumerate(steps) if s.get('working-directory') == 'go' and 'go test' in s.get('run', '')]
+        self.assertEqual(len(go), 1, 'one Go test step on the desktop legs')
+        step = steps[go[0]]
+        self.assertEqual(step['env']['CGO_ENABLED'], '0')
+        self.assertIn('inputs.go', step['if'])
+        collect = next(i for i, s in enumerate(steps) if s.get('id') == 'native_lib')
+        first_java = next(i for i, s in enumerate(steps) if 'setup-java' in s.get('uses', ''))
+        self.assertLess(collect, go[0])
+        self.assertLess(go[0], first_java, 'Go runs ahead of every binding that has already shipped')
+        setup = steps[go[0] - 1]
+        self.assertIn('actions/setup-go@', setup['uses'])
+        self.assertEqual(setup['with']['go-version-file'], 'go/go.mod')
+        self.assertNotIn('llvm-mingw', self.native_text)
+        # On Alpine the suite runs once, on the floor image go.mod names, with CGO_ENABLED=0 and
+        # no C toolchain: nothing links, so the run proves the OS source and the CPU-feature read
+        # on musl. It leads the musl suites as it leads the desktop job's.
+        musl = self.native['jobs']['build-native-musl']['steps']
+        go_musl = [i for i, s in enumerate(musl) if str(s.get('with', {}).get('binding')) == 'go']
+        self.assertEqual(len(go_musl), 1)
+        self.assertEqual(musl[go_musl[0]]['with']['image'], '${{ steps.images.outputs.go }}')
+        self.assertIn('inputs.go', musl[go_musl[0]]['if'])
+        images = next(i for i, s in enumerate(musl) if s.get('id') == 'images')
+        first_other = next(i for i, s in enumerate(musl) if 'on Alpine' in s.get('name', '') and i != go_musl[0] and i > images)
+        self.assertLess(images, go_musl[0])
+        self.assertLess(go_musl[0], first_other, 'Go leads the musl suites')
+        self.assertIn('go=golang:$(sed -n \'s/^go \\([0-9]*\\.[0-9]*\\).*/\\1/p\' go/go.mod)-alpine', self.native_text)
+        self.assertNotIn('build-base', self.native_text)
+        self.assertNotIn('go/staticlib', self.native_text)
+        self.assertNotIn('CGO_ENABLED: "1"', self.native_text)
+
+    def test_go_wasm_suite_runs_three_runtimes_and_the_browser_page(self):
+        inputs = self.wasm['on']['workflow_call']['inputs']
+        self.assertIs(inputs['go_wasm_suite']['type'] == 'boolean' and inputs['go_wasm_suite']['default'], False)
+        self.assertEqual(inputs['go_tinygo_smoke']['default'], '')
+        self.assertNotIn('test-go-tinygo', self.wasm['jobs'])
+        job = self.wasm['jobs']['test-go-wasm']
+        self.assertEqual(job['if'], "inputs.go_wasm_suite || inputs.go_tinygo_smoke != ''")
+        text = ' '.join(self.describe(s) for s in job['steps'])
+        for needle in ('tinygo test -target=wasip1 -c', 'wasmtime run --dir', '_CORPUS=', '_CRATE_VERSION=',
+                       '"$GITHUB_WORKSPACE::/repo"', 'GOOS=js GOARCH=wasm go test', 'GOOS=wasip1 GOARCH=wasm go test',
+                       'internal/exhaustiontest', 'sha256sum -c -'):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, text)
+        self.assertNotIn('static-libs', text)
+        self.assertNotIn('go/staticlib', self.wasm_text)
+        names = [s.get('name', '') for s in job['steps']]
+        control = next(s for s in job['steps'] if 'without --dir' in s.get('name', ''))
+        self.assertIn('not found', control['run'])
+        suite = [s for s in job['steps'] if 'if: ' not in s and s.get('run') and 'GOOS=' in s['run']]
+        self.assertTrue(all('if' not in s or 'go_wasm_suite' in s['if'] for s in suite))
+        browser = next(s for s in job['steps'] if 'headless Chrome' in s.get('name', ''))
+        self.assertEqual(browser['if'], "inputs.go_tinygo_smoke != ''")
+        self.assertIn('tinygo build -target=wasm', browser['run'])
+        self.assertEqual(names.index(browser['name']), len(names) - 1)
+        setup_go = next(s for s in job['steps'] if 'actions/setup-go@' in s.get('uses', ''))
+        self.assertEqual(setup_go['with']['go-version-file'], 'go/go.mod')
+        wasmtime = next(s for s in job['steps'] if s.get('name', '').startswith('Install wasmtime '))
+        self.assertRegex(wasmtime['env']['WASMTIME_SHA256'], r'^[0-9a-f]{64}$')
+
+    def test_lint_go_sweeps_checks_the_core_and_races(self):
+        steps = self.check['jobs']['lint-go']['steps']
+        text = ' '.join(self.describe(s) for s in steps)
+        self.assertNotIn('check_go_archives', text)
+        sweep = next(s for s in steps if s.get('name') == 'Cross-compile sweep')
+        self.assertIn('go vet ./...', sweep['run'])
+        for pair in ('js wasm', 'wasip1 wasm', 'linux amd64', 'windows arm64', 'darwin arm64', 'android arm64',
+                     'linux 386', 'freebsd amd64'):
+            with self.subTest(pair=pair):
+                self.assertIn(pair, sweep['run'])
+        for absent in ('ios arm64', 'android amd64'):
+            with self.subTest(absent=absent):
+                self.assertNotIn(absent, sweep['run'])
+        self.assertIn('CGO_ENABLED=0', sweep['run'])
+        self.assertIn('go vet -tags purego ./...', sweep['run'])
+        core = next(s for s in steps if s.get('name') == 'The committed core is current')
+        self.assertIn('rust-toolchain.toml', core['run'])
+        self.assertIn('rustup toolchain install', core['run'])
+        self.assertIn('--target wasm32-wasip1', core['run'])
+        self.assertIn('_CHECK_CORE=1', core['run'])
+        self.assertIn("-run '^(TestCoreIsCurrent|TestRegenerationCarriesTheCrateVersion)$'", core['run'])
+        race = next(s for s in steps if s.get('name') == 'Race')
+        self.assertIn('go test -race', race['run'])
+        self.assertIn('internal/wasm2go', text)
+        self.assertIn('revive', text)
+        self.assertIn('gofmt', text)
+
+    def test_prepare_release_regenerates_the_go_core(self):
+        steps = self.prepare['jobs']['prepare-release']['steps']
+        names = [s.get('name', '') for s in steps]
+        napi = names.index('Regenerate the napi-rs wrappers at the version')
+        regen = names.index('Regenerate the Go core at the version')
+        commit = names.index('Commit and push if anything actually changed')
+        self.assertLess(napi, regen)
+        self.assertLess(regen, commit)
+        step = steps[regen]
+        self.assertEqual(step['if'], "hashFiles('go/internal/wasm2go/go.mod') != ''")
+        self.assertIn('rustup toolchain install', step['run'])
+        self.assertIn('go/internal/wasm2go/rust-toolchain.toml', step['run'])
+        self.assertIn('(cd go && go generate)', step['run'])
+        setup = steps[regen - 1]
+        self.assertIn('actions/setup-go@', setup['uses'])
+        self.assertEqual(setup['if'], step['if'])
+        self.assertEqual(setup['with']['go-version-file'], 'go/go.mod')
+        add = 'if [ -f go/internal/wasm2go/go.mod ]; then git add go/internal/core/core.go; fi'
+        self.assertIn(add, steps[commit]['run'])
+        self.assertLess(steps[commit]['run'].index(add), steps[commit]['run'].index('git diff --cached --quiet'))
+
+
 class BuildNativeContracts(unittest.TestCase):
     """The TypeScript (napi-rs) and R legs: off by default, so a caller without either
     binding runs exactly the steps it ran before, and guarded like every other binding."""

@@ -1,6 +1,7 @@
 """The consumer description every Forge script and action reads."""
 import importlib.util
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -62,11 +63,17 @@ class HyperConfigTests(unittest.TestCase):
         self.assertEqual(cfg.ruby_abis, ('3.4', '4.0'))
         self.assertEqual(len(cfg.ruby_platforms), 7)
         paths = cfg.payload_paths(Path('artifacts'))
-        # 13 Go and 11 Swift archives, info.json, Info.plist and three slices of archive +
-        # header + module map. PHP commits nothing: its extension ships as PIE zips.
-        self.assertEqual(len(paths), 13 + 11 + 2 + 3 * 3)
-        self.assertEqual(paths['go/staticlib/wasm/libhyperuuid.a'],
-                         Path('artifacts/static-libs/go/staticlib/wasm/libhyperuuid.a'))
+        # 11 Swift archives, info.json, Info.plist and three slices of archive + header +
+        # module map. Go commits no archive (its core is translated Go source) and PHP
+        # commits nothing: its extension ships as PIE zips.
+        self.assertEqual(len(paths), 11 + 2 + 3 * 3)
+        self.assertFalse([path for path in paths if path.startswith('go/')])
+        self.assertEqual(paths['swift/HyperUuidCore.artifactbundle/wasm32-unknown-wasip1/libhyperuuid.a'],
+                         Path('artifacts/static-libs/swift/HyperUuidCore.artifactbundle/wasm32-unknown-wasip1/libhyperuuid.a'))
+        self.assertEqual(cfg.payload_trees, (cfg.bundle, cfg.xcframework))
+        self.assertEqual(cfg.probe_payloads, ('swift/HyperUuidCore.artifactbundle/x86_64-unknown-linux-gnu/libhyperuuid.a',))
+        self.assertFalse(hasattr(cfg, 'go_targets'))
+        self.assertNotIn('go_targets', json.dumps(hyper_config.shell(cfg)))
         self.assertEqual(paths['swift/HyperUuidCore.artifactbundle/x86_64-unknown-windows-msvc/hyperuuid.lib'],
                          Path('artifacts/static-libs/swift/HyperUuidCore.artifactbundle/x86_64-unknown-windows-msvc/hyperuuid.lib'))
         self.assertEqual(cfg.shared_payload(Path('artifacts')),
@@ -119,9 +126,9 @@ class HyperConfigTests(unittest.TestCase):
         write_config(self.root)
         script = subprocess.check_output([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'shell',
                                           '--root', str(self.root)], text=True)
-        probe = script + 'echo "$CRATE ${LIB_NAMES[osx-x64]} ${JNI_LIB_NAMES[win-x64]} ${RUBY_PLATFORMS[linux-x64]} ${#RUBY_ABIS[@]} ${STATIC_TREES[go/staticlib]} $WHEELS ${PHP_LIBS:-none}"\n'
+        probe = script + 'echo "$CRATE ${LIB_NAMES[osx-x64]} ${JNI_LIB_NAMES[win-x64]} ${RUBY_PLATFORMS[linux-x64]} ${#RUBY_ABIS[@]} ${STATIC_TREES[swift/HyperUuidCore.artifactbundle]} $WHEELS ${PHP_LIBS:-none}"\n'
         out = subprocess.check_output(['bash', '-euo', 'pipefail', '-c', probe], text=True).strip()
-        self.assertEqual(out, 'hyperuuid libhyperuuid.dylib hyperuuid_jni.dll x86_64-linux-gnu 2 13 17 none')
+        self.assertEqual(out, 'hyperuuid libhyperuuid.dylib hyperuuid_jni.dll x86_64-linux-gnu 2 11 17 none')
         lines = subprocess.check_output([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'version-files',
                                          '--root', str(self.root)], text=True).splitlines()
         self.assertEqual(lines[0].split('\t')[0], 'rust/Cargo.toml')
@@ -147,9 +154,15 @@ class HyperConfigTests(unittest.TestCase):
         (self.root / 'typescript').mkdir()
         (self.root / 'r').mkdir()
         files = hyper_config.load(self.root).version_files
-        self.assertEqual(list(files), self.CLASSIC + ['typescript/package.json', 'r/DESCRIPTION'])
+        self.assertEqual(list(files),
+                         self.CLASSIC + ['typescript/package.json', 'r/DESCRIPTION', 'r/src/rust/Cargo.toml'])
         self.assertEqual(files['typescript/package.json'], r'^  "version": "([^"]+)",$')
         self.assertEqual(files['r/DESCRIPTION'], r'^Version: (.+)$')
+        # The wrapper crate's exact pin on the core: the version group excludes the `=`.
+        pin = re.compile(files['r/src/rust/Cargo.toml'], re.M)
+        line = 'hyperuuid = { version = "=1.0.0", default-features = false, features = ["staticlib"] }'
+        self.assertEqual(pin.search(line).group(1), '1.0.0')
+        self.assertIsNone(pin.search('other = { version = "=1.0.0" }'))
         # Each directory is independent.
         (self.root / 'r').rmdir()
         self.assertEqual(list(hyper_config.load(self.root).version_files),

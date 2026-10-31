@@ -153,7 +153,7 @@ runs:
     # bytes under two paths stay two subjects; verification matches by digest), the inventory
     # is the predicate, and the signer is this repository's release.yml at the tag. That is
     # what makes `gh attestation verify <file> --repo <owner>/<repo> --source-ref refs/tags/vX.Y.Z
-    # --predicate-type <type>` true for a wheel, a Go archive or a gem alike (issue #35).
+    # --predicate-type <type>` true for a wheel, a Swift archive or a gem alike (issue #35).
     - name: Attest every release file from the tag
       if: inputs.prepared_run_id == ''
       uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2

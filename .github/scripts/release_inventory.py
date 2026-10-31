@@ -165,11 +165,12 @@ def validate_layout(paths, crate, version, cfg=None):
 
 
 def native_files(workspace, natives):
-    """The committed native payloads, as repository-relative paths under the checkout at B."""
+    """The committed native payloads, as repository-relative paths under the checkout at B;
+    empty for a consumer that commits none (swift_remote, the Go core as Go source)."""
     if workspace is None:
         raise ValueError('the inventory needs --workspace, the checkout at B')
-    if len(natives) != len(set(natives)) or not natives:
-        raise ValueError('native payload list must be non-empty and unique')
+    if len(natives) != len(set(natives)):
+        raise ValueError('native payload list must be unique')
     for relative in natives:
         if relative.split('/')[0] in INVENTORY_GROUPS or relative == 'inventory.json':
             raise ValueError(f'native payload path collides with a package path: {relative}')

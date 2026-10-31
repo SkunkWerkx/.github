@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -124,16 +125,33 @@ class ZipTests(unittest.TestCase):
 class ConfigTests(unittest.TestCase):
     def test_swift_leaves_the_committed_payloads_and_package_swift_may_be_staged(self):
         cfg = hyper_config.HyperConfig(REMOTE)
-        paths = cfg.payload_paths(Path('artifacts'))
-        self.assertEqual(len(paths), 13)
-        self.assertFalse(any(path.startswith('swift/') for path in paths))
-        self.assertEqual(cfg.payload_trees, ('go/staticlib',))
+        # Nothing is committed: Swift ships as zips and Go carries its core as Go source.
+        self.assertEqual(cfg.payload_paths(Path('artifacts')), {})
+        self.assertEqual(cfg.payload_trees, ())
+        self.assertEqual(cfg.probe_payloads, ())
         self.assertEqual(cfg.staged_edits, ('Package.swift',))
         self.assertEqual(cfg.swift_assets, ('HyperUuidCore.artifactbundle.zip', 'HyperUuidCoreApple.xcframework.zip'))
-        self.assertFalse(any(path.startswith('swift/') for path in cfg.probe_payloads))
         shell = hyper_config.shell(cfg)
         self.assertIn('SWIFT_REMOTE=true', shell)
-        self.assertIn('declare -A STATIC_TREES=([go/staticlib]=13)', shell)
+        self.assertIn('declare -A STATIC_TREES=()', shell)
+        probe = shell + 'echo "${#STATIC_TREES[@]}"; for tree in "${!STATIC_TREES[@]}"; do echo "$tree"; done\n'
+        out = subprocess.check_output(['bash', '-euo', 'pipefail', '-c', probe], text=True).strip()
+        self.assertEqual(out, '0')
+
+    def test_no_committed_payload_means_nothing_to_list_or_stage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_config(root, REMOTE)
+            listed = subprocess.check_output([sys.executable, str(SCRIPTS / 'release_guard.py'), 'paths'],
+                                             cwd=root, text=True)
+            self.assertEqual(listed.strip(), '')
+            subprocess.run(['git', 'init', '-q', str(root)], check=True)
+            (root / 'source.txt').write_text('source\n')
+            subprocess.run(['git', '-C', str(root), 'add', '.'], check=True)
+            tree = subprocess.check_output(['git', '-C', str(root), 'write-tree'], text=True).strip()
+            # No payload tree: the staged-tree check has nothing to list, and must not read
+            # the whole tree as unexpected payloads.
+            guard.validate_staged_tree(root, hyper_config.HyperConfig(REMOTE), tree)
 
     def test_off_by_default_and_must_be_a_boolean(self):
         cfg = hyper_config.HyperConfig(MINIMAL)
@@ -245,15 +263,16 @@ class InventoryAndNotesTests(unittest.TestCase):
 
     def test_the_notes_name_the_zips_and_commit_swift_nothing(self):
         files = [{'path': 'nuget/hyperuuid.0.9.0.nupkg', 'location': 'packages'},
-                 {'path': 'go/staticlib/linux_amd64/libhyperuuid.a', 'location': 'source', 'signer_repo': 'x'},
                  {'path': 'github/HyperUuidCore.artifactbundle.zip', 'location': 'packages'},
                  {'path': 'github/HyperUuidCoreApple.xcframework.zip', 'location': 'packages'}]
         inventory = dict(repository=REPO, version='0.9.0', source_sha='a' * 40, ci_run_id='42', files=files)
         text = ' '.join(self.notes.verifying(inventory).split())
-        self.assertIn('the 1 native libraries committed for Go, and the Swift core\'s '
-                      '`HyperUuidCore.artifactbundle.zip` and `HyperUuidCoreApple.xcframework.zip`, attached below. '
-                      'Its predicate', text)
-        self.assertIn('The native libraries, the Swift zips, the Python wheels', text)
+        self.assertIn('names all 3 of them: every registry package (NuGet, RubyGems, PyPI, crates.io and Maven '
+                      'Central) and the Swift core\'s `HyperUuidCore.artifactbundle.zip` and '
+                      '`HyperUuidCoreApple.xcframework.zip`, attached below. Its predicate', text)
+        self.assertIn('The Swift zips, the Python wheels', text)
+        self.assertNotIn('native libraries', text)
+        self.assertNotIn('committed', text)
         self.assertNotIn('metadata files', text)
 
 

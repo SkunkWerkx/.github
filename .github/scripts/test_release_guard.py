@@ -49,7 +49,7 @@ class ReleaseGuardTests(unittest.TestCase):
         self.write('source.txt', 'source\n')
         self.commit('preparation')
         self.a = self.git('rev-parse', 'HEAD')
-        self.payload = 'go/staticlib/linux_amd64/libhyperuuid.a'
+        self.payload = 'swift/HyperUuidCore.artifactbundle/x86_64-unknown-linux-gnu/libhyperuuid.a'
         for path in guard.payload_paths(self.cfg, Path('artifacts')):
             self.write(path, 'verified bytes')
         self.commit(f'stage\n\nRelease-Source-SHA: {self.a}\nRelease-CI-Run-ID: 42\nRelease-Forge-SHA: {"f" * 40}')
@@ -156,7 +156,7 @@ class ReleaseGuardTests(unittest.TestCase):
     def test_reject_unrelated_source_or_workflow_change(self):
         for path in ['source.txt', '.github/workflows/ci.yml',
                      'swift/HyperUuidCore.artifactbundle/include/hyperuuid.h',
-                     'go/staticlib/linux_amd64/unexpected.a']:
+                     'swift/HyperUuidCore.artifactbundle/x86_64-unknown-linux-gnu/unexpected.a']:
             with self.subTest(path=path):
                 bad = self.amend_to(path, 'unrelated')
                 with self.assertRaises(ValueError):
@@ -200,7 +200,7 @@ class ReleaseGuardTests(unittest.TestCase):
 
     def test_reject_missing_payload_even_when_it_did_not_change(self):
         # A staging record must describe a complete tree, including unchanged paths.
-        self.git('rm', '-q', 'go/staticlib/windows_arm64/libhyperuuid.a')
+        self.git('rm', '-q', 'swift/HyperUuidCore.artifactbundle/aarch64-unknown-windows-msvc/hyperuuid.lib')
         self.git('commit', '--amend', '--no-edit', '-q')
         self.b = self.git('rev-parse', 'HEAD')
         with self.assertRaisesRegex(ValueError, 'missing staged payload'):
@@ -243,11 +243,11 @@ class ReleaseGuardTests(unittest.TestCase):
         paths = output.split()
         self.assertEqual(len(paths), len(set(paths)))
         self.assertEqual(set(paths), set(guard.payload_paths(self.cfg, Path('artifacts'))))
-        self.assertIn('go/staticlib/linux_amd64/libhyperuuid.a', paths)
-        self.assertFalse([path for path in paths if path.startswith('php/')])
+        self.assertIn('swift/HyperUuidCore.artifactbundle/x86_64-unknown-linux-gnu/libhyperuuid.a', paths)
+        self.assertFalse([path for path in paths if path.startswith('php/') or path.startswith('go/')])
         self.assertIn('swift/HyperUuidCoreApple.xcframework/Info.plist', paths)
-        # 13 Go and 11 Swift archives, two metadata files, three slices x 3.
-        self.assertEqual(len(paths), 13 + 11 + 2 + 9)
+        # 11 Swift archives, two metadata files, three slices x 3; Go commits no archive.
+        self.assertEqual(len(paths), 11 + 2 + 9)
 
 
 class AbiProbeTests(unittest.TestCase):
@@ -387,7 +387,7 @@ EXPORT int uuid_new_v7(void) {return 0;}
         shutil.copyfile(dll if name.endswith('.dll') else shared, native)
     sha = 'a' * 40
     script = step(SCRIPTS.parent / 'workflows/hyper-stage-natives.yml',
-                  'Verify attestations, then stage into swift/ and go/')
+                  'Verify attestations, then stage into swift/')
     subprocess.run(['git', 'init', '-q', str(root)], check=True)
     for key, value in (('commit.gpgsign', 'false'), ('user.name', 'Test'), ('user.email', 'test@example.com')):
         subprocess.run(['git', '-C', str(root), 'config', key, value], check=True)
@@ -436,15 +436,16 @@ class StagingIntegrationTests(unittest.TestCase):
         cfg, paths, sha, script, env, source_sha = staging_fixture(root, MINIMAL)
         with patch.object(guard, 'verify_attestation') as verify:
             guard.validate_payloads(root, cfg, paths, sha, REPO)
-            # 27 static archives, and the linux-x64 shared library the probe links.
-            self.assertEqual(verify.call_count, 27 + 1)
+            # 14 static archives (the bundle's 11 and the XCFramework's three), and the
+            # linux-x64 shared library the probe links.
+            self.assertEqual(verify.call_count, 14 + 1)
         result = subprocess.run(['bash', '-c', script], cwd=root, env=env, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(result.returncode, 0, result.stderr)
         guard.compare_payloads(root, paths)
-        subprocess.run(['git', '-C', str(root), 'add', cfg.bundle, cfg.xcframework, 'go/staticlib'], check=True)
+        subprocess.run(['git', '-C', str(root), 'add', cfg.bundle, cfg.xcframework], check=True)
         guard.validate_staging_index(root, cfg, source_sha)
-        shipped = root / 'go/staticlib/linux_amd64/libhyperuuid.a'
+        shipped = root / 'swift/HyperUuidCore.artifactbundle/x86_64-unknown-linux-gnu/libhyperuuid.a'
         original_bytes = shipped.read_bytes()
         shipped.write_bytes(b'copied wrong artifact')
         subprocess.run(['git', '-C', str(root), 'add', str(shipped)], check=True)
@@ -459,8 +460,9 @@ class StagingIntegrationTests(unittest.TestCase):
         subprocess.run(['git', '-C', str(root), 'add', 'rust/Cargo.toml'], check=True)
         with self.assertRaisesRegex(ValueError, 'unrelated A -> B change'):
             guard.validate_staging_index(root, cfg, source_sha)
-        self.assertEqual(len((root / 'digests.txt').read_text().splitlines()), 35)
-        missing = paths['go/staticlib/linux_amd64/libhyperuuid.a']
+        # Eight shared libraries and the 14 archives, each verified and listed.
+        self.assertEqual(len((root / 'digests.txt').read_text().splitlines()), 8 + 14)
+        missing = paths['swift/HyperUuidCore.artifactbundle/x86_64-unknown-linux-gnu/libhyperuuid.a']
         missing.unlink()
         with patch.object(guard, 'verify_attestation'), self.assertRaisesRegex(ValueError, 'missing artifact'):
             guard.validate_payloads(root, cfg, paths, sha, REPO)
@@ -470,7 +472,9 @@ class StagingIntegrationTests(unittest.TestCase):
         cfg, paths, sha, script, env, source_sha = staging_fixture(root, {**MINIMAL, 'swift_remote': True})
         with patch.object(guard, 'verify_attestation') as verify:
             guard.validate_payloads(root, cfg, paths, sha, REPO)
-            self.assertEqual(verify.call_count, 13 + 1)
+            # Nothing is committed; the linux-x64 shared library is still probed.
+            self.assertEqual(paths, {})
+            self.assertEqual(verify.call_count, 1)
         result = subprocess.run(['bash', '-c', script], cwd=root, env=env, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -480,10 +484,10 @@ class StagingIntegrationTests(unittest.TestCase):
         assets = guard.swift_assets_dir(root)
         self.assertEqual(named, {'version': '0.9.0', 'core': guard.swift_release.sha256(assets / cfg.swift_assets[0]),
                                  'apple': guard.swift_release.sha256(assets / cfg.swift_assets[1])})
-        # Eight libraries, thirteen Go archives and the two zips, each verified and listed.
-        self.assertEqual(len((root / 'digests.txt').read_text().splitlines()), 8 + 13 + 2)
+        # Eight libraries and the two zips, each verified and listed.
+        self.assertEqual(len((root / 'digests.txt').read_text().splitlines()), 8 + 2)
+        self.assertFalse((root / 'go').exists())
         subprocess.run(['git', '-C', str(root), 'add', 'Package.swift'], check=True)
-        subprocess.run(['git', '-C', str(root), 'add', '-f', 'go/staticlib'], check=True)
         guard.validate_staging_index(root, cfg, source_sha)
         (assets / cfg.swift_assets[0]).write_bytes(b'a different zip')
         with self.assertRaisesRegex(ValueError, 'Core.artifactbundle.zip'):

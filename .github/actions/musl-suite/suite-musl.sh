@@ -121,20 +121,14 @@ case "$binding" in
     '
     ;;
 
-  # The suite, then its test binary again with the C toolchain — and with it libgcc —
-  # removed, which is the state a multi-stage Dockerfile's runtime image is in. The core is
-  # linked in (the archive is staged by the job, from the musl target), so that last run
-  # proves the binary needs nothing but musl's libc.
+  # The suite, with CGO_ENABLED=0 and no C toolchain in the image: the core is committed Go
+  # source, so nothing links and no archive is staged. What the run proves on musl is the
+  # binding's own OS random source and its CPU-feature read, on the floor Go the image names.
   go)
-    in_alpine "${SUITE_IMAGE:-golang:1.27-alpine}" '
-      apk add --no-cache build-base >/dev/null
+    in_alpine "${SUITE_IMAGE:-golang:1.26-alpine}" '
       cp -r /src/go /work/go
       cd /work/go
-      go test -count=1 ./...
-      go test -c -o /work/suite.test .
-      apk del build-base >/dev/null
-      if ls /usr/lib/libgcc_s.so* >/dev/null 2>&1; then echo "::error::libgcc_s is still installed, so this run proves nothing"; exit 1; fi
-      /work/suite.test -test.count=1
+      CGO_ENABLED=0 go test -count=1 ./...
     '
     ;;
 

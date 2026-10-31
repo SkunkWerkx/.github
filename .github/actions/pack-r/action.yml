@@ -1,9 +1,11 @@
 name: Pack the R source package
 description: >
-  Builds the R binding's CRAN source tarball from the checkout at B: tools/vendor.sh stages
-  the Rust core and the five corpus files and vendors the crates.io dependencies (CRAN builds
-  offline), `R CMD build` packs it, and the tarball is checked for its corpus members and its
-  DESCRIPTION, attested in the caller's identity and uploaded as cran-packages. No job ever
+  Builds the R binding's CRAN source tarball from the checkout at B: tools/vendor.sh vendors
+  the crates the wrapper crate builds, the Rust core itself among them from this checkout
+  (CRAN builds offline, and the crate version is not published yet), and stages the five
+  corpus files, `R CMD build` packs it, and the tarball is checked for its corpus members, its
+  DESCRIPTION, the core pin and the vendored core's version, attested in the caller's identity
+  and uploaded as cran-packages. No job ever
   uploads it to CRAN: the maintainer submits the preserved bytes by hand. Runs in the
   consumer's checkout at B.
 
@@ -19,8 +21,9 @@ inputs:
 runs:
   using: composite
   steps:
-    # vendor.sh derives r/src/rust/Cargo.lock from rust/Cargo.lock (cargo update) and runs
-    # `cargo vendor --locked` against it; R CMD build itself compiles nothing.
+    # vendor.sh derives r/src/rust/Cargo.lock from rust/Cargo.lock (cargo update), runs
+    # `cargo vendor --locked` against it and adds the core as `cargo package` writes it; R CMD
+    # build itself compiles nothing.
     - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
     - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
@@ -36,11 +39,12 @@ runs:
       shell: bash
       run: Rscript -e 'install.packages("jsonlite")' -e 'stopifnot(requireNamespace("jsonlite", quietly = TRUE))'
 
-    # The full run, then --verify: a corpus file, the core copy or the derived lock missing
-    # from the staged tree fails the tag run here, not the CRAN check weeks later. The full
-    # run also regenerates inst/AUTHORS from the vendored crates; a committed copy that
-    # differs is stale, and fails the pack rather than shipping.
-    - name: Stage the core and corpus and vendor the crates
+    # The full run, then --verify: a corpus file, the derived lock or the vendor tarball (or
+    # the core at the crate's version inside it) missing from the staged tree fails the tag
+    # run here, not the CRAN check weeks later. The full run also regenerates inst/AUTHORS
+    # from the vendored crates; a committed copy that differs is stale, and fails the pack
+    # rather than shipping.
+    - name: Vendor the crates and the core and stage the corpus
       shell: bash
       env:
         SOURCE_SHA: ${{ inputs.source_sha }}

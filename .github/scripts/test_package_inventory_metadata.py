@@ -60,11 +60,36 @@ def write_npm(root, crate, version, platform_version=None, dependency_version=No
             (f'package/{crate}.{suffix}.node', b'native')])
 
 
-def r_entries(crate, version, description=None, drop=()):
+def vendor_tarball(entries):
+    """A `vendor.tar.xz` as vendor.sh writes it, with the given (name, bytes) members."""
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode='w:xz') as archive:
+        for name, data in entries:
+            entry = tarfile.TarInfo(name)
+            entry.size = len(data)
+            archive.addfile(entry, io.BytesIO(data))
+    return out.getvalue()
+
+
+def r_entries(crate, version, description=None, drop=(), pin=None, vendored=None, vendor=None):
+    """The members `R CMD build` packs: DESCRIPTION, the wrapper manifest pinning the core at
+    `pin` (the version by default), the vendor tarball carrying the core at `vendored` (the
+    version by default; None leaves the core out; `vendor` replaces the whole tarball), the
+    derived lock and the corpus."""
+    pin = version if pin is None else pin
+    vendored = version if vendored is None else vendored
+    if vendor is None:
+        crates = [('vendor/libc/Cargo.toml', b'[package]\nname = "libc"\nversion = "0.2.0"\n')]
+        if vendored:
+            crates.append((f'vendor/{crate}/Cargo.toml',
+                           f'[package]\nname = "{crate}"\nversion = "{vendored}"\n'.encode()))
+        vendor = vendor_tarball(crates)
+    manifest = (f'[package]\nname = "rcore"\n\n[dependencies]\n'
+                f'{crate} = {{ version = "={pin}", default-features = false, features = ["staticlib"] }}\n')
     entries = [(f'{crate}/DESCRIPTION', (description or f'Package: {crate}\nVersion: {version}\n').encode()),
-               (f'{crate}/src/rust/vendor.tar.xz', b'vendored crates'),
-               (f'{crate}/src/rust/Cargo.lock', b'version = 4\n'),
-               (f'{crate}/src/rust/core/Cargo.toml', f'[package]\nname="{crate}"\n'.encode())]
+               (f'{crate}/src/rust/Cargo.toml', manifest.encode()),
+               (f'{crate}/src/rust/vendor.tar.xz', vendor),
+               (f'{crate}/src/rust/Cargo.lock', b'version = 4\n')]
     entries += [(f'{crate}/tests/testthat/corpus/{name}', b'[]') for name in R_CORPUS]
     return [(name, data) for name, data in entries if name not in drop]
 
@@ -323,6 +348,27 @@ class PackageMetadataTests(unittest.TestCase):
                          for name, data in r_entries('hypercast', '0.10.0')])
         with self.assertRaisesRegex(ValueError, 'R source tarball'):
             self.validate()
+        write_cran(self.root, 'hypercast', '0.10.0')
+        self.validate()
+
+    def test_rejects_r_source_tarball_whose_core_pin_or_vendored_core_is_off(self):
+        # The wrapper crate depends on the core from crates.io at exactly the release
+        # version, and vendor.sh puts that version's source in the vendor tarball; either
+        # at another version means CRAN would build (or fail to fetch) a different core.
+        for label, changes in {'pin at another version': dict(pin='0.9.0'),
+                               'pin not exact': dict(pin='0.10.0', vendored='0.10.0'),
+                               'vendored core at another version': dict(vendored='0.9.0'),
+                               'core not vendored': dict(vendored=''),
+                               'vendor tarball not xz': dict(vendor=b'vendored crates')}.items():
+            with self.subTest(label):
+                if label == 'pin not exact':
+                    entries = [(name, data.replace(b'"=0.10.0"', b'"0.10.0"') if name.endswith('src/rust/Cargo.toml') else data)
+                               for name, data in r_entries('hypercast', '0.10.0')]
+                    write_tar(self.root / 'cran/hypercast_0.10.0.tar.gz', entries)
+                else:
+                    write_cran(self.root, 'hypercast', '0.10.0', **changes)
+                with self.assertRaisesRegex(ValueError, 'R (source tarball|wrapper crate)'):
+                    self.validate()
         write_cran(self.root, 'hypercast', '0.10.0')
         self.validate()
 
