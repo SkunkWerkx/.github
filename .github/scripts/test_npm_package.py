@@ -277,3 +277,29 @@ class NpmPackageTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PackDestinationTest(unittest.TestCase):
+    """`npm pack` runs inside the staged package directory under a temporary work tree, so a
+    relative `--out` has to reach it absolute, or the tarball lands in the scratch and the
+    caller's `npm-wasi/*.tgz` is empty (HyperUuid run 41225202643, build-node-wasi)."""
+
+    def test_pack_dir_hands_npm_an_absolute_destination_from_a_relative_out(self):
+        import os
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        package = tmp / 'staged'
+        write_json(package / 'package.json', {'name': '@skunkwerkx/hypercast-wasm32-wasip1', 'version': '0.10.0', 'files': []})
+        fake = FakeNpm()
+        before = os.getcwd()
+        os.chdir(tmp)
+        try:
+            path = npm_package.pack_dir(package, 'npm-wasi', runner=fake)
+        finally:
+            os.chdir(before)
+        (pack_cmd, pack_cwd), = fake.commands
+        destination = Path(pack_cmd[pack_cmd.index('--pack-destination') + 1])
+        self.assertEqual(pack_cwd, package, 'npm pack runs in the staged package directory')
+        self.assertTrue(destination.is_absolute(), f'npm would resolve {destination} against {pack_cwd}')
+        self.assertEqual(destination, (tmp / 'npm-wasi').resolve())
+        self.assertEqual(path, (tmp / 'npm-wasi').resolve() / 'skunkwerkx-hypercast-wasm32-wasip1-0.10.0.tgz')

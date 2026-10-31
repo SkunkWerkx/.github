@@ -153,8 +153,10 @@ def fill_native_dir(work, artifact_dir, crate, suffix):
 
 
 def pack_dir(directory, out, runner=default_runner):
-    """`npm pack` one package directory into `out`; the tarball's path."""
-    directory, out = Path(directory), Path(out)
+    """`npm pack` one package directory into `out`; the tarball's path. `out` is resolved
+    against the caller's directory first: npm runs inside the staged package under the work
+    tree, and would otherwise write a relative `--out` there."""
+    directory, out = Path(directory), Path(out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     runner(['npm', 'pack', '--ignore-scripts', '--pack-destination', str(out)], directory)
     manifest = read_manifest(directory)
