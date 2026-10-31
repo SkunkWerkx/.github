@@ -32,12 +32,32 @@ NPM_SCOPE = '@skunkwerkx'
 # tarball missing one fails the tag run, not the CRAN check weeks later.
 R_CORPUS_FILES = ('v5.json', 'sql_order.json', 'sql_order_refused.json', 'timestamp.json', 'inspect.json')
 DEFAULTS = SimpleNamespace(wheels=hyper_config.WHEELS, sdist=False, ruby_platforms=hyper_config.RUBY_PLATFORMS,
-                           node_platforms=hyper_config.NODE_PLATFORMS)
+                           node_platforms=hyper_config.NODE_PLATFORMS, node_wasi=hyper_config.NODE_WASI_PLATFORM)
+# The WASI package's runtime dependencies, exactly these three, each pinned to one version: the
+# loader napi writes imports the first, which drives the other two. A range here would let a
+# consumer's resolution pick a runtime the tarball was never tested with.
+WASI_RUNTIME = ('@napi-rs/wasm-runtime', '@emnapi/core', '@emnapi/runtime')
+# One exact SemVer: prerelease and build metadata allowed (emnapi 2 ships as a prerelease, and
+# the CLI accepts it), ranges (`~`, `^`, `>=`, `x`, `*`), tags (`latest`) and URLs refused.
+EXACT_SEMVER = re.compile(r'^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$')
 
 
 def npm_names(crate, platforms):
     """The root npm package's name, and its platform packages' names in napi-rs's form."""
     return crate, [f'{NPM_SCOPE}/{crate}-{suffix}' for suffix in platforms]
+
+
+def npm_wasi_name(crate, wasi):
+    """The WASI fallback package's name, or None when the project ships none (`wasi == ''`)."""
+    return f'{NPM_SCOPE}/{crate}-{wasi}' if wasi else None
+
+
+def npm_all_names(crate, platforms, wasi):
+    """Every npm package the release publishes: the root, the platform packages, then the WASI
+    package if there is one."""
+    root, names = npm_names(crate, platforms)
+    wasi_name = npm_wasi_name(crate, wasi)
+    return [root, *names, *([wasi_name] if wasi_name else [])]
 
 
 def npm_filename(name, version):
@@ -240,16 +260,52 @@ def npm_package(path):
     return manifest
 
 
-def npm_tarball(path, crate, version, platforms):
+def npm_tarball(path, crate, version, platforms, wasi='', wasi_runtime=None):
     """One of the npm packages: the root, whose optionalDependencies pin every platform
-    package at this version, or a platform package. Its name must be the one its file says."""
+    package and whose dependencies pin the WASI package at this version; a platform package,
+    one addon and nothing else native; or the WASI package, one .wasm and its Node loader,
+    bound to no cpu, os or libc, with exactly the three runtime dependencies at exact
+    versions (equal to `wasi_runtime` when the caller knows them). Its name must be the one
+    its file says."""
     root, names = npm_names(crate, platforms)
+    wasi_name = npm_wasi_name(crate, wasi)
     manifest = npm_package(path)
     name = manifest['name']
-    if name not in (root, *names) or manifest['version'] != version or path.name != npm_filename(name, version):
+    if name not in npm_all_names(crate, platforms, wasi) or manifest['version'] != version \
+            or path.name != npm_filename(name, version):
         raise ValueError(f'npm embedded package name/version differs: {path.name}')
-    if name == root and manifest.get('optionalDependencies') != {platform: version for platform in names}:
-        raise ValueError(f'npm root optionalDependencies must pin every platform package at {version}')
+    members = [member for member in tar_entries(path) if member.startswith('package/')]
+    addons = [member for member in members if member.endswith('.node')]
+    modules = [member for member in members if member.endswith('.wasm')]
+    if name == root:
+        if manifest.get('optionalDependencies') != {platform: version for platform in names}:
+            raise ValueError(f'npm root optionalDependencies must pin every platform package at {version}')
+        expected = {wasi_name: version} if wasi_name else None
+        if manifest.get('dependencies') != expected:
+            raise ValueError(f'npm root dependencies must be exactly {expected} ({path.name})')
+        if addons or modules:
+            raise ValueError(f'npm root must carry no addon or wasm module: {path.name}')
+    elif name == wasi_name:
+        if addons or modules != [f'package/{crate}.{wasi}.wasm']:
+            raise ValueError(f'npm wasi package must carry exactly {crate}.{wasi}.wasm and no addon: {path.name}')
+        if f'package/{crate}.{wasi.removeprefix("wasm32-")}.cjs' not in members:
+            raise ValueError(f'npm wasi package is missing its Node loader: {path.name}')
+        bound = [key for key in ('os', 'cpu', 'libc') if key in manifest]
+        if bound:
+            raise ValueError(f'npm wasi package must not declare {bound}: it installs everywhere ({path.name})')
+        dependencies = manifest.get('dependencies')
+        if not isinstance(dependencies, dict) or set(dependencies) != set(WASI_RUNTIME):
+            raise ValueError(f'npm wasi package dependencies must be exactly {list(WASI_RUNTIME)} ({path.name})')
+        loose = {key: value for key, value in dependencies.items()
+                 if not isinstance(value, str) or not EXACT_SEMVER.match(value)}
+        if loose:
+            raise ValueError(f'npm wasi package runtime dependencies must be exact versions, not {loose} ({path.name})')
+        if wasi_runtime is not None and dict(wasi_runtime) != dependencies:
+            raise ValueError(f'npm wasi package runtime dependencies {dependencies} differ from the '
+                             f'build\'s {dict(wasi_runtime)} ({path.name})')
+    else:
+        if len(addons) != 1 or modules:
+            raise ValueError(f'npm platform package must carry one addon and no wasm module: {path.name}')
     return name
 
 
@@ -315,11 +371,12 @@ def validate_package_metadata(root: Path, crate: str, version: str, cfg=None) ->
         maven(one((root / 'maven').rglob('*.zip'), 'Maven bundle'), crate, version)
         if (root / 'npm').exists():
             platforms = list(cfg.node_platforms.values())
+            wasi = getattr(cfg, 'node_wasi', '')
             tarballs = list((root / 'npm').rglob('*'))
-            names = [npm_tarball(path, crate, version, platforms) for path in tarballs]
-            expected_root, expected = npm_names(crate, platforms)
-            if sorted(names) != sorted([expected_root, *expected]):
-                raise ValueError(f'expected the npm root package and {len(platforms)} platform packages, once each')
+            names = [npm_tarball(path, crate, version, platforms, wasi) for path in tarballs]
+            if sorted(names) != sorted(npm_all_names(crate, platforms, wasi)):
+                raise ValueError(f'expected the npm root package, {len(platforms)} platform packages'
+                                 f'{" and the wasi package" if wasi else ""}, once each')
         if (root / 'cran').exists():
             r_source_tarball(one((root / 'cran').rglob('*'), 'R source tarball'), crate, version)
     except (OSError, UnicodeError, EOFError, KeyError, TypeError, zipfile.BadZipFile,

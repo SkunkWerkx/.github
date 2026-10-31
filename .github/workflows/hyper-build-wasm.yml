@@ -124,8 +124,138 @@ on:
         required: false
         type: string
         default: '["3.4", "4.0"]'
+      node_wasi:
+        description: >
+          Build the TypeScript binding's napi-rs module for threadless wasm32-wasip1 (the
+          platform hyper.json's node.wasi names), run its conformance suite against that module
+          under NAPI_RS_FORCE_WASI=error, pack the WASI npm package the way the release does and
+          run it bundled into a page in headless Chrome; in release mode attest and upload the
+          module and its loaders as node-wasm32-wasip1 for pack-npm.
+        required: false
+        type: boolean
+        default: false
+      node_version:
+        description: "The Node.js that builds, tests and packs the WASI module (npm and the napi CLI)"
+        required: false
+        type: string
+        default: "26"
 
 jobs:
+  # TypeScript: the napi-rs binding built for threadless wasm32-wasip1, the fallback the root
+  # npm package installs on every platform (a hard dependency, loaded only when no native addon
+  # exists for the host). First in this file, ahead of every job that has already been through
+  # a release: the newest code is where a run fails, and a failure in the first minutes lets
+  # the owner cancel the rest of the tree (the consumers' CLAUDE.md, "Fail fast"). No wasi-sdk
+  # and no clang: the CLI links the module against emnapi's prebuilt library for this target,
+  # so the Rust target alone suffices. The suite runs against the module with
+  # NAPI_RS_FORCE_WASI=error, so a quiet fall back to native cannot hide a WASI failure, and
+  # the hand-written wrapper and the generated loader are diffed against the commit (a napi
+  # build without --js/--dts, or without --platform, rewrites them). Then the tarball a consumer
+  # installs is packed by npm_package.py, the release's own pack body, and bundled into a page
+  # that imports the package by name, as a browser consumer does, and that page runs in the
+  # runner's Chrome: the module is threadless, so no SharedArrayBuffer and no COOP/COEP headers,
+  # and the step fails if the plain python http.server serving the page sends either. The
+  # one .wasm and the loaders are attested and uploaded as node-wasm32-wasip1 for pack-npm,
+  # the way a native leg's addon is; the debug module stays behind.
+  build-node-wasi:
+    if: inputs.node_wasi
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      CRATE: ${{ inputs.crate }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: wasm32-wasip1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Build the WASI module and its loaders
+        working-directory: typescript
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build:wasi
+          cd "$GITHUB_WORKSPACE"
+          ls -l "typescript/$CRATE.wasm32-wasip1.wasm" typescript/"$CRATE".wasip1*
+          git diff --exit-code -- typescript/index.js typescript/index.d.ts typescript/binding.js typescript/binding.d.ts
+
+      - name: The conformance suite against the WASI module, native refused
+        working-directory: typescript
+        run: |
+          set -euo pipefail
+          NAPI_RS_FORCE_WASI=error npm test
+          npm run typecheck
+
+      - name: Collect the module and its loaders
+        run: |
+          set -euo pipefail
+          mkdir node-wasm32-wasip1
+          cp "typescript/$CRATE.wasm32-wasip1.wasm" typescript/"$CRATE".wasip1* node-wasm32-wasip1/
+          ls -l node-wasm32-wasip1
+
+      - name: Pack the WASI package as the release does
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/.hyperforge/.github/scripts/npm_package.py" pack-wasi --package typescript --artifact node-wasm32-wasip1 --out npm-wasi
+          tar tzf npm-wasi/*.tgz
+
+      - name: The package bundled into a page, in headless Chrome
+        run: |
+          set -euo pipefail
+          (cd typescript/browser-smoke && npm ci && npm install --no-save "$GITHUB_WORKSPACE"/npm-wasi/*.tgz && npm run build)
+          (cd typescript/browser-smoke/dist && exec python3 -m http.server 8092 --bind 127.0.0.1 >/dev/null 2>&1) &
+          server=$!
+          sleep 1
+          curl -sI http://127.0.0.1:8092/index.html | tee headers.txt
+          if grep -qi 'cross-origin-' headers.txt; then
+            echo "::error::the page is served with COOP/COEP headers; the threadless module must not need them"
+            exit 1
+          fi
+          timeout 120 google-chrome --headless=new --no-sandbox --disable-gpu --virtual-time-budget=60000 \
+            --dump-dom http://127.0.0.1:8092/index.html 2>/dev/null > dom.html
+          kill "$server"
+          node typescript/browser-smoke/check-dom.mjs dom.html
+
+      # The same condition as the archive's and the natives' attestations: pr mode, which no
+      # release packs from, and a fork's pull request, whose token cannot sign, attest nothing.
+      - name: Attest the WASI module and its loaders
+        if: >-
+          inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: node-wasm32-wasip1/*
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: node-wasm32-wasip1
+          path: node-wasm32-wasip1/
+          if-no-files-found: error
+
   build-wasm:
     runs-on: ubuntu-26.04
     permissions:

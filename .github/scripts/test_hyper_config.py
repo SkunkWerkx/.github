@@ -202,6 +202,25 @@ class HyperConfigTests(unittest.TestCase):
                                                    '--root', str(self.root)], text=True))
         self.assertEqual(data['node_platforms'], hyper_config.NODE_PLATFORMS)
 
+    def test_node_wasi_platform_defaults_and_can_be_cleared(self):
+        self.assertEqual(hyper_config.NODE_WASI_PLATFORM, 'wasm32-wasip1')
+        self.assertEqual(hyper_config.HyperConfig(MINIMAL).node_wasi, 'wasm32-wasip1')
+        self.assertEqual(hyper_config.HyperConfig({**MINIMAL, 'node': {'wasi': ''}}).node_wasi, '')
+        for bad in (None, True, ['wasm32-wasip1']):
+            with self.assertRaises(ValueError):
+                hyper_config.HyperConfig({**MINIMAL, 'node': {'wasi': bad}})
+        write_config(self.root)
+        script = subprocess.check_output([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'shell',
+                                          '--root', str(self.root)], text=True)
+        self.assertIn('NODE_WASI=wasm32-wasip1\n', script)
+        data = json.loads(subprocess.check_output([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'json',
+                                                   '--root', str(self.root)], text=True))
+        self.assertEqual(data['node_wasi'], 'wasm32-wasip1')
+        write_config(self.root, {**MINIMAL, 'node': {'wasi': ''}})
+        script = subprocess.check_output([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'shell',
+                                          '--root', str(self.root)], text=True)
+        self.assertIn('NODE_WASI=\n', script)
+
     def test_jni_lib_names(self):
         cfg = hyper_config.HyperConfig(MINIMAL)
         names = cfg.jni_lib_names

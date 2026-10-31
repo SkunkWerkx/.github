@@ -20,7 +20,8 @@ on the GitHub Release, named by URL and checksum in the root Package.swift, inst
 committed under swift/; see swift_release.py), `c_assets` (boolean, default false: the
 release attaches one C archive per platform to the GitHub Release, from the consumer's `c/`;
 see c_package.py), `ruby.abis` and `ruby.platforms`, `node.platforms` (RID -> napi platform
-name), `swift_targets`, `xcframework_slices`, `version_files` (path -> regex
+name), `node.wasi` (the napi platform of the WASI fallback package, default `wasm32-wasip1`;
+`""` for none), `swift_targets`, `xcframework_slices`, `version_files` (path -> regex
 with one group around the version; the default list adds `typescript/package.json`, and
 `r/DESCRIPTION` with the R wrapper crate's exact pin on the core in `r/src/rust/Cargo.toml`,
 only when that binding's directory exists at the consumer's root).
@@ -51,6 +52,10 @@ NODE_PLATFORMS = {'linux-x64': 'linux-x64-gnu', 'linux-arm64': 'linux-arm64-gnu'
                   'linux-musl-x64': 'linux-x64-musl', 'linux-musl-arm64': 'linux-arm64-musl',
                   'osx-x64': 'darwin-x64', 'osx-arm64': 'darwin-arm64',
                   'win-x64': 'win32-x64-msvc', 'win-arm64': 'win32-arm64-msvc'}
+# napi-rs's platformArchABI for the threadless WASI target: the one npm package every consumer
+# installs (a hard dependency of the root, with no `cpu`/`os`/`libc`), loaded only when no
+# native addon for the host exists. Empty (`node.wasi: ""`) means the project ships none.
+NODE_WASI_PLATFORM = 'wasm32-wasip1'
 WHEELS = 17
 CONFIG_PATH = '.github/hyper.json'
 
@@ -88,7 +93,11 @@ class HyperConfig:
         ruby = data.get('ruby', {})
         self.ruby_abis = tuple(ruby.get('abis', RUBY_ABIS))
         self.ruby_platforms = dict(ruby.get('platforms', RUBY_PLATFORMS))
-        self.node_platforms = dict(data.get('node', {}).get('platforms', NODE_PLATFORMS))
+        node = data.get('node', {})
+        self.node_platforms = dict(node.get('platforms', NODE_PLATFORMS))
+        self.node_wasi = node.get('wasi', NODE_WASI_PLATFORM)
+        if not isinstance(self.node_wasi, str):
+            raise ValueError('node.wasi must be a napi platform name, or "" for no WASI package')
         self.swift_targets = tuple(data.get('swift_targets', SWIFT_TARGETS))
         self.xcframework_slices = tuple(data.get('xcframework_slices', XCFRAMEWORK_SLICES))
         self.version_files = data.get('version_files') or self.default_version_files()
@@ -260,6 +269,7 @@ def shell(cfg):
              'RUBY_ABIS=(' + ' '.join(cfg.ruby_abis) + ')',
              assoc('LIB_NAMES', cfg.lib_names), assoc('JNI_LIB_NAMES', cfg.jni_lib_names),
              assoc('RUBY_PLATFORMS', cfg.ruby_platforms), assoc('NODE_PLATFORMS', cfg.node_platforms),
+             f'NODE_WASI={cfg.node_wasi}',
              assoc('STATIC_TREES', {} if cfg.swift_remote
                    else {cfg.bundle: len(cfg.swift_targets),
                          cfg.xcframework: len(cfg.xcframework_slices)})]
@@ -306,7 +316,7 @@ def main():
         print(json.dumps(dict(crate=cfg.crate, project=cfg.project, wheels=cfg.wheels, sdist=cfg.sdist,
                               swift_remote=cfg.swift_remote, c_assets=cfg.c_assets,
                               ruby_abis=cfg.ruby_abis, ruby_platforms=cfg.ruby_platforms,
-                              node_platforms=cfg.node_platforms,
+                              node_platforms=cfg.node_platforms, node_wasi=cfg.node_wasi,
                               swift_targets=cfg.swift_targets,
                               xcframework_slices=cfg.xcframework_slices,
                               version_files=cfg.version_files), indent=2))

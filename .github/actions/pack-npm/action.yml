@@ -1,11 +1,14 @@
 name: Pack the npm packages
 description: >
-  Downloads the preparation run's napi-rs addons (node-<rid>), verifies the build provenance
-  of every one, and packs the TypeScript binding's nine npm tarballs on a copy of typescript/:
-  one platform package per napi name in hyper.json's node.platforms, each carrying its one
-  addon, then the root package with optionalDependencies pinning every platform package at
-  this version, injected at pack time and never committed. Attests the tarballs in the
-  caller's identity and uploads them as npm-packages. Runs in the consumer's checkout at B.
+  Downloads the preparation run's napi-rs builds (node-<rid> addons and the node-<wasi> WASI
+  module with its loaders), verifies the build provenance of every file, and packs the
+  TypeScript binding's ten npm tarballs on a copy of typescript/ through the Forge's
+  npm_package.py: one platform package per napi name in hyper.json's node.platforms, each
+  carrying its one addon; the WASI fallback package, its runtime pinned from the lockfile;
+  then the root package with optionalDependencies pinning every platform package and
+  dependencies pinning the WASI package at this version, injected at pack time and never
+  committed. Attests the tarballs in the caller's identity and uploads them as npm-packages.
+  Runs in the consumer's checkout at B.
 
 inputs:
   run_id:
@@ -58,79 +61,37 @@ runs:
       with:
         node-version: ${{ inputs.node_version }}
 
-    # Packed on a copy under $RUNNER_TEMP: `npm pkg set` rewrites the root package.json, and
+    # Packed by the Forge's npm_package.py, the one pack body (the consumer's ci.yml packs its
+    # test tarballs with it too, so what the consumer tests installed is shaped exactly as what
+    # ships), on a copy under $RUNNER_TEMP: `npm pkg set` rewrites the root package.json, and
     # the checkout's must stay as committed for every later step. Never `napi prepublish`,
-    # which publishes on its own. A missing node-<rid> artifact fails at the cp: a release
-    # never ships a root package naming a platform package that has no addon.
-    - name: Pack one platform package per napi name, then the root
+    # which publishes on its own. A missing node-<rid> artifact fails before anything is
+    # packed: a release never ships a root package naming a platform package that has no
+    # addon, and the script's developer-only --allow-missing-natives is never passed here.
+    # The script checks every tarball with the release gate's validator (one addon per
+    # platform package, one .wasm in the WASI package, no cpu/os/libc there, its three runtime
+    # dependencies exact and equal to the lockfile's, the root pinning all of them).
+    - name: Pack the platform packages, the WASI package, then the root
       shell: bash
       env:
         FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
       run: |
         set -euo pipefail
-        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
-        addons=(artifacts/node/node-*/*)
-        [ "${#addons[@]}" -eq "${#NODE_PLATFORMS[@]}" ] \
-          || { echo "::error::expected ${#NODE_PLATFORMS[@]} addons in artifacts/node, found: ${addons[*]}"; exit 1; }
-        work="$RUNNER_TEMP/pack"
-        out="$GITHUB_WORKSPACE/npm-packages"
-        rm -rf "$work" "$out"
-        cp -R typescript "$work"
-        mkdir -p "$out"
-        cd "$work"
-        version=$(node -p 'require("./package.json").version')
-        scope_name=$(node -p 'require("./package.json").napi.packageName')
-        [ "$scope_name" = "@skunkwerkx/$CRATE" ] \
-          || { echo "::error::napi.packageName is $scope_name; the platform packages must be @skunkwerkx/$CRATE-<platform>"; exit 1; }
-        npm ci --ignore-scripts
-        npx napi create-npm-dirs
-        mapfile -t rids < <(printf '%s\n' "${!NODE_PLATFORMS[@]}" | sort)
-        for rid in "${rids[@]}"; do
-          suffix="${NODE_PLATFORMS[$rid]}"
-          cp "$GITHUB_WORKSPACE/artifacts/node/node-$rid/$CRATE.$suffix.node" "npm/$suffix/"
-          (cd "npm/$suffix" && npm pack --ignore-scripts --pack-destination "$out")
-          npm pkg set "optionalDependencies.$scope_name-$suffix=$version"
-        done
-        npm pack --ignore-scripts --pack-destination "$out"
+        rm -rf npm-packages "$RUNNER_TEMP/pack"
+        python3 "$FORGE_SCRIPTS/npm_package.py" pack --package typescript --artifacts artifacts/node --out npm-packages \
+          --work "$RUNNER_TEMP/pack"
 
-    # Nine tarballs, each platform package holding exactly one addon and the root none, the
-    # root pinning all eight at this version: the release gate's validator checks the same
-    # again, and this fails the pack job first. The committed package.json must still carry
-    # no optionalDependencies, which proves the copy above was the one rewritten.
-    - name: Check the packed tarballs and the untouched checkout
+    # The committed package.json must still carry neither dependency map, which proves the
+    # copy above was the one rewritten; the diff holds the rest of the binding's tree.
+    - name: Check the untouched checkout
       shell: bash
-      env:
-        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
       run: |
         set -euo pipefail
-        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
-        version=$(node -p 'require("./typescript/package.json").version')
-        tarballs=(npm-packages/*.tgz)
-        want=$(( ${#NODE_PLATFORMS[@]} + 1 ))
-        [ "${#tarballs[@]}" -eq "$want" ] \
-          || { echo "::error::expected $want npm tarballs, found: ${tarballs[*]}"; exit 1; }
-        for f in "${tarballs[@]}"; do
-          addons=$(tar tzf "$f" | grep -c '\.node$' || true)
-          want=1
-          [ "$(basename "$f")" = "$CRATE-$version.tgz" ] && want=0
-          echo "$f: $addons addons"
-          [ "$addons" = "$want" ] || { echo "::error::$f carries $addons .node files; expected $want"; exit 1; }
-        done
-        if grep -q optionalDependencies typescript/package.json; then
-          echo "::error::typescript/package.json carries optionalDependencies: they are injected at pack time, never committed"
+        if grep -q optionalDependencies typescript/package.json || grep -q '"dependencies"' typescript/package.json; then
+          echo "::error::typescript/package.json carries dependencies or optionalDependencies: they are injected at pack time, never committed"
           exit 1
         fi
         git diff --exit-code -- typescript
-        PYTHONPATH="$FORGE_SCRIPTS" python3 -c '
-        import sys
-        from pathlib import Path
-        import hyper_config
-        from release_package_metadata import npm_tarball
-        crate, version, root = sys.argv[1], sys.argv[2], Path(sys.argv[3])
-        platforms = list(hyper_config.load(".").node_platforms.values())
-        for path in sorted(root.glob("*.tgz")):
-            print(path.name, "->", npm_tarball(path, crate, version, platforms))
-        ' "$CRATE" "$version" npm-packages
 
     # Attested BEFORE the upload, over the exact files `npm publish` pushes later from the
     # preserved release-packages. This action runs in the consumer's release.yml, so the

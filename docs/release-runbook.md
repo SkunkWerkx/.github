@@ -17,11 +17,12 @@ top-level caller, not `hyper-publish-crate.yml`), and revoke the token. Every ve
 that publishes through Trusted Publishing. PyPI and RubyGems take pending publishers, and a
 nuget.org policy belongs to the account, so none of them needs a first publish by hand.
 
-npm is the same rule once per package: a consumer with a TypeScript binding ships nine (the
-root and the eight `@skunkwerkx/<crate>-<platform>` platform packages). Before the first
-release that carries them, the owner publishes a placeholder version below the release,
-`0.0.1`, under each of the nine names with a granular token, registers `release.yml` as the
-trusted publisher on every one of the nine packages' settings pages and revokes the token.
+npm is the same rule once per package: a consumer with a TypeScript binding ships ten (the
+root, the eight `@skunkwerkx/<crate>-<platform>` platform packages and the WASI fallback
+package, `@skunkwerkx/<crate>-wasm32-wasip1`). Before the first release that carries them,
+the owner publishes a placeholder version below the release, `0.0.1`, under each of the ten
+names with a granular token, registers `release.yml` as the trusted publisher on every one of
+the ten packages' settings pages and revokes the token.
 The release version itself is never published by hand, so the first real version is the
 first one `release.yml` publishes through Trusted Publishing, and it carries npm provenance.
 
@@ -168,9 +169,9 @@ prepare fresh inputs if needed.
 RubyGems and PyPI reconcile every already published file against the prepared bytes, then
 upload only missing files. Any conflict fails. crates.io verifies the public archive before
 skipping or sending the preserved framed request. Maven reuses its recorded Central
-deployment and checks the public signed coordinate. npm reconciles each of the nine
+deployment and checks the public signed coordinate. npm reconciles each of the ten
 packages by `dist.integrity` against the prepared tarball, byte-compares the served
-`dist.tarball`, and publishes only the missing ones, the platform packages before the root
+`dist.tarball`, and publishes only the missing ones, the platform and WASI packages before the root
 so the root never names a version that is not yet installable; a conflict fails. CRAN has
 nothing to recover: no job uploaded it, so the preserved tarball is resubmitted by hand.
 

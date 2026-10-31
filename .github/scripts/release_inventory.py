@@ -36,7 +36,7 @@ import hyper_config
 import php_ext_package
 from package_preparation import not_served
 from release_guard import LIBRARY_SUFFIXES
-from release_package_metadata import DEFAULTS, npm_filename, npm_names, npm_package, validate_package_metadata
+from release_package_metadata import DEFAULTS, npm_all_names, npm_filename, npm_package, validate_package_metadata
 
 FORGE = 'SkunkWerkx/.github'
 PREDICATE_TYPE = 'https://github.com/SkunkWerkx/.github/predicates/release/v1'
@@ -147,9 +147,9 @@ def validate_layout(paths, crate, version, cfg=None):
         raise ValueError('Maven signed bundle missing')
     # Optional groups: a consumer without the TypeScript or R binding ships neither.
     if groups['npm']:
-        root, names = npm_names(crate, cfg.node_platforms.values())
-        if set(groups['npm']) != {f'npm/{npm_filename(name, version)}' for name in (root, *names)}:
-            raise ValueError('npm root and platform package inventory is incomplete or stale')
+        names = npm_all_names(crate, cfg.node_platforms.values(), getattr(cfg, 'node_wasi', ''))
+        if set(groups['npm']) != {f'npm/{npm_filename(name, version)}' for name in names}:
+            raise ValueError('npm root, platform and wasi package inventory is incomplete or stale')
     if groups['cran'] and groups['cran'] != [f'cran/{crate}_{version}.tar.gz']:
         raise ValueError('CRAN source tarball name/version mismatch')
     assets = sorted(f'github/{name}' for name in getattr(cfg, 'swift_assets', ()))
@@ -364,8 +364,8 @@ def registry_plan(root, registry, output):
             served = fetch(url)
             if served is None: raise ValueError('npm lists an unavailable artifact')
             return served
-        # The publish loop pushes in this order: every platform package before the root,
-        # whose optionalDependencies name them.
+        # The publish loop pushes in this order: every platform package and the WASI package
+        # before the root, whose optionalDependencies and dependencies name them.
         root_name = npm_filename(crate, version)
         paths.sort(key=lambda p: (p.name == root_name, p.name))
         pending = select_missing(paths, npm_remote)

@@ -18,8 +18,8 @@ Subjects are every file in `inventory.json`:
 - the registry packages: the `.nupkg` and `.snupkg`, the nine gems, the 17 wheels (and the sdist, from a consumer that sets `sdist`), the
   `.crate` with its saved registry request, the signed Maven bundle and the repository files
   inside it (the jar, the sources and javadoc jars, the `.pom`, their signatures), and, from
-  a consumer with those bindings, the nine npm tarballs (the root package and one per
-  platform) and the CRAN source tarball, which no job uploads (the maintainer submits it);
+  a consumer with those bindings, the ten npm tarballs (the root package, one per
+  platform and the WASI fallback package) and the CRAN source tarball, which no job uploads (the maintainer submits it);
 - the native libraries committed at the tagged commit for Swift (the artifact bundle and
   the XCFramework), and the metadata staged beside them: the bundle's `info.json` and the
   XCFramework's `Info.plist`, headers and module maps (Go commits no library: its core is

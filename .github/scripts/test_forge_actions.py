@@ -293,7 +293,7 @@ class NpmAndCranActionTests(unittest.TestCase):
     def uses(self, name, prefix):
         return [s for s in self.steps(name) if s.get('uses', '').startswith(prefix)]
 
-    def test_pack_npm_verifies_every_addon_then_packs_nine_tarballs_off_the_checkout(self):
+    def test_pack_npm_verifies_every_addon_then_packs_ten_tarballs_through_npm_package_py(self):
         action = self.action('pack-npm')
         self.assertEqual(action['inputs']['node_version']['default'], '24')
         for name in ('run_id', 'source_sha', 'token'):
@@ -307,14 +307,19 @@ class NpmAndCranActionTests(unittest.TestCase):
         self.assertIn('artifacts/node/node-*/*', verify['run'])
         self.assertIn('--signer-repo SkunkWerkx/.github', verify['run'])
         self.assertIn('--source-digest "$SOURCE_SHA"', verify['run'])
-        # Packed on a copy: `npm pkg set` must never touch the committed package.json, and
-        # napi's prepublish would publish and rewrite on its own.
-        self.assertIn('$RUNNER_TEMP/pack', runs)
-        self.assertIn('napi create-npm-dirs', runs)
-        self.assertIn('npm pkg set "optionalDependencies.', runs)
+        # One pack body, npm_package.py, shared with the consumers' CI: it stages a copy, so
+        # `npm pkg set` never touches the committed package.json, pins the WASI package's
+        # runtime from the lockfile and checks every tarball. The action never passes the
+        # developer-only flag, and napi's prepublish would publish and rewrite on its own.
+        self.assertIn('npm_package.py" pack --package typescript --artifacts artifacts/node --out npm-packages', runs)
+        self.assertNotIn('--allow-missing-natives', runs)
+        self.assertNotIn('npm pkg set', runs)
+        self.assertNotIn('create-npm-dirs', runs)
         self.assertNotIn('prepublish', runs)
         self.assertNotIn('npm publish', runs)
         self.assertRegex(runs, r"grep -q optionalDependencies typescript/package\.json")
+        self.assertRegex(runs, r"grep -q '\"dependencies\"' typescript/package\.json")
+        self.assertIn('git diff --exit-code -- typescript', runs)
         names = [s.get('name') or s.get('uses') for s in self.steps('pack-npm')]
         attest = self.uses('pack-npm', 'actions/attest-build-provenance@')
         upload = self.uses('pack-npm', 'actions/upload-artifact@')
@@ -326,7 +331,7 @@ class NpmAndCranActionTests(unittest.TestCase):
         self.assertEqual(upload[0]['with']['retention-days'], 90)
         self.assertEqual(upload[0]['with']['if-no-files-found'], 'error')
         self.assertLess(names.index(attest[0]['name']), names.index(upload[0]['uses']))
-        self.assertIn('release_package_metadata', runs)
+        self.assertIn('ten', action['description'])
 
     def test_pack_r_stages_verifies_builds_and_attests_the_source_tarball(self):
         action = self.action('pack-r')

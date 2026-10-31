@@ -20,6 +20,8 @@ import php_ext_package
 SCRIPT = Path(__file__).with_name('release_package_metadata.py')
 # npm platform package names (napi-rs), and the corpus members every R source tarball carries.
 NODE_SUFFIXES = tuple(NODE_PLATFORMS.values())
+NODE_WASI = 'wasm32-wasip1'
+WASI_RUNTIME_PINS = {'@napi-rs/wasm-runtime': '1.0.0', '@emnapi/core': '1.5.0', '@emnapi/runtime': '1.5.0'}
 R_CORPUS = ('v5.json', 'sql_order.json', 'sql_order_refused.json', 'timestamp.json', 'inspect.json')
 PLATFORMS = ('', '-x86_64-linux-gnu', '-aarch64-linux-gnu', '-x86_64-linux-musl',
              '-aarch64-linux-musl', '-arm64-darwin', '-x64-mingw-ucrt', '-aarch64-mingw-ucrt')
@@ -47,17 +49,33 @@ def npm_manifest(name, version, **fields):
     return json.dumps(dict(name=name, version=version, **fields)).encode()
 
 
-def write_npm(root, crate, version, platform_version=None, dependency_version=None):
-    """The nine `npm pack` tarballs: the root package, then one per napi platform."""
+def write_npm(root, crate, version, platform_version=None, dependency_version=None, wasi=True,
+              wasi_dependencies=None):
+    """The ten `npm pack` tarballs: the root package, one per napi platform, and the WASI
+    fallback package the root depends on (nine without it, `wasi=False`)."""
     names = [f'@skunkwerkx/{crate}-{suffix}' for suffix in NODE_SUFFIXES]
-    dependencies = {name: dependency_version or version for name in names}
+    optional = {name: dependency_version or version for name in names}
+    wasi_name = f'@skunkwerkx/{crate}-{NODE_WASI}'
+    root_fields = dict(optionalDependencies=optional)
+    if wasi:
+        root_fields['dependencies'] = {wasi_name: dependency_version or version}
     write_tar(root / f'npm/{crate}-{version}.tgz', [
-        ('package/package.json', npm_manifest(crate, version, optionalDependencies=dependencies)),
+        ('package/package.json', npm_manifest(crate, version, **root_fields)),
         ('package/index.js', b'module.exports = {}\n')])
     for suffix, name in zip(NODE_SUFFIXES, names):
         write_tar(root / f'npm/skunkwerkx-{crate}-{suffix}-{version}.tgz', [
             ('package/package.json', npm_manifest(name, platform_version or version)),
             (f'package/{crate}.{suffix}.node', b'native')])
+    if wasi:
+        write_tar(root / f'npm/skunkwerkx-{crate}-{NODE_WASI}-{version}.tgz',
+                  wasi_entries(npm_manifest(wasi_name, platform_version or version,
+                                            dependencies=wasi_dependencies or WASI_RUNTIME_PINS)))
+
+
+def wasi_entries(manifest, crate='hypercast', extra=()):
+    """A WASI package's members: the manifest, the one .wasm and the Node loader, plus `extra`."""
+    return [('package/package.json', manifest), (f'package/{crate}.{NODE_WASI}.wasm', b'\0asm'),
+            (f'package/{crate}.wasip1.cjs', b'module.exports = {}\n'), *extra]
 
 
 def vendor_tarball(entries):
@@ -285,7 +303,8 @@ class PackageMetadataTests(unittest.TestCase):
 
     def test_rejects_npm_tarballs_with_stale_or_wrong_identity(self):
         cases = {'platform at another version': dict(platform_version='0.8.0'),
-                 'optionalDependency at another version': dict(dependency_version='0.8.0')}
+                 'optionalDependency at another version': dict(dependency_version='0.8.0'),
+                 'wasi package missing': dict(wasi=False)}
         for label, change in cases.items():
             with self.subTest(label):
                 shutil.rmtree(self.root / 'npm')
@@ -296,28 +315,67 @@ class PackageMetadataTests(unittest.TestCase):
         write_npm(self.root, 'hypercast', '0.10.0')
         root_tgz = self.root / 'npm/hypercast-0.10.0.tgz'
         platform = self.root / f'npm/skunkwerkx-hypercast-{NODE_SUFFIXES[0]}-0.10.0.tgz'
+        wasi = self.root / f'npm/skunkwerkx-hypercast-{NODE_WASI}-0.10.0.tgz'
         names = [f'@skunkwerkx/hypercast-{s}' for s in NODE_SUFFIXES]
+        wasi_name = f'@skunkwerkx/hypercast-{NODE_WASI}'
+        optional = {n: '0.10.0' for n in names}
+        wasi_dependency = {wasi_name: '0.10.0'}
+
+        def root_manifest(name='hypercast', version='0.10.0', optional=optional, **fields):
+            return npm_manifest(name, version, optionalDependencies=optional, **fields)
+
+        def wasi_manifest(dependencies=WASI_RUNTIME_PINS, **fields):
+            return npm_manifest(wasi_name, '0.10.0', dependencies=dependencies, **fields)
+
         broken = {
-            'wrong root name': (root_tgz, npm_manifest('wrongproject', '0.10.0',
-                                optionalDependencies={n: '0.10.0' for n in names})),
-            'stale root version': (root_tgz, npm_manifest('hypercast', '0.8.0',
-                                   optionalDependencies={n: '0.10.0' for n in names})),
-            'missing optionalDependency': (root_tgz, npm_manifest('hypercast', '0.10.0',
-                                           optionalDependencies={n: '0.10.0' for n in names[1:]})),
-            'extra optionalDependency': (root_tgz, npm_manifest('hypercast', '0.10.0',
-                                         optionalDependencies={**{n: '0.10.0' for n in names}, 'left-pad': '0.10.0'})),
-            'wrong platform name': (platform, npm_manifest('@skunkwerkx/wrongproject-linux-x64-gnu', '0.10.0')),
-            'platform named as another platform': (platform, npm_manifest(names[1], '0.10.0')),
-            'platform named as the root': (platform, npm_manifest('hypercast', '0.10.0')),
+            'wrong root name': (root_tgz, [('package/package.json', root_manifest('wrongproject', dependencies=wasi_dependency))]),
+            'stale root version': (root_tgz, [('package/package.json', root_manifest(version='0.8.0', dependencies=wasi_dependency))]),
+            'missing optionalDependency': (root_tgz, [('package/package.json', root_manifest(
+                optional={n: '0.10.0' for n in names[1:]}, dependencies=wasi_dependency))]),
+            'extra optionalDependency': (root_tgz, [('package/package.json', root_manifest(
+                optional={**optional, 'left-pad': '0.10.0'}, dependencies=wasi_dependency))]),
+            'root without dependencies': (root_tgz, [('package/package.json', root_manifest())]),
+            'root dependency at another version': (root_tgz, [('package/package.json', root_manifest(
+                dependencies={wasi_name: '0.8.0'}))]),
+            'root carrying an addon': (root_tgz, [('package/package.json', root_manifest(dependencies=wasi_dependency)),
+                                                  ('package/hypercast.linux-x64-gnu.node', b'native')]),
+            'wrong platform name': (platform, [('package/package.json', npm_manifest('@skunkwerkx/wrongproject-linux-x64-gnu', '0.10.0'))]),
+            'platform named as another platform': (platform, [('package/package.json', npm_manifest(names[1], '0.10.0'))]),
+            'platform named as the root': (platform, [('package/package.json', npm_manifest('hypercast', '0.10.0'))]),
+            'platform carrying a wasm': (platform, [('package/package.json', npm_manifest(names[0], '0.10.0')),
+                                                    (f'package/hypercast.{NODE_SUFFIXES[0]}.node', b'native'),
+                                                    (f'package/hypercast.{NODE_WASI}.wasm', b'\0asm')]),
+            'wasi declaring a cpu': (wasi, wasi_entries(wasi_manifest(cpu=['wasm32']))),
+            'wasi declaring an os': (wasi, wasi_entries(wasi_manifest(os=['linux']))),
+            'wasi declaring a libc': (wasi, wasi_entries(wasi_manifest(libc=['glibc']))),
+            'wasi runtime as a tilde range': (wasi, wasi_entries(wasi_manifest({**WASI_RUNTIME_PINS, '@napi-rs/wasm-runtime': '~1.0.0'}))),
+            'wasi runtime as a caret range': (wasi, wasi_entries(wasi_manifest({**WASI_RUNTIME_PINS, '@emnapi/core': '^1.5.0'}))),
+            'wasi runtime as a tag': (wasi, wasi_entries(wasi_manifest({**WASI_RUNTIME_PINS, '@emnapi/runtime': 'latest'}))),
+            'wasi runtime as a url': (wasi, wasi_entries(wasi_manifest(
+                {**WASI_RUNTIME_PINS, '@emnapi/runtime': 'git+https://github.com/toyobayashi/emnapi.git'}))),
+            'wasi with a fourth dependency': (wasi, wasi_entries(wasi_manifest({**WASI_RUNTIME_PINS, 'tslib': '2.8.1'}))),
+            'wasi missing a runtime dependency': (wasi, wasi_entries(wasi_manifest(
+                {k: v for k, v in WASI_RUNTIME_PINS.items() if k != '@emnapi/core'}))),
+            'wasi without dependencies': (wasi, wasi_entries(npm_manifest(wasi_name, '0.10.0'))),
+            'wasi carrying an addon': (wasi, wasi_entries(wasi_manifest(), extra=[('package/hypercast.linux-x64-gnu.node', b'native')])),
+            'wasi carrying two wasm modules': (wasi, wasi_entries(wasi_manifest(),
+                                                                  extra=[(f'package/hypercast.{NODE_WASI}.debug.wasm', b'\0asm')])),
+            'wasi without its wasm': (wasi, [('package/package.json', wasi_manifest()), ('package/hypercast.wasip1.cjs', b'')]),
+            'wasi without its loader': (wasi, [('package/package.json', wasi_manifest()), (f'package/hypercast.{NODE_WASI}.wasm', b'\0asm')]),
+            'wasi named as a platform': (wasi, wasi_entries(npm_manifest(names[0], '0.10.0', dependencies=WASI_RUNTIME_PINS))),
         }
-        for label, (path, manifest) in broken.items():
+        for label, (path, entries) in broken.items():
             with self.subTest(label):
                 original = path.read_bytes()
-                write_tar(path, [('package/package.json', manifest)])
+                write_tar(path, entries)
                 with self.assertRaisesRegex(ValueError, 'npm'):
                     self.validate()
                 path.write_bytes(original)
         self.validate()
+        original = wasi.read_bytes()
+        write_tar(wasi, wasi_entries(wasi_manifest({**WASI_RUNTIME_PINS, '@emnapi/core': '2.0.0-alpha.4', '@emnapi/runtime': '2.0.0-alpha.4'})))
+        self.validate()
+        wasi.write_bytes(original)
         original = root_tgz.read_bytes()
         write_tar(root_tgz, [('package/index.js', b'')])
         with self.assertRaises(ValueError):
@@ -326,6 +384,21 @@ class PackageMetadataTests(unittest.TestCase):
         (self.root / 'npm/extra-0.10.0.tgz').write_bytes(original)
         with self.assertRaises(ValueError):
             self.validate()
+
+    def test_npm_tarball_compares_wasi_runtime_when_given(self):
+        wasi = self.root / f'npm/skunkwerkx-hypercast-{NODE_WASI}-0.10.0.tgz'
+        self.assertEqual(self.m.npm_tarball(wasi, 'hypercast', '0.10.0', NODE_SUFFIXES, NODE_WASI, WASI_RUNTIME_PINS),
+                         f'@skunkwerkx/hypercast-{NODE_WASI}')
+        with self.assertRaisesRegex(ValueError, 'npm'):
+            self.m.npm_tarball(wasi, 'hypercast', '0.10.0', NODE_SUFFIXES, NODE_WASI,
+                               {**WASI_RUNTIME_PINS, '@emnapi/core': '1.5.1'})
+        with self.assertRaisesRegex(ValueError, 'npm'):
+            self.m.npm_tarball(wasi, 'hypercast', '0.10.0', NODE_SUFFIXES, '')
+        self.assertEqual(self.m.npm_all_names('hypercast', NODE_SUFFIXES, NODE_WASI)[-1], f'@skunkwerkx/hypercast-{NODE_WASI}')
+        self.assertEqual(len(self.m.npm_all_names('hypercast', NODE_SUFFIXES, '')), 9)
+        self.assertIsNone(self.m.npm_wasi_name('hypercast', ''))
+        self.assertEqual(self.m.WASI_RUNTIME, ('@napi-rs/wasm-runtime', '@emnapi/core', '@emnapi/runtime'))
+        self.assertEqual(self.m.DEFAULTS.node_wasi, NODE_WASI)
 
     def test_rejects_r_source_tarball_with_stale_identity_or_missing_members(self):
         path = self.root / 'cran/hypercast_0.10.0.tar.gz'
@@ -419,7 +492,7 @@ class PackageMetadataTests(unittest.TestCase):
 
     def test_counts_follow_the_consumer_config(self):
         cfg = SimpleNamespace(wheels=24, sdist=False, ruby_platforms=dict(list(RUBY_PLATFORMS.items())[:6]),
-                              node_platforms=NODE_PLATFORMS)
+                              node_platforms=NODE_PLATFORMS, node_wasi=NODE_WASI)
         with self.assertRaisesRegex(ValueError, '24 wheels'):
             self.m.validate_package_metadata(self.root, 'hypercast', '0.10.0', cfg)
         (self.root / 'pypi/hypercast-0.10.0-abi0-none-platform.whl').unlink()

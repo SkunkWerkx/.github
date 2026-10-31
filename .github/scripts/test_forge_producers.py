@@ -612,6 +612,49 @@ class GoTranslatedCoreContracts(unittest.TestCase):
         wasmtime = next(s for s in job['steps'] if s.get('name', '').startswith('Install wasmtime '))
         self.assertRegex(wasmtime['env']['WASMTIME_SHA256'], r'^[0-9a-f]{64}$')
 
+    def test_node_wasi_job_builds_tests_packs_and_attests_first(self):
+        inputs = self.wasm['on']['workflow_call']['inputs']
+        self.assertEqual(inputs['node_wasi']['type'], 'boolean')
+        self.assertIs(inputs['node_wasi']['default'], False)
+        self.assertEqual(inputs['node_version']['default'], '26')
+        self.assertEqual(list(self.wasm['jobs'])[0], 'build-node-wasi', 'the newest code fails first')
+        job = self.wasm['jobs']['build-node-wasi']
+        self.assertEqual(job['if'], 'inputs.node_wasi')
+        self.assertEqual(job['env'], {'CRATE': '${{ inputs.crate }}'}, 'no crate name is spelled out in the Forge')
+        self.assertNotIn('hyperuuid', str(job))
+        steps = job['steps']
+        names = [s.get('name') or s.get('uses') for s in steps]
+        self.assertLess(names.index('Validate Forge workflow revision'), names.index('Check out the executing Forge revision'))
+        toolchain = next(s for s in steps if str(s.get('uses', '')).startswith('dtolnay/rust-toolchain@'))
+        self.assertEqual(toolchain['with'], {'targets': 'wasm32-wasip1'})
+        node = next(s for s in steps if str(s.get('uses', '')).startswith('actions/setup-node@'))
+        self.assertEqual(node['with']['node-version'], '${{ inputs.node_version }}')
+        text = '\n'.join(self.describe(s) for s in steps)
+        for needle in ('npm run build:wasi',
+                       'git diff --exit-code -- typescript/index.js typescript/index.d.ts typescript/binding.js typescript/binding.d.ts',
+                       'ls -l "typescript/$CRATE.wasm32-wasip1.wasm"', 'NAPI_RS_FORCE_WASI=error npm test', 'npm run typecheck',
+                       'cp "typescript/$CRATE.wasm32-wasip1.wasm" typescript/"$CRATE".wasip1* node-wasm32-wasip1/',
+                       'npm_package.py" pack-wasi --package typescript --artifact node-wasm32-wasip1 --out npm-wasi',
+                       'typescript/browser-smoke', 'npm install --no-save', 'python3 -m http.server 8092 --bind 127.0.0.1',
+                       'timeout 120 google-chrome --headless=new --no-sandbox --disable-gpu --virtual-time-budget=60000',
+                       '--dump-dom', 'node typescript/browser-smoke/check-dom.mjs', 'dom.html'):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, text)
+        browser = next(s for s in steps if 'check-dom.mjs' in s.get('run', ''))
+        self.assertIn('set -euo pipefail', browser['run'])
+        self.assertNotIn('|| true', browser['run'])
+        self.assertNotIn('playwright', text.lower())
+        self.assertNotIn('wasi-sdk', text.lower())
+        self.assertNotIn('.debug.wasm', text)
+        attest = next(s for s in steps if str(s.get('uses', '')).startswith('actions/attest-build-provenance@'))
+        archive = next(s for s in self.wasm['jobs']['build-wasm']['steps'] if s.get('name') == 'Attest the static library')
+        self.assertEqual(attest['if'], archive['if'])
+        self.assertEqual(attest['with']['subject-path'], 'node-wasm32-wasip1/*')
+        upload = next(s for s in steps if str(s.get('uses', '')).startswith('actions/upload-artifact@'))
+        self.assertEqual(upload['with']['name'], 'node-wasm32-wasip1')
+        self.assertEqual(upload['with']['path'], 'node-wasm32-wasip1/')
+        self.assertEqual(upload['with']['if-no-files-found'], 'error')
+        self.assertLess(names.index(attest.get('name') or attest['uses']), names.index(upload.get('name') or upload['uses']))
     def test_lint_go_sweeps_checks_the_core_and_races(self):
         steps = self.check['jobs']['lint-go']['steps']
         text = ' '.join(self.describe(s) for s in steps)

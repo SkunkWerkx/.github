@@ -16,7 +16,7 @@ import unittest.mock
 import urllib.error
 import zipfile
 
-from test_package_inventory_metadata import NODE_SUFFIXES, create_packages, write_cran, write_npm
+from test_package_inventory_metadata import NODE_SUFFIXES, NODE_WASI, create_packages, write_cran, write_npm
 
 SPEC = importlib.util.spec_from_file_location('inventory', Path(__file__).with_name('release_inventory.py'))
 
@@ -398,7 +398,7 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
 
     def test_npm_and_cran_groups_are_optional_and_exact(self):
         paths = self.layout()
-        self.assertEqual(sum(p.startswith('npm/') for p in paths), 9)
+        self.assertEqual(sum(p.startswith('npm/') for p in paths), 10)
         self.assertIn('cran/hypercast_0.10.0.tar.gz', paths)
         self.m.validate_layout(paths, 'hypercast', '0.10.0')
         self.m.validate_layout([p for p in paths if p.split('/')[0] not in ('npm', 'cran')], 'hypercast', '0.10.0')
@@ -406,6 +406,7 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
         broken = {
             'missing platform package': [p for p in paths if p != platform],
             'missing root package': [p for p in paths if p != 'npm/hypercast-0.10.0.tgz'],
+            'missing wasi package': [p for p in paths if p != f'npm/skunkwerkx-hypercast-{NODE_WASI}-0.10.0.tgz'],
             'stale platform version': [p.replace('-0.10.0.tgz', '-0.8.0.tgz') if p == platform else p for p in paths],
             'unscoped platform name': [p.replace('skunkwerkx-', '') if p == platform else p for p in paths],
             'extra npm file': paths + ['npm/hypercast-0.8.0.tgz'],
@@ -468,7 +469,7 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
     def test_npm_and_cran_are_signed_by_the_consumer_at_b(self):
         inventory = self.build()
         entries = [e for e in inventory['files'] if e['path'].split('/')[0] in ('npm', 'cran')]
-        self.assertEqual(len(entries), 10)
+        self.assertEqual(len(entries), 11)
         for entry in entries:
             self.assertEqual((entry['signer_repo'], entry['source_sha']), ('SkunkWerkx/HyperCast', 'b' * 40))
         self.assertIn('npm', self.m.REGISTRIES)
@@ -561,13 +562,14 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
 
     def npm_paths(self):
         root_tgz = self.root / 'npm/hypercast-0.10.0.tgz'
-        platforms = [self.root / f'npm/skunkwerkx-hypercast-{s}-0.10.0.tgz' for s in NODE_SUFFIXES]
+        platforms = [self.root / f'npm/skunkwerkx-hypercast-{s}-0.10.0.tgz' for s in (*NODE_SUFFIXES, NODE_WASI)]
         return root_tgz, platforms
 
     def test_npm_registry_plan_lists_exactly_the_missing_packages_platforms_first(self):
         root_tgz, platforms = self.npm_paths()
         everything = {p: p.read_bytes() for p in [root_tgz, *platforms]}
-        # A half-published first release: the root and seven platforms are up, one is not.
+        # A half-published first release: the root, the WASI package and seven platforms are up,
+        # one platform is not.
         missing = platforms[3]
         pending, requests, output = self.npm_plan({p: b for p, b in everything.items() if p != missing})
         self.assertEqual(pending, [missing])
@@ -577,9 +579,12 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
         # Only the root is missing: it is pending, and last.
         pending, _, _ = self.npm_plan({p: b for p, b in everything.items() if p != root_tgz})
         self.assertEqual(pending, [root_tgz])
-        # Nothing published: the eight platform packages, then the root.
+        # Nothing published: the eight platform packages and the WASI package (it sorts among
+        # them; the root's dependencies name it), then the root.
         pending, _, _ = self.npm_plan({})
         self.assertEqual(pending, [*sorted(platforms), root_tgz])
+        self.assertLess(pending.index(platforms[-1]), pending.index(root_tgz))
+        self.assertIn(NODE_WASI, platforms[-1].name)
         self.assertEqual(self.npm_plan(everything)[0], [])
 
     def test_npm_registry_plan_rejects_different_published_bytes(self):

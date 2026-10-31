@@ -1,8 +1,8 @@
 name: Publish to npm
 description: >
   Rechecks the preserved inventory, reconciles the packages registry.npmjs.org already serves
-  by exact bytes, publishes only the missing tarballs (every platform package before the root
-  that names them) through npm Trusted Publishing, then waits until every public package
+  by exact bytes, publishes only the missing tarballs (every platform package and the WASI package
+  before the root that names them) through npm Trusted Publishing, then waits until every public package
   matches the prepared bytes. Must run in the consumer's release.yml: the Trusted Publisher
   registered on npmjs.com is the consumer's workflow, never the Forge's. Runs in the
   consumer's checkout at B.
@@ -85,9 +85,10 @@ runs:
       run: python3 "$FORGE_SCRIPTS/release_inventory.py" registry-plan --registry npm --output pending-npm
 
     # registry-plan copies the pending tarballs into one flat directory, where the root's
-    # file name sorts first; the order is set here. Every platform package goes before the
-    # root, whose optionalDependencies name them, and anything that is neither stops the
-    # loop before the first upload.
+    # file name sorts first; the order is set here. Every platform package and the WASI
+    # package (the same `skunkwerkx-<crate>-*` glob) go before the root, whose
+    # optionalDependencies and dependencies name them, and anything that is neither stops
+    # the loop before the first upload.
     - name: Publish only missing preserved npm packages
       if: steps.pending.outputs.pending == 'true' && inputs.publish == 'true'
       shell: bash
