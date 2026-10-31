@@ -75,7 +75,8 @@ name: HyperForge — build native core, test every binding
 #   - php (ext-php-rs): the build-php-extension job (hyper-build-php-extension.yml), not this
 #     matrix. The extension is the PHP binding, installed by PIE from a zip per platform and
 #     PHP minor, so it is built against each PHP it ships for, which is a matrix of its own:
-#     seven platforms (every RID but win-arm64, where PHP runs as an x64 process) by each
+#     six platforms (every RID but win-arm64, where PHP runs as an x64 process, and osx-x64,
+#     for which no PHP is packaged and none is built) by each
 #     minor in `php_versions` in `release` mode, the newest minor plus linux-x64 on
 #     `php_floor_version` in `pr` mode. Each leg load-checks the extension, runs the suite
 #     through it, and packs, uploads and (release) attests its zip. Gated by the `php` input.
