@@ -73,6 +73,14 @@ workflow. This file holds what the code alone won't tell you.
   the failure comes before anything publishes.
 - Release and recovery steps: `docs/release-runbook.md`.
 
+## No leg builds a language runtime
+
+A leg takes the runtime its platform packages (setup-php, setup-python, a Homebrew tap, an Alpine
+package, a container image), or there is no leg and no artifact for that platform. The PHP
+osx-x64 leg compiled an x86_64 PHP from source under Rosetta and was retired on 2026-10-31 for
+it (`php_ext_package.py` has the receipt; `test_no_leg_builds_a_php_runtime` pins the rule).
+Cross-building the library and testing it under Rosetta is a different thing and stays.
+
 ## Modes
 
 `mode: pr` skips everything only a release needs (attestations, the second Ruby ABI,

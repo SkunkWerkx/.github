@@ -421,19 +421,21 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
             (self.root / 'bun/x.tgz').write_bytes(b'')
             self.m.payload_files(self.root)
 
-    def test_php_zips_are_exactly_the_twenty_one_named_with_the_release_tag(self):
-        # The release 1.1.0: seven platforms x 8.3, 8.4, 8.5, each named with v1.1.0.
+    def test_php_zips_are_exactly_the_eighteen_named_with_the_release_tag(self):
+        # The release 1.1.0: six platforms x 8.3, 8.4, 8.5, each named with v1.1.0 (no Intel
+        # macOS zip: no leg builds a PHP, and Homebrew bottles none for it).
         layout = [p for p in self.layout() if not p.startswith('php/')]
         # Written out, not derived: the spec's asset table for 1.1.0, so the formula is checked
         # against names it did not produce.
         zips = [f'php/php_hyperuuid-v1.1.0_php{m}-{arch}-{system}-nts.zip'
                 for m in ('8.3', '8.4', '8.5')
                 for arch in ('x86_64', 'arm64')
-                for system in ('linux-glibc', 'linux-musl', 'darwin-bsdlibc')]
+                for system in ('linux-glibc', 'linux-musl', 'darwin-bsdlibc')
+                if (arch, system) != ('x86_64', 'darwin-bsdlibc')]
         zips += ['php/php_hyperuuid-v1.1.0-8.3-nts-vs16-x86_64.zip',
                  'php/php_hyperuuid-v1.1.0-8.4-nts-vs17-x86_64.zip',
                  'php/php_hyperuuid-v1.1.0-8.5-nts-vs17-x86_64.zip']
-        self.assertEqual(len(set(zips)), 21)
+        self.assertEqual(len(set(zips)), 18)
         # The fixture's other groups are hypercast 0.10.0; validate those names for 1.1.0.
         others = [p.replace('hypercast', 'hyperuuid').replace('0.10.0', '1.1.0') for p in layout]
         self.m.validate_layout(others + zips, 'hyperuuid', '1.1.0')
@@ -454,7 +456,7 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
     def test_php_zips_are_built_at_a_signed_by_the_forge_and_attached_to_the_release(self):
         inventory = self.build()
         entries = [e for e in inventory['files'] if e['path'].startswith('php/')]
-        self.assertEqual(len(entries), 21)
+        self.assertEqual(len(entries), 18)
         for entry in entries:
             self.assertEqual((entry['signer_repo'], entry['source_sha'], entry['location']),
                              (self.m.FORGE, 'a' * 40, 'packages'))
