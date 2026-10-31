@@ -3,7 +3,9 @@
 Every Forge action, reusable workflow and script that needs to know a consumer's names
 reads them here, so the three repositories cannot drift apart one hard-coded table at a
 time. The file holds only what differs between repositories; everything the layout
-conventions fix (RIDs, library names, the Swift bundle, the Ruby platform gems) is derived from `crate` and `project` and can be overridden by the same key.
+conventions fix (RIDs, library names, the Swift bundle) is derived from `crate` and `project`; the
+lists a repository may differ on (Ruby ABIs and platform gems, npm platforms and the WASI package,
+Swift targets and XCFramework slices, version files) have keys of their own, named below.
 
 Required keys: `crate` (lowercase core name), `project` (PascalCase binding name) and
 `exports` (how to read the C export list from the Rust source: `sources`, `patterns`,

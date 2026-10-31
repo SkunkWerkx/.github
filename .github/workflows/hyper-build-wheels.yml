@@ -23,7 +23,7 @@ name: HyperForge — build and install-test the PyPI wheels
 # (`pypi-wheels-sdist`, `{crate}-{version}.tar.gz`), for the platforms and interpreters with
 # no wheel: build-sdist installs it at the crate's declared `rust-version` on manylinux2014
 # and on Alpine and proves one minor lower fails, and sdist-fallthrough reports, without
-# blocking, what a build from it does on free-threaded 3.13, 3.14 and PyPy.
+# blocking, what a build from it does on free-threaded 3.14 and PyPy.
 #
 # It runs in CI rather than only at the tag: the native libraries embed the crate version,
 # and a release reuses the CI run that built the version-bump commit (the caller's
@@ -47,7 +47,7 @@ on:
         description: >
           `release` (the default) or `pr`, as in hyper-build-native.yml. `pr` builds only the
           Pyodide wheel, whose job is the one place the Python suite runs in the browser, and
-          attests nothing; the eight native wheels are packaging (build-native already builds
+          attests nothing; the sixteen native wheels are packaging (build-native already builds
           and tests the PyO3 extension on every leg), so they wait for a release-mode run.
         required: false
         type: string
