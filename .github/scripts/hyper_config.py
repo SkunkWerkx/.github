@@ -29,7 +29,10 @@ with one group around the version; the default list adds `typescript/package.jso
 only when that binding's directory exists at the consumer's root), `r_corpus` (the corpus
 files every R source tarball must carry under tests/testthat/corpus/, and nothing else there,
 each by its path under corpus/: a JSON file or a fixture it reads, such as
-`workbook/basic.xlsx`; default HyperUuid's five).
+`workbook/basic.xlsx`; default HyperUuid's five), `big_endian_control` (the negative control
+that proves the big-endian target reads the corpus: `file`, a path under corpus/; `find`, text
+that occurs in it, whose first occurrence becomes `replace`; `test`, the cargo test target that
+replays it; `fails`, the test in it that must then fail; default HyperUuid's SQL order vector).
 """
 import json
 from pathlib import Path
@@ -67,6 +70,11 @@ R_CORPUS = ('v5.json', 'sql_order.json', 'sql_order_refused.json', 'timestamp.js
 # characters and hyphens, then a name with an extension; no `.` or `..` segment, no absolute
 # path, no trailing slash.
 R_CORPUS_PATH = re.compile(r'(?:[\w-]+/)*[\w-][\w.-]*\.\w+')
+# hyper-core-checks.yml's big-endian negative control, unless .github/hyper.json names its own:
+# one corpus vector corrupted, and the test that replays it required to fail.
+BIG_ENDIAN_CONTROL = {'file': 'sql_order.json', 'find': '"sql": "00000000000000808000000000000000"',
+                      'replace': '"sql": "01000000000000808000000000000000"',
+                      'test': 'conformance', 'fails': 'sql_order'}
 WHEELS = 17
 CONFIG_PATH = '.github/hyper.json'
 
@@ -109,6 +117,13 @@ class HyperConfig:
         self.node_wasi = node.get('wasi', NODE_WASI_PLATFORM)
         if not isinstance(self.node_wasi, str):
             raise ValueError('node.wasi must be a napi platform name, or "" for no WASI package')
+        self.big_endian_control = dict(data.get('big_endian_control', BIG_ENDIAN_CONTROL))
+        control = self.big_endian_control
+        if set(control) != set(BIG_ENDIAN_CONTROL) or not all(isinstance(v, str) and v for v in control.values()) \
+                or not R_CORPUS_PATH.fullmatch(control['file']) or control['find'] == control['replace'] \
+                or not all(re.fullmatch(r'[A-Za-z0-9_]+', control[k]) for k in ('test', 'fails')):
+            raise ValueError('big_endian_control needs exactly file (a path under corpus/), find and replace '
+                             '(different, non-empty), test and fails (Rust identifiers)')
         self.r_corpus = tuple(data.get('r_corpus', R_CORPUS))
         if not self.r_corpus or not all(isinstance(n, str) and R_CORPUS_PATH.fullmatch(n) for n in self.r_corpus) \
                 or len(set(self.r_corpus)) != len(self.r_corpus):
@@ -292,6 +307,19 @@ def shell(cfg):
     return '\n'.join(lines) + '\n'
 
 
+def corrupt_corpus(cfg, root):
+    """Apply big_endian_control's corruption to the checkout's corpus; return its test and
+    the test that must fail. Refuses when `find` is not in the file, so a moved vector fails
+    loudly instead of leaving the corpus intact and the control vacuous."""
+    control = cfg.big_endian_control
+    path = Path(root) / 'corpus' / control['file']
+    text = path.read_text(encoding='utf-8')
+    if control['find'] not in text:
+        raise ValueError(f"big_endian_control: {control['find']!r} is not in corpus/{control['file']}")
+    path.write_text(text.replace(control['find'], control['replace'], 1), encoding='utf-8')
+    return control['test'], control['fails']
+
+
 def bump(cfg, root, version):
     """Set every version file's one captured group to `version`; each must match once."""
     changed = []
@@ -313,7 +341,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('mode', choices=('shell', 'json', 'version-files', 'bump'))
+    parser.add_argument('mode', choices=('shell', 'json', 'version-files', 'bump', 'corrupt-corpus'))
     parser.add_argument('--root', type=Path, default=Path('.'))
     parser.add_argument('--version', help='bump: the bare X.Y.Z every version file is set to')
     args = parser.parse_args()
@@ -323,6 +351,9 @@ def main():
     elif args.mode == 'version-files':
         for path, pattern in cfg.version_files.items():
             print(f'{path}\t{pattern}')
+    elif args.mode == 'corrupt-corpus':
+        test, fails = corrupt_corpus(cfg, args.root)
+        print(f'CONTROL_TEST={test}\nCONTROL_FAILS={fails}')
     elif args.mode == 'bump':
         if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', args.version or ''):
             raise ValueError('bump needs a bare X.Y.Z version')

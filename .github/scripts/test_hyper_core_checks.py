@@ -42,6 +42,22 @@ class CoreChecksWorkflowTests(unittest.TestCase):
                 self.assertEqual(len(searches), 1)
                 self.assertIn('--color never', searches[0])
 
+    def test_big_endian_control_reads_the_consumers_vector(self):
+        # HyperUuid's sql_order vector was hard-coded here, so every other crate's big-endian
+        # leg failed with "can't read ../corpus/sql_order.json" (HyperCast's second board).
+        control = self.step('Negative control, a corrupted corpus vector must fail conformance')
+        run = control['run']
+        self.assertIn('hyper_config.py corrupt-corpus --root ..', run)
+        self.assertIn('--test "$CONTROL_TEST"', run)
+        self.assertIn('grep -qxF "test $CONTROL_FAILS ... FAILED" "$out"', run)
+        self.assertNotIn('sql_order', self.text)
+        names = [s.get('name') for s in self.steps]
+        checkout = self.step('Check out the executing Forge revision')
+        self.assertEqual(checkout['with']['path'], '.hyperforge')
+        self.assertEqual(checkout['with']['ref'], '${{ job.workflow_sha }}')
+        self.assertEqual(checkout['if'], control['if'])
+        self.assertLess(names.index('Check out the executing Forge revision'), names.index(control['name']))
+
     def test_three_hosts_fail_fast_off(self):
         self.assertEqual(list(self.workflow['jobs']), ['checks'])
         self.assertIs(self.job['strategy']['fail-fast'], False)

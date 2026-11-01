@@ -346,6 +346,22 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y qemu-user "gcc-$ARCH-linux-gnu" "libc6-dev-$ARCH-cross"
+      # The negative control reads which vector to corrupt from the consumer's hyper.json,
+      # through hyper_config.py: the Forge revision this job runs, checked out beside it.
+      - name: Validate Forge workflow revision
+        if: inputs.big_endian != '' && matrix.arch == 'x64'
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        if: inputs.big_endian != '' && matrix.arch == 'x64'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
       - name: cargo test on the big-endian target
         if: inputs.big_endian != '' && matrix.arch == 'x64'
         working-directory: rust
@@ -367,23 +383,26 @@ jobs:
           v=CARGO_TARGET_$(tr a-z- A-Z_ <<<"$TARGET")
           export "${v}_LINKER=$ARCH-linux-gnu-gcc"
           export "${v}_RUNNER=qemu-$ARCH -L /usr/$ARCH-linux-gnu"
-          # HyperUuid's vector and test name; a sibling opting in must generalise both.
-          sed -i '0,/"sql": "00000000000000808000000000000000"/s//"sql": "01000000000000808000000000000000"/' ../corpus/sql_order.json
+          # The vector, its test target and the test that must fail: `big_endian_control` in
+          # .github/hyper.json (HyperUuid's SQL order vector by default).
+          control=$(python3 ../.hyperforge/.github/scripts/hyper_config.py corrupt-corpus --root ..)
+          CONTROL_TEST=$(sed -n 's/^CONTROL_TEST=//p' <<<"$control")
+          CONTROL_FAILS=$(sed -n 's/^CONTROL_FAILS=//p' <<<"$control")
           if git diff --quiet -- ../corpus; then
             echo "::error::the negative control did not change the corpus"
             exit 1
           fi
           out=$(mktemp)
           status=0
-          cargo test --locked --release --target "$TARGET" --test conformance >"$out" 2>&1 || status=$?
+          cargo test --locked --release --target "$TARGET" --test "$CONTROL_TEST" >"$out" 2>&1 || status=$?
           cat "$out"
           git checkout -- ../corpus
           if [[ "$status" -eq 0 ]]; then
             echo "::error::the corpus is not read on $TARGET"
             exit 1
           fi
-          if ! grep -qx 'test sql_order \.\.\. FAILED' "$out"; then
-            echo "::error::conformance failed on $TARGET, but not in the sql_order test that reads the corpus"
+          if ! grep -qxF "test $CONTROL_FAILS ... FAILED" "$out"; then
+            echo "::error::$CONTROL_TEST failed on $TARGET, but not in $CONTROL_FAILS, the test that reads the corrupted vector"
             exit 1
           fi
 

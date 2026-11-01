@@ -62,6 +62,36 @@ class HyperConfigTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'r_corpus'):
                 hyper_config.HyperConfig({**MINIMAL, 'r_corpus': bad})
 
+    def test_big_endian_control_defaults_to_hyperuuids_and_is_validated(self):
+        self.assertEqual(hyper_config.HyperConfig(MINIMAL).big_endian_control, hyper_config.BIG_ENDIAN_CONTROL)
+        own = {'file': 'uuid.json', 'find': '"value": "0102"', 'replace': '"value": "0103"',
+               'test': 'conformance', 'fails': 'uuid_corpus'}
+        self.assertEqual(hyper_config.HyperConfig({**MINIMAL, 'big_endian_control': own}).big_endian_control, own)
+        for bad in ({k: v for k, v in own.items() if k != 'fails'}, {**own, 'extra': 'x'},
+                    {**own, 'replace': own['find']}, {**own, 'find': ''}, {**own, 'file': '../uuid.json'},
+                    {**own, 'test': 'conformance --release'}, {**own, 'fails': 'a b'}, {**own, 'test': 1}):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'big_endian_control'):
+                hyper_config.HyperConfig({**MINIMAL, 'big_endian_control': bad})
+
+    def test_corrupt_corpus_changes_the_first_occurrence_and_names_the_tests(self):
+        own = {'file': 'nested/uuid.json', 'find': '"v": 1', 'replace': '"v": 2',
+               'test': 'conformance', 'fails': 'uuid_corpus'}
+        write_config(self.root, {**MINIMAL, 'big_endian_control': own})
+        corpus = self.root / 'corpus' / 'nested' / 'uuid.json'
+        corpus.parent.mkdir(parents=True)
+        corpus.write_text('[{"v": 1}, {"v": 1}]')
+        out = subprocess.run([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'corrupt-corpus', '--root', str(self.root)],
+                             capture_output=True, text=True, check=True).stdout
+        self.assertEqual(out.splitlines(), ['CONTROL_TEST=conformance', 'CONTROL_FAILS=uuid_corpus'])
+        self.assertEqual(corpus.read_text(), '[{"v": 2}, {"v": 1}]')
+        # A vector that moved fails loudly rather than leaving the control vacuous.
+        corpus.write_text('[{"v": 3}]')
+        missing = subprocess.run([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'corrupt-corpus', '--root', str(self.root)],
+                                 capture_output=True, text=True)
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn('is not in corpus/nested/uuid.json', missing.stderr)
+        self.assertEqual(corpus.read_text(), '[{"v": 3}]')
+
     def test_sdist_must_be_a_boolean(self):
         for bad in ('false', 1, None):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'sdist must be true or false'):
