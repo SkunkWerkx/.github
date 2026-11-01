@@ -90,7 +90,7 @@ jobs:
             pr) skip=(--skip osx-x64) ;;
             *) echo "::error::mode must be release or pr, not $MODE"; exit 1 ;;
           esac
-          python3 .hyperforge/.github/scripts/c_package.py pack --artifacts artifacts --out c-packages "${skip[@]}"
+          python3 .hyperforge/.github/scripts/c_package.py pack --artifacts artifacts --out c-packages ${skip[@]+"${skip[@]}"}
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

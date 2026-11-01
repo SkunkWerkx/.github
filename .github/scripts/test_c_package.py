@@ -329,6 +329,13 @@ class WorkflowTests(unittest.TestCase):
         lint = next(step for step in jobs['pack']['steps'] if step.get('name') == 'clang-format --dry-run and shellcheck')
         self.assertIn('inputs.lint', lint['if'])
 
+    def test_pack_expands_an_empty_skip_list_on_bash_3(self):
+        # macOS's /bin/bash is 3.2, where `set -u` rejects "${skip[@]}" when the array is
+        # empty (release mode); HyperUuid's npm pack died on it in the 1.1.0 preparation.
+        text = (SCRIPTS.parent / 'workflows/hyper-test-c.yml').read_text()
+        self.assertIn('c_package.py pack --artifacts artifacts --out c-packages ${skip[@]+"${skip[@]}"}', text)
+        self.assertNotIn(' "${skip[@]}"', text)
+
 
 if __name__ == '__main__':
     unittest.main()
