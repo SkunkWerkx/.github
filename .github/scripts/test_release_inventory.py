@@ -405,7 +405,7 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
         platform = f'npm/skunkwerkx-hypercast-{NODE_SUFFIXES[0]}-0.10.0.tgz'
         broken = {
             'missing platform package': [p for p in paths if p != platform],
-            'missing root package': [p for p in paths if p != 'npm/hypercast-0.10.0.tgz'],
+            'missing root package': [p for p in paths if p != 'npm/skunkwerkx-hypercast-0.10.0.tgz'],
             'missing wasi package': [p for p in paths if p != f'npm/skunkwerkx-hypercast-{NODE_WASI}-0.10.0.tgz'],
             'stale platform version': [p.replace('-0.10.0.tgz', '-0.8.0.tgz') if p == platform else p for p in paths],
             'unscoped platform name': [p.replace('skunkwerkx-', '') if p == platform else p for p in paths],
@@ -561,7 +561,7 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
         return pending, requests, output
 
     def npm_paths(self):
-        root_tgz = self.root / 'npm/hypercast-0.10.0.tgz'
+        root_tgz = self.root / 'npm/skunkwerkx-hypercast-0.10.0.tgz'
         platforms = [self.root / f'npm/skunkwerkx-hypercast-{s}-0.10.0.tgz' for s in (*NODE_SUFFIXES, NODE_WASI)]
         return root_tgz, platforms
 
@@ -575,7 +575,7 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
         self.assertEqual(pending, [missing])
         self.assertEqual(sorted(p.name for p in output.iterdir()), [missing.name])
         self.assertIn(f'https://registry.npmjs.org/@skunkwerkx%2Fhypercast-{NODE_SUFFIXES[3]}/0.10.0', requests)
-        self.assertIn('https://registry.npmjs.org/hypercast/0.10.0', requests)
+        self.assertIn('https://registry.npmjs.org/@skunkwerkx%2Fhypercast/0.10.0', requests)
         # Only the root is missing: it is pending, and last.
         pending, _, _ = self.npm_plan({p: b for p, b in everything.items() if p != root_tgz})
         self.assertEqual(pending, [root_tgz])
@@ -593,21 +593,21 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
         with self.assertRaisesRegex(ValueError, 'registry conflict'):
             self.npm_plan({**everything, platforms[0]: b'other bytes'})
         def integrity(served):
-            url = 'https://registry.npmjs.org/hypercast/0.10.0'
+            url = 'https://registry.npmjs.org/@skunkwerkx%2Fhypercast/0.10.0'
             record = json.loads(served[url])
             record['dist']['integrity'] = 'sha512-' + base64.b64encode(b'x' * 64).decode()
             served[url] = json.dumps(record).encode()
         with self.assertRaisesRegex(ValueError, 'registry conflict'):
             self.npm_plan(everything, integrity)
         def host(served):
-            url = 'https://registry.npmjs.org/hypercast/0.10.0'
+            url = 'https://registry.npmjs.org/@skunkwerkx%2Fhypercast/0.10.0'
             record = json.loads(served[url])
-            record['dist']['tarball'] = 'https://example.com/hypercast-0.10.0.tgz'
+            record['dist']['tarball'] = 'https://example.com/skunkwerkx-hypercast-0.10.0.tgz'
             served[url] = json.dumps(record).encode()
         with self.assertRaisesRegex(ValueError, 'host'):
             self.npm_plan(everything, host)
         def vanished(served):
-            del served['https://registry.npmjs.org/hypercast/-/hypercast-0.10.0.tgz']
+            del served['https://registry.npmjs.org/@skunkwerkx/hypercast/-/hypercast-0.10.0.tgz']
         with self.assertRaisesRegex(ValueError, 'unavailable'):
             self.npm_plan(everything, vanished)
 

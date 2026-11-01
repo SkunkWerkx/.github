@@ -73,7 +73,7 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertIn('every registry package (NuGet, RubyGems, PyPI, crates.io and Maven Central), the 1 native', classic)
         self.assertNotIn('npm', classic)
         self.assertNotIn('CRAN', classic)
-        files = INVENTORY['files'] + [dict(path='npm/hyperuuid-1.0.0.tgz', location='packages'),
+        files = INVENTORY['files'] + [dict(path='npm/skunkwerkx-hyperuuid-1.0.0.tgz', location='packages'),
                                       dict(path='cran/hyperuuid_1.0.0.tar.gz', location='packages')]
         body = ' '.join(notes.notes(CHANGELOG, {**INVENTORY, 'files': files}).split())
         self.assertIn('every registry package (NuGet, RubyGems, PyPI, crates.io, Maven Central and npm), '
@@ -85,7 +85,7 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertEqual(notes.verifying(INVENTORY), SIBLING_VERIFYING)
 
     def test_npm_adds_addon_build_provenance_and_registry_provenance(self):
-        files = INVENTORY['files'] + [dict(path='npm/hyperuuid-1.0.0.tgz', location='packages')]
+        files = INVENTORY['files'] + [dict(path='npm/skunkwerkx-hyperuuid-1.0.0.tgz', location='packages')]
         body = ' '.join(notes.verifying({**INVENTORY, 'files': files}).split())
         self.assertIn('The native libraries, the Python wheels, the Node addons inside the npm '
                       'platform packages and the archives inside the NuGet package and the jar '

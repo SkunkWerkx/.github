@@ -80,9 +80,9 @@ def stage(package_dir, work, runner=default_runner):
         if key in manifest:
             raise ValueError(f'{package_dir / "package.json"} carries {key}: they are injected at pack time, never committed')
     scope_name = manifest.get('napi', {}).get('packageName')
-    if scope_name != f'{NPM_SCOPE}/{manifest["name"]}':
-        raise ValueError(f'napi.packageName is {scope_name!r}; the platform packages must be '
-                         f'{NPM_SCOPE}/{manifest["name"]}-<platform>')
+    if scope_name != manifest['name']:
+        raise ValueError(f'napi.packageName is {scope_name!r}; it must equal the package name, '
+                         f'{manifest["name"]}, so the platform packages are {manifest["name"]}-<platform>')
     if work.exists():
         shutil.rmtree(work)
     shutil.copytree(package_dir, work, symlinks=True,
@@ -191,7 +191,7 @@ def check_tarballs(paths, crate, version, cfg, versions, allow_missing_natives=F
     expected = npm_all_names(crate, platforms, wasi)
     skipped = {f'{NPM_SCOPE}/{crate}-{cfg.node_platforms[rid]}' for rid in skip}
     missing = [name for name in expected if name not in names and name not in skipped]
-    natives = set(expected) - {crate, npm_wasi_name(crate, wasi)}
+    natives = set(expected) - {f'{NPM_SCOPE}/{crate}', npm_wasi_name(crate, wasi)}
     if missing and not (allow_missing_natives and set(missing) <= natives):
         raise ValueError(f'npm packages missing: {missing}')
     packed_anyway = sorted(skipped & set(names))
@@ -207,8 +207,8 @@ def pack_wasi(package_dir, artifact_dir, out, cfg, work=None, runner=default_run
         raise ValueError('hyper.json says node.wasi is empty: this project ships no WASI package')
     versions = lockfile_versions(package_dir, WASI_RUNTIME)
     manifest = read_manifest(package_dir)
-    if manifest['name'] != cfg.crate:
-        raise ValueError(f'the package is {manifest["name"]}, hyper.json names {cfg.crate}')
+    if manifest['name'] != f'{NPM_SCOPE}/{cfg.crate}':
+        raise ValueError(f'the package is {manifest["name"]}, hyper.json names {NPM_SCOPE}/{cfg.crate}')
     with tempfile.TemporaryDirectory(prefix='npm-package-') as scratch:
         work = Path(work) if work else Path(scratch) / 'work'
         stage(package_dir, work, runner)
@@ -233,8 +233,8 @@ def pack(package_dir, artifacts_dir, out, cfg, work=None, allow_missing_natives=
     if unknown:
         raise ValueError(f'--skip names rids this project has no npm platform package for: {unknown}')
     manifest = read_manifest(package_dir)
-    if manifest['name'] != cfg.crate:
-        raise ValueError(f'the package is {manifest["name"]}, hyper.json names {cfg.crate}')
+    if manifest['name'] != f'{NPM_SCOPE}/{cfg.crate}':
+        raise ValueError(f'the package is {manifest["name"]}, hyper.json names {NPM_SCOPE}/{cfg.crate}')
     version, scope_name = manifest['version'], f'{NPM_SCOPE}/{cfg.crate}'
     natives = {}
     for rid in sorted(cfg.node_platforms):

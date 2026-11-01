@@ -86,7 +86,7 @@ class NpmPackageTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.package = self.tmp / 'typescript'
         write_json(self.package / 'package.json', dict(
-            name='hypercast', version='0.10.0', files=['index.js'], engines={'node': ENGINES},
+            name='@skunkwerkx/hypercast', version='0.10.0', files=['index.js'], engines={'node': ENGINES},
             napi=dict(binaryName='hypercast', packageName='@skunkwerkx/hypercast'),
             devDependencies={'@napi-rs/cli': '3.10.9'}))
         (self.package / 'index.js').write_text('module.exports = {}\n')
@@ -238,7 +238,7 @@ class NpmPackageTests(unittest.TestCase):
                                 runner=FakeNpm(), cfg=CFG)
         self.assertEqual(code, 0)
         self.assertEqual(len(list(self.out.iterdir())), 9)
-        root_tgz = self.out / 'hypercast-0.10.0.tgz'
+        root_tgz = self.out / 'skunkwerkx-hypercast-0.10.0.tgz'
         with tarfile.open(root_tgz) as archive:
             manifest = json.loads(archive.extractfile('package/package.json').read())
         self.assertEqual(len(manifest['optionalDependencies']), 8, 'the root still pins all eight')
@@ -254,7 +254,7 @@ class NpmPackageTests(unittest.TestCase):
         names = sorted(p.name for p in self.out.iterdir())
         self.assertEqual(len(names), 9)
         self.assertNotIn(npm_filename('@skunkwerkx/hypercast-darwin-x64', '0.10.0'), names)
-        with tarfile.open(self.out / 'hypercast-0.10.0.tgz') as archive:
+        with tarfile.open(self.out / 'skunkwerkx-hypercast-0.10.0.tgz') as archive:
             manifest = json.loads(archive.extractfile('package/package.json').read())
         self.assertEqual(len(manifest['optionalDependencies']), 8, 'the root still pins all eight')
         shutil.rmtree(self.out)

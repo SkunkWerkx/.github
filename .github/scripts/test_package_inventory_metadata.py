@@ -59,8 +59,8 @@ def write_npm(root, crate, version, platform_version=None, dependency_version=No
     root_fields = dict(optionalDependencies=optional)
     if wasi:
         root_fields['dependencies'] = {wasi_name: dependency_version or version}
-    write_tar(root / f'npm/{crate}-{version}.tgz', [
-        ('package/package.json', npm_manifest(crate, version, **root_fields)),
+    write_tar(root / f'npm/skunkwerkx-{crate}-{version}.tgz', [
+        ('package/package.json', npm_manifest(f'@skunkwerkx/{crate}', version, **root_fields)),
         ('package/index.js', b'module.exports = {}\n')])
     for suffix, name in zip(NODE_SUFFIXES, names):
         write_tar(root / f'npm/skunkwerkx-{crate}-{suffix}-{version}.tgz', [
@@ -313,7 +313,7 @@ class PackageMetadataTests(unittest.TestCase):
                     self.validate()
         shutil.rmtree(self.root / 'npm')
         write_npm(self.root, 'hypercast', '0.10.0')
-        root_tgz = self.root / 'npm/hypercast-0.10.0.tgz'
+        root_tgz = self.root / 'npm/skunkwerkx-hypercast-0.10.0.tgz'
         platform = self.root / f'npm/skunkwerkx-hypercast-{NODE_SUFFIXES[0]}-0.10.0.tgz'
         wasi = self.root / f'npm/skunkwerkx-hypercast-{NODE_WASI}-0.10.0.tgz'
         names = [f'@skunkwerkx/hypercast-{s}' for s in NODE_SUFFIXES]

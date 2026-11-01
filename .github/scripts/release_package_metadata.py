@@ -43,8 +43,9 @@ EXACT_SEMVER = re.compile(r'^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$
 
 
 def npm_names(crate, platforms):
-    """The root npm package's name, and its platform packages' names in napi-rs's form."""
-    return crate, [f'{NPM_SCOPE}/{crate}-{suffix}' for suffix in platforms]
+    """The root npm package's name, scoped like its platform packages (an unscoped name can be
+    anyone's; `hypercast` on npm is), and the platform packages' names in napi-rs's form."""
+    return f'{NPM_SCOPE}/{crate}', [f'{NPM_SCOPE}/{crate}-{suffix}' for suffix in platforms]
 
 
 def npm_wasi_name(crate, wasi):

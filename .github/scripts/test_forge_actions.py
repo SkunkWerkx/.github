@@ -403,25 +403,24 @@ class NpmAndCranActionTests(unittest.TestCase):
             return result.returncode, log
 
     def test_publish_npm_pushes_every_platform_package_before_the_root(self):
-        # registry-plan copies the pending tarballs into one flat directory, and `hyperuuid-`
-        # sorts before `skunkwerkx-`: a bare *.tgz glob would publish the root first, whose
-        # optionalDependencies would then name packages that do not exist yet.
+        # registry-plan copies the pending tarballs into one flat directory; a bare *.tgz glob
+        # could publish the root before a platform package its optionalDependencies name.
         suffixes = ['win32-arm64-msvc', 'darwin-arm64', 'linux-x64-gnu', 'linux-arm64-musl',
                     'linux-x64-musl', 'linux-arm64-gnu', 'darwin-x64', 'win32-x64-msvc']
         platforms = [f'skunkwerkx-hyperuuid-{s}-1.2.3.tgz' for s in suffixes]
-        code, log = self.publish_order(['hyperuuid-1.2.3.tgz', *platforms])
+        code, log = self.publish_order(['skunkwerkx-hyperuuid-1.2.3.tgz', *platforms])
         self.assertEqual(code, 0)
         self.assertEqual(len(log), 9)
-        self.assertEqual(log[-1], 'publish pending-npm/hyperuuid-1.2.3.tgz --access public')
+        self.assertEqual(log[-1], 'publish pending-npm/skunkwerkx-hyperuuid-1.2.3.tgz --access public')
         self.assertEqual(sorted(log[:-1]), sorted(f'publish pending-npm/{p} --access public' for p in platforms))
         # A half-published first release: only what is missing, platform first.
-        code, log = self.publish_order(['hyperuuid-1.2.3.tgz', platforms[3]])
+        code, log = self.publish_order(['skunkwerkx-hyperuuid-1.2.3.tgz', platforms[3]])
         self.assertEqual((code, log), (0, [f'publish pending-npm/{platforms[3]} --access public',
-                                           'publish pending-npm/hyperuuid-1.2.3.tgz --access public']))
+                                           'publish pending-npm/skunkwerkx-hyperuuid-1.2.3.tgz --access public']))
         code, log = self.publish_order(platforms[:2])
         self.assertEqual((code, len(log)), (0, 2))
         # Anything else in the plan is not a package this release ships: nothing is pushed.
-        code, log = self.publish_order(['hyperuuid-1.2.3.tgz', 'stray-1.2.3.tgz'])
+        code, log = self.publish_order(['skunkwerkx-hyperuuid-1.2.3.tgz', 'stray-1.2.3.tgz'])
         self.assertNotEqual(code, 0)
         self.assertEqual(log, [])
 

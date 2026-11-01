@@ -18,8 +18,9 @@ that publishes through Trusted Publishing. PyPI and RubyGems take pending publis
 nuget.org policy belongs to the account, so none of them needs a first publish by hand.
 
 npm is the same rule once per package: a consumer with a TypeScript binding ships ten (the
-root, the eight `@skunkwerkx/<crate>-<platform>` platform packages and the WASI fallback
-package, `@skunkwerkx/<crate>-wasm32-wasip1`). Before the first release that carries them,
+root, `@skunkwerkx/<crate>`, the eight `@skunkwerkx/<crate>-<platform>` platform packages and
+the WASI fallback package, `@skunkwerkx/<crate>-wasm32-wasip1`; every name is scoped, since an
+unscoped one can already be anyone's, as `hypercast` is). Before the first release that carries them,
 the owner publishes a placeholder version below the release, `0.0.1`, under each of the ten
 names with a granular token, registers `release.yml` as the trusted publisher on every one of
 the ten packages' settings pages and revokes the token.

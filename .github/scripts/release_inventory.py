@@ -36,7 +36,7 @@ import hyper_config
 import php_ext_package
 from package_preparation import not_served
 from release_guard import LIBRARY_SUFFIXES
-from release_package_metadata import DEFAULTS, npm_all_names, npm_filename, npm_package, validate_package_metadata
+from release_package_metadata import DEFAULTS, npm_all_names, npm_filename, npm_names, npm_package, validate_package_metadata
 
 FORGE = 'SkunkWerkx/.github'
 PREDICATE_TYPE = 'https://github.com/SkunkWerkx/.github/predicates/release/v1'
@@ -366,7 +366,7 @@ def registry_plan(root, registry, output):
             return served
         # The publish loop pushes in this order: every platform package and the WASI package
         # before the root, whose optionalDependencies and dependencies name them.
-        root_name = npm_filename(crate, version)
+        root_name = npm_filename(npm_names(crate, [])[0], version)
         paths.sort(key=lambda p: (p.name == root_name, p.name))
         pending = select_missing(paths, npm_remote)
     elif registry == 'nuget':
