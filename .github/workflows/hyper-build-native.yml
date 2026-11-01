@@ -875,7 +875,7 @@ jobs:
 
       # Python (PyO3 feature), every leg — the only Python backend, so it's proven here
       # rather than deferred to a release-time-only build.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         if: inputs.pyo3 && matrix.shard != 'swift-ruby'
         with:
           python-version: ${{ inputs.python_version }}
@@ -910,7 +910,7 @@ jobs:
       # that), against the extension rebuilt for it: PYO3_PYTHON picks the interpreter, and
       # with abi3t-py3XX enabled a free-threaded one builds abi3t. Then the GIL must still be
       # off after the import. Off PATH, so every later step keeps the interpreter above.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         id: ft-python
         if: inputs.pyo3 && matrix.shard != 'swift-ruby' && inputs.python_freethreaded_version != ''
         with:
@@ -1367,7 +1367,7 @@ jobs:
       # a Magnus extension exists there. The primary-ABI call above leaves its Ruby active,
       # so this inherits it and needs no setup-ruby of its own — the step below exists only
       # for `magnus: false`, where nothing has installed a Ruby yet.
-      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
+      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && !inputs.magnus && inputs.ruby }}
         with:
           ruby-version: ${{ inputs.ruby_version }}

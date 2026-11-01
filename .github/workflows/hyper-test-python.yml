@@ -92,7 +92,7 @@ jobs:
           path: .hyperforge
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ inputs.python_version }}
 
@@ -125,7 +125,7 @@ jobs:
       # off after the import. Off PATH, so every later step keeps the interpreter above. On a
       # PR board linux-x64 alone carries it (what differs is the interpreter, not the
       # platform); a release run keeps every leg.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         id: ft-python
         if: inputs.python_freethreaded_version != '' && (inputs.mode != 'pr' || matrix.rid == 'linux-x64')
         with:
