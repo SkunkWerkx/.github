@@ -62,6 +62,11 @@ on:
         required: false
         type: string
         default: ""
+      source_sha:
+        description: "The commit the prepared package's build provenance names: B today, A on the release train"
+        required: false
+        type: string
+        default: ${{ github.sha }}
     secrets:
       MAVEN_CENTRAL_USERNAME:
         required: true
@@ -135,7 +140,10 @@ jobs:
           run-id: ${{ inputs.prepared_run_id }}
           github-token: ${{ github.token }}
 
-      - name: Verify every prepared file against this release source B
+      # The digest is an input: today's flow packs in release.yml at B, so the provenance names
+      # B; the release train packs in ci.yml at A and the publisher runs at B, so it names A.
+      # The receipts below stay bound to the running commit either way.
+      - name: Verify every prepared file against the source its provenance names
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -144,7 +152,7 @@ jobs:
           count=0
           while IFS= read -r -d '' file; do
             gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
-              --signer-repo SkunkWerkx/.github --source-digest "$GITHUB_SHA"
+              --signer-repo SkunkWerkx/.github --source-digest "${{ inputs.source_sha }}"
             count=$((count + 1))
           done < <(find maven-package -type f -print0)
           [ "$count" -gt 4 ] || { echo "::error::Incomplete signed Maven package"; exit 1; }

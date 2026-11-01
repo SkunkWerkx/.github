@@ -43,6 +43,54 @@ class InventoryTests(unittest.TestCase):
         self.workspace, natives = self.natives()
         return self.m.build_inventory(self.root, self.identity, natives, self.workspace)
 
+    def preparation_identity(self):
+        """Act one's identity: the inventory is built in ci.yml at A, before B exists."""
+        return {**self.identity, 'package_workflow': self.m.CI_WORKFLOW,
+                'package_run_id': self.identity['ci_run_id'], 'staging_sha': self.identity['source_sha']}
+
+    def test_preparation_inventory_carries_no_staging_sha_and_every_file_at_a(self):
+        self.workspace, natives = self.natives()
+        result = self.m.build_inventory(self.root, self.preparation_identity(), natives, self.workspace)
+        self.assertNotIn('staging_sha', result)
+        self.assertEqual(result['package_workflow'], self.m.CI_WORKFLOW)
+        self.assertEqual(result['package_run_id'], self.identity['ci_run_id'])
+        self.assertTrue(all(e['source_sha'] == self.identity['source_sha'] for e in result['files'] if 'source_sha' in e))
+        self.assertTrue(any('source_sha' in e for e in result['files']))
+
+    def test_todays_inventory_shape_is_unchanged(self):
+        result = self.build()                      # self.identity has no package_workflow, as every caller today
+        self.assertNotIn('package_workflow', result)
+        self.assertEqual(result['staging_sha'], self.identity['staging_sha'])
+        self.assertEqual(self.m.normalize_identity(self.identity)['package_workflow'], self.m.RELEASE_WORKFLOW)
+        self.m.validate_identity(self.identity)    # the exact-key check takes the legacy dict
+
+    def test_preparation_inventory_verifies_against_its_own_forge_and_run_across_drift(self):
+        self.workspace, natives = self.natives()
+        saved = self.m.build_inventory(self.root, self.preparation_identity(), natives, self.workspace)
+        drifted = {**self.preparation_identity(), 'forge_sha': 'e' * 40, 'package_run_id': '999'}
+        self.m.validate_inventory(self.root, saved, drifted, self.workspace)  # forge and run come from the inventory
+        wrong = {'repository': 'Other/Repo', 'version': '1.2.3', 'source_sha': 'c' * 40, 'ci_run_id': '7'}
+        for key, value in wrong.items():
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.m.validate_inventory(self.root, saved, {**drifted, key: value}, self.workspace)
+
+    def test_package_run_check_follows_the_inventory_workflow(self):
+        identity = self.preparation_identity()
+        run = dict(id=int(identity['ci_run_id']), head_sha=identity['source_sha'], head_branch='master',
+                   path=self.m.CI_WORKFLOW, event='workflow_dispatch', status='completed',
+                   repository={'full_name': identity['repository']})
+        self.m.validate_package_run(run, identity)
+        for bad in ({'path': self.m.RELEASE_WORKFLOW}, {'head_sha': 'b' * 40}, {'event': 'schedule'}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.m.validate_package_run({**run, **bad}, identity)
+
+    def test_staging_commit_comes_from_the_identity_when_the_inventory_has_none(self):
+        with unittest.mock.patch.dict(os.environ, {'STAGING_SHA': 'b' * 40}):
+            self.assertEqual(self.m.staging_commit({'package_workflow': self.m.CI_WORKFLOW}), 'b' * 40)
+            self.assertEqual(self.m.staging_commit({'staging_sha': 'c' * 40}), 'c' * 40)
+        self.assertEqual(self.m.inventory_commit({'package_workflow': self.m.CI_WORKFLOW, 'source_sha': 'a' * 40}), 'a' * 40)
+        self.assertEqual(self.m.inventory_commit({'staging_sha': 'c' * 40}), 'c' * 40)
+
     def test_inventory_binds_all_bytes_and_provenance_to_a_b(self):
         result = self.build()
         packages = [e for e in result['files'] if e['location'] == 'packages']

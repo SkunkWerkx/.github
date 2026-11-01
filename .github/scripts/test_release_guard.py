@@ -237,6 +237,142 @@ class ReleaseGuardTests(unittest.TestCase):
         finally:
             os.chdir(before)
 
+    def main_in_root(self, mode, env, api=None):
+        """release_guard.py `mode` run from the fixture checkout with exactly `env`."""
+        before = Path.cwd()
+        try:
+            os.chdir(self.root)
+            with patch.dict(os.environ, env, clear=True), \
+                 patch.object(guard, 'api', side_effect=api or (lambda repo, endpoint: self.run)), \
+                 patch.object(sys, 'argv', ['release_guard.py', mode]):
+                guard.main()
+        finally:
+            os.chdir(before)
+
+    def tag_env(self, sha=None):
+        return {'GITHUB_REPOSITORY': REPO, 'GITHUB_SHA': sha or self.b, 'GITHUB_REF': 'refs/tags/v0.9.0',
+                'GITHUB_OUTPUT': str(self.root / 'outputs')}
+
+    def api_with_artifacts(self, artifacts, master=None):
+        def fake(repo, endpoint):
+            if endpoint == 'actions/runs/42':
+                return self.run
+            if endpoint == 'actions/runs/42/artifacts?name=release-packages':
+                return {'total_count': len(artifacts), 'artifacts': artifacts}
+            if endpoint == 'commits/master':
+                return {'sha': master or self.b}
+            raise AssertionError(endpoint)
+        return fake
+
+    def test_tag_mode_requires_the_preserved_packages_and_reports_the_packing_forge(self):
+        # The train's tag run: B's trailers name A, the ci.yml run that packed and the Forge that
+        # packed; that run must still hold release-packages (the preservation is 90 days).
+        preserved = [{'name': 'release-packages', 'expired': False, 'id': 7}]
+        self.main_in_root('tag', self.tag_env(), self.api_with_artifacts(preserved))
+        outputs = dict(line.split('=', 1) for line in (self.root / 'outputs').read_text().splitlines())
+        self.assertEqual(outputs, {'source_sha': self.a, 'run_id': '42', 'packing_forge_sha': 'f' * 40})
+
+    def test_tag_mode_refuses_a_run_without_release_packages(self):
+        for artifacts in ([], [{'name': 'release-packages', 'expired': True, 'id': 7}],
+                          [{'name': 'release-packages', 'expired': False, 'id': 7},
+                           {'name': 'release-packages', 'expired': False, 'id': 8}]):
+            with self.subTest(artifacts=artifacts), self.assertRaisesRegex(ValueError, 'release-packages'):
+                self.main_in_root('tag', self.tag_env(), self.api_with_artifacts(artifacts))
+
+    def test_tag_mode_refuses_a_tag_off_b(self):
+        preserved = [{'name': 'release-packages', 'expired': False, 'id': 7}]
+        with self.assertRaisesRegex(ValueError, 'trailer|exactly one parent'):
+            self.main_in_root('tag', self.tag_env(self.a), self.api_with_artifacts(preserved))
+        self.write('source.txt', 'after B\n')
+        self.commit(self.git('show', '-s', '--format=%B', self.b))
+        after = self.git('rev-parse', 'HEAD')
+        with self.assertRaisesRegex(ValueError, 'trailer|exactly one parent'):
+            self.main_in_root('tag', self.tag_env(after), self.api_with_artifacts(preserved))
+
+    def test_tag_mode_refuses_a_b_that_a_later_preparation_superseded(self):
+        # B1 was prepared, then the owner prepared again at the same version (A2 on top of B1,
+        # then B2): a tag pushed at B1 still has valid trailers, a green run and preserved
+        # packages, and would publish the bytes the second preparation replaced. On the push,
+        # master must be the tagged commit; a replay dispatch runs after master moved on.
+        preserved = [{'name': 'release-packages', 'expired': False, 'id': 7}]
+        self.main_in_root('tag', {**self.tag_env(), 'GITHUB_EVENT_NAME': 'push'}, self.api_with_artifacts(preserved))
+        b1 = self.b
+        self.write('source.txt', 'prepared again\n')
+        self.commit('preparation 2')
+        a2 = self.git('rev-parse', 'HEAD')
+        self.write(self.payload, 'bytes prepared again')
+        self.commit(f'stage\n\nRelease-Source-SHA: {a2}\nRelease-CI-Run-ID: 43\nRelease-Forge-SHA: {"f" * 40}')
+        b2 = self.git('rev-parse', 'HEAD')
+        with self.assertRaisesRegex(ValueError, f'master is {b2}, not the tagged release commit {b1}'):
+            self.main_in_root('tag', {**self.tag_env(b1), 'GITHUB_EVENT_NAME': 'push'},
+                              self.api_with_artifacts(preserved, master=b2))
+        self.main_in_root('tag', {**self.tag_env(b1), 'GITHUB_EVENT_NAME': 'workflow_dispatch'},
+                          self.api_with_artifacts(preserved, master=b2))
+
+    def test_tag_mode_requires_a_tag_and_exactly_one_forge_trailer(self):
+        preserved = [{'name': 'release-packages', 'expired': False, 'id': 7}]
+        with self.assertRaisesRegex(ValueError, 'tag'):
+            self.main_in_root('tag', {**self.tag_env(), 'GITHUB_REF': 'refs/heads/master'},
+                              self.api_with_artifacts(preserved))
+        b = self.amend_to('source.txt', 'source\n')
+        subprocess.run(['git', '-C', str(self.root), 'commit', '--amend', '-q',
+                        '-m', f'stage\n\nRelease-Source-SHA: {self.a}\nRelease-CI-Run-ID: 42'], check=True)
+        b = self.git('rev-parse', 'HEAD')
+        with self.assertRaisesRegex(ValueError, 'Release-Forge-SHA'):
+            self.main_in_root('tag', self.tag_env(b), self.api_with_artifacts(preserved))
+
+    def test_forge_ancestry(self):
+        for status, ok in (('identical', True), ('ahead', True), ('behind', False), ('diverged', False)):
+            with self.subTest(status=status), patch.object(guard, 'api', return_value={'status': status}) as api:
+                if ok:
+                    guard.require_forge_ancestry('a' * 40, 'b' * 40)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'not an ancestor'):
+                        guard.require_forge_ancestry('a' * 40, 'b' * 40)
+                api.assert_called_once_with('SkunkWerkx/.github', f"compare/{'a' * 40}...{'b' * 40}")
+
+    def test_forge_ancestry_mode_requires_the_trailer_to_name_the_inventory_s_forge(self):
+        # The inventory's forge_sha (the Forge that packed, in ci.yml at A) and B's trailer must
+        # agree before the ancestry question is even asked.
+        inventory = self.root / 'inv.json'
+        inventory.write_text(json.dumps({'forge_sha': 'a' * 40}))
+        env = {'GITHUB_REPOSITORY': REPO, 'FORGE_SHA': 'b' * 40, 'INVENTORY': str(inventory)}
+        calls = []
+
+        def compare(repo, endpoint):
+            calls.append(endpoint)
+            return {'status': 'ahead'}
+        self.main_in_root('forge-ancestry', {**env, 'PACKED_FORGE_SHA': 'a' * 40}, compare)
+        self.assertEqual(calls, [f"compare/{'a' * 40}...{'b' * 40}"])
+        with self.assertRaisesRegex(ValueError, 'packed by'):
+            self.main_in_root('forge-ancestry', {**env, 'PACKED_FORGE_SHA': 'c' * 40}, compare)
+        self.assertEqual(len(calls), 1)
+
+    def test_swift_assets_mode_holds_b_s_manifest_to_the_preserved_zips(self):
+        from test_swift_release import MANIFEST as SWIFT_MANIFEST
+        write_config(self.root, {**MINIMAL, 'swift_remote': True})
+        cfg = guard.config(self.root)
+        assets = self.root / 'preserved' / 'github'
+        assets.mkdir(parents=True)
+        for name in cfg.swift_assets:
+            (assets / name).write_bytes(name.encode())
+        core, apple = (guard.swift_release.sha256(assets / name) for name in cfg.swift_assets)
+        manifest = self.root / 'Package.swift'
+        manifest.write_text(guard.swift_release.write(SWIFT_MANIFEST, '0.9.0', core, apple))
+        env = {'GITHUB_REPOSITORY': REPO, 'SOURCE_SHA': self.a, 'SWIFT_ASSETS': str(assets)}
+        with patch.object(guard, 'verify_attestation') as verify:
+            self.main_in_root('swift-assets', env)
+        self.assertEqual(verify.call_count, 2)
+        verify.assert_any_call(assets / cfg.swift_assets[0], self.a, REPO)
+        with patch.object(guard, 'verify_attestation'):
+            manifest.write_text(guard.swift_release.write(SWIFT_MANIFEST, '0.9.0', 'd' * 64, apple))
+            with self.assertRaisesRegex(ValueError, 'Core.artifactbundle.zip'):
+                self.main_in_root('swift-assets', env)
+            manifest.write_text(guard.swift_release.write(SWIFT_MANIFEST, '0.9.0', core, apple))
+            (assets / cfg.swift_assets[1]).unlink()
+            with self.assertRaisesRegex(ValueError, 'missing Swift release asset'):
+                self.main_in_root('swift-assets', env)
+
     def test_paths_mode_prints_every_committed_payload_for_the_inventory(self):
         output = subprocess.check_output([sys.executable, str(SCRIPTS / 'release_guard.py'), 'paths'],
                                          cwd=self.root, text=True)
@@ -621,6 +757,18 @@ class DispatchTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 dispatch.dispatch(REPO, sha)
             cancel.assert_called_once_with(['gh', 'run', 'cancel', '42', '--repo', REPO], check=True)
+
+    def test_prepare_release_settles_the_headings_before_the_push(self):
+        workflow = SCRIPTS.parent / 'workflows/hyper-prepare-release.yml'
+        text = workflow.read_text()
+        bump, settle, push = (text.index(f'      - name: {n}\n') for n in
+                              ('Bump every committed manifest to the version', 'Settle the release headings',
+                               'Commit and push if anything actually changed'))
+        self.assertEqual([bump, settle, push], sorted([bump, settle, push]))
+        self.assertIn('release_headings.py" --version "$VERSION"', step(workflow, 'Settle the release headings'))
+        push_script = step(workflow, 'Commit and push if anything actually changed')
+        self.assertIn('if [ -f CHANGELOG.md ]; then git add CHANGELOG.md; fi', push_script)
+        self.assertIn('if [ -f r/NEWS.md ]; then git add r/NEWS.md; fi', push_script)
 
     def test_prepare_release_bumps_every_version_file_and_dispatches_without_a_gate(self):
         workflow = SCRIPTS.parent / 'workflows/hyper-prepare-release.yml'

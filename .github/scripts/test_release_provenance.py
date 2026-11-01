@@ -87,6 +87,17 @@ with open('verified.log','a') as log: log.write(str(p)+'\\n')
         self.env.update(CRATE='hyperuuid', MUSL='true', RESOURCES_DIR='resources/native')
         return step(MAVEN_ACTION, 'Stage native/{rid}/{filename} resources', {})
 
+    def test_crate_and_maven_publishers_verify_at_the_preparation_source_and_receipt_at_b(self):
+        # On the release train the prepared package's build provenance names A, not the B the
+        # publisher runs at; the publication receipts stay bound to B.
+        for name, count in (('hyper-publish-crate.yml', 3), ('hyper-publish-maven.yml', 4)):
+            text = (WORKFLOWS / name).read_text()
+            with self.subTest(workflow=name):
+                self.assertRegex(text, r'\n      source_sha:\n(?:        .*\n)*        default: \$\{\{ github\.sha \}\}\n')
+                self.assertIn('--source-digest "${{ inputs.source_sha }}"', text)
+                self.assertNotIn('--source-digest "$GITHUB_SHA"', text)
+                self.assertIn('$GITHUB_SHA', text.split('Locate the latest preserved publication receipt')[1])  # receipts stay at B
+
     def test_maven_verifies_every_native_before_publication(self):
         paths = [self.write(f'artifacts/native-{rid}/{lib(rid)}') for rid in RIDS]
         script = self.maven() + '\ntouch published'

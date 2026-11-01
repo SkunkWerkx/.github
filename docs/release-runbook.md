@@ -3,8 +3,10 @@
 The consumers call the Forge at `@master`. Each release run resolves that to one commit
 (`find-ci-run`'s `forge_sha`), checks the Forge out at it and records it in the package
 inventory; recovering a release needs the Forge's master unchanged since the run that
-packaged it. Hold Forge merges while a release is in flight anywhere. Do not run this flow
-on the already published v0.9.0 tags.
+packaged it. Hold Forge merges while a release is in flight anywhere on the flow below; on
+the release train, hold them during preparation only (the tag run verifies what a known Forge
+packed with a Forge that descends from it). Do not run this flow on the already published
+v0.9.0 tags.
 
 ## A new crate or package
 
@@ -81,6 +83,66 @@ artifacts are ready. The PHP extension's PIE zips, one per platform and PHP mino
 in jobs of their own (`hyper-build-php-extension.yml`), never inside the native matrix; the
 publication gate takes every `php-ext-<rid>-<minor>` artifact of A's run into the inventory's
 `php/` group, and the finalizer attaches them to the GitHub Release, where PIE looks.
+
+## The release train
+
+HyperUuid runs this flow; HyperCast and HyperTabular stay on the one above until they thaw.
+It is the same release in two acts, with the packing, the inventory, CodeQL and B moved into
+the preparation run, so the tag run only signs and publishes what that run preserved.
+
+**Act one**, `prepare-release.yml` dispatched with the bare version: the Forge's
+`hyper-prepare-release.yml` bumps every version file, settles the CHANGELOG heading to
+`## [X.Y.Z] — <date>` and `r/NEWS.md`'s `# <crate> (development version)` to `# <crate> X.Y.Z`
+(`release_headings.py`, a no-op when they already read so; a NEWS heading naming another
+release is refused, not relabelled), runs `release_guard.py`'s changelog check on the result (a missing
+section or a `⟨placeholder⟩` fails the dispatch with nothing pushed), pushes A and dispatches
+the release-mode `ci.yml`. After the board, the run's tail: `forge` resolves the one Forge
+commit the run uses; the eight pack jobs pack from the run's own artifacts (NuGet, crate and
+Maven through the three reusable workflows, the gems, npm, CRAN, C and the wheels through
+`pack-gems`, `pack-npm`, `pack-r`, `pack-c` and `verify-wheels`), each attesting what it packs;
+`release-prepare` downloads them all, verifies every file's build provenance, builds and
+attests the inventory and preserves `release-packages` for 90 days in that run; `codeql`
+dispatches the consumer's `codeql.yml` with the run's id (its Swift leg unpacks the run's
+attested zips, `swift_release.py unpack`), waits, and requires zero open alerts on master,
+still A; `stage-release` writes the zips' checksums into the root `Package.swift` and commits B
+on master with `Release-Source-SHA`, `Release-CI-Run-ID` and `Release-Forge-SHA`.
+
+**Act two**, the tag push at B, `release.yml`: `tag-guard` (`release_guard.py tag`: B's
+trailers, the tag, the versions, the tree, the green run at A, the CHANGELOG, the Swift
+manifest, and that the run still holds `release-packages`); `tag-gate` (downloads the
+preserved packages, `release_inventory.py prepared` re-verifies every file and the inventory's
+attestation at A, B's `Package.swift` is held to the preserved zips, the inventory's `forge_sha`
+must be B's trailer and an ancestor of the running Forge, then one `actions/attest` statement
+over every file from the tag, `release/v1`); the six publishers upload on the tag push, each
+verifying its files at A first (`hyper-publish-crate.yml` and `hyper-publish-maven.yml` take
+`source_sha` for that); the finalizer writes the Go tag and the GitHub Release; PIE acceptance
+runs last. A dispatch at the tag with `publication_run_id` replays: the gate verifies the tag
+run's release attestation instead of making one, and every publisher reports nothing to do.
+
+The inventory carries the preparation identity: A, the `ci.yml` run that packed, the Forge
+that packed, `package_workflow: .github/workflows/ci.yml`, every file at A and no
+`staging_sha`. The publication identity (B, the tag, the tag run, its Forge) is never in the
+inventory: the release attestation's own provenance carries it, signed at `refs/tags/vX.Y.Z`.
+A legacy inventory is unchanged in shape and reads as before (`normalize_identity`).
+
+The hand steps:
+
+1. Write the bullets under `## [Unreleased]` (or the version's heading) and fill every
+   placeholder. Nothing else about the release is prose.
+2. Dispatch `prepare-release.yml` with the bare version.
+3. Read act one's summary: B's trailers, the inventory, the digest listing, CodeQL clean.
+4. Push `vX.Y.Z` at B, lightweight and unsigned.
+5. Read the tag run's summary: six registries confirmed, the Release written, PIE green. Then
+   dispatch `release.yml` at the tag once with that run's id as `publication_run_id`: every
+   publisher must report nothing to do. That is the replay proof, so every release still
+   exercises recovery, as a no-op instead of as the normal path.
+6. CRAN: run the printed command on the preserved tarball, click the confirmation email.
+
+The retry ladder: rerun failed jobs on the same run; then dispatch at the tag with the
+receipts (`publication_run_id`, and `maven_deployment_id` after an ambiguous Central upload);
+then, for a wrong artifact, a patch release. Never a retag, a repack or a re-attest. A
+preparation that failed, or whose `release-packages` expired, is prepared again from a new
+`prepare-release.yml` dispatch; the tag guard refuses a B whose run has nothing preserved.
 
 ## After publication
 

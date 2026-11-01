@@ -14,7 +14,7 @@ import yaml_lite
 ACTIONS = Path(__file__).resolve().parents[1] / 'actions'
 RELEASE_ACTIONS = ('release-identity', 'release-guard', 'pack-gems', 'pack-npm', 'pack-r', 'verify-wheels',
                    'release-gate', 'publish-nuget', 'publish-rubygems', 'publish-npm', 'publish-pypi',
-                   'finalize-release')
+                   'finalize-release', 'release-prepare', 'stage-release', 'tag-guard', 'tag-gate')
 PREDICATE = 'https://github.com/SkunkWerkx/.github/predicates/release/v1'
 
 
@@ -60,6 +60,17 @@ class ActionFileTests(unittest.TestCase):
                                     or 'FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts' in text, name)
                 self.assertNotIn('${{ secrets.', text, 'secrets are unavailable inside an action; take an input')
                 self.assertNotIn('${{ vars.', text, 'vars are unavailable inside an action; take an input')
+
+    def test_release_identity_defaults_to_the_running_release_workflow(self):
+        text = (ACTIONS / 'release-identity' / 'action.yml').read_text()
+        action = yaml_lite.load(text)
+        self.assertEqual(action['inputs']['package_run_id']['default'], '${{ github.run_id }}')
+        self.assertEqual(action['inputs']['package_workflow']['default'], '.github/workflows/release.yml')
+        self.assertFalse(action['inputs']['package_run_id'].get('required', False))
+        self.assertFalse(action['inputs']['package_workflow'].get('required', False))
+        self.assertIn('echo "PACKAGE_RUN_ID=$PACKAGE_RUN_ID"', text)
+        self.assertIn('echo "PACKAGE_WORKFLOW=$PACKAGE_WORKFLOW"', text)
+        self.assertNotIn('PACKAGE_RUN_ID=$GITHUB_RUN_ID', text)
 
 
 WORKFLOWS = ACTIONS.parent / 'workflows'
@@ -214,6 +225,77 @@ class ReleaseGateTests(unittest.TestCase):
         finalized = nuget['Attest the finalized served package from the tag']
         self.assertEqual(finalized['with']['predicate-type'], PREDICATE)
         self.assertEqual(finalized['with']['predicate-path'], 'release-packages/inventory.json')
+
+    def test_release_prepare_builds_attests_and_preserves_without_the_release_attestation(self):
+        # The release train's act one: ci.yml at A builds the inventory, attests it and preserves
+        # release-packages in its own run. The release attestation over every file is the tag's.
+        text = (ACTIONS / 'release-prepare' / 'action.yml').read_text()
+        steps = yaml_lite.load(text)['runs']['steps']
+        identity = next(s for s in steps if s.get('uses', '').endswith('actions/release-identity'))
+        self.assertEqual(identity['with']['package_workflow'], '.github/workflows/ci.yml')
+        self.assertEqual(identity['with']['package_run_id'], '${{ inputs.ci_run_id }}')
+        names = [s.get('name') or s.get('uses') for s in steps]
+        self.assertIn('Verify every final package and create the source/run inventory', names)
+        self.assertIn('Attest the complete package inventory', names)
+        self.assertNotIn('actions/attest@', text)                      # the release attestation is the tag's
+        self.assertNotIn('prepared_run_id', text)                      # nothing to recover here
+        for name in ('nuget-org-package', 'ruby-packages', 'pypi-packages', 'crate-package', 'maven-central-package',
+                     'npm-packages', 'cran-packages', 'swift-release-assets', 'c-packages'):
+            self.assertIn(f'name: {name}\n', text)
+        self.assertIn('pattern: php-ext-*', text)
+        self.assertNotIn('run-id:', text)                               # every artifact is this run's
+        upload = next(s for s in steps if s.get('uses', '').startswith('actions/upload-artifact'))
+        self.assertEqual(upload['with']['name'], 'release-packages')
+        self.assertEqual(str(upload['with']['retention-days']), '90')
+        self.assertIn('release_inventory.py" create', text)
+        self.assertIn('release_inventory.py" checksums --output release-checksums.txt', text)
+
+    def test_stage_release_commits_package_swift_alone_with_the_three_trailers(self):
+        # The train's B: the run's own attested zips are written into Package.swift and committed
+        # on master with the trailers tag-guard reads back. No wait, no other run's artifacts.
+        text = (ACTIONS / 'stage-release' / 'action.yml').read_text()
+        for needle in ('release_guard.py" master', 'name: swift-release-assets', '--signer-repo SkunkWerkx/.github',
+                       'swift_release.py" stage --assets', 'git add Package.swift', 'release_guard.py" index',
+                       'Release-Source-SHA: $SOURCE_SHA', 'Release-CI-Run-ID: $RUN_ID', 'Release-Forge-SHA: $FORGE_SHA',
+                       'git push origin HEAD:master', 'SWIFT_REMOTE" = true'):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, text)
+        self.assertNotIn('STATIC_TREES', text)     # consumers that commit a tree stay on hyper-stage-natives.yml
+        self.assertNotIn('run-id:', text)
+        self.assertNotIn('RUN_WAIT_SECONDS', text)  # the run is this one; nothing to wait for
+
+    def test_tag_guard_takes_no_overrides_and_binds_the_ci_run_as_the_package_run(self):
+        action = yaml_lite.load((ACTIONS / 'tag-guard' / 'action.yml').read_text())
+        self.assertEqual(set(action['inputs']), {'forge_sha', 'token'})
+        self.assertEqual(set(action['outputs']), {'run_id', 'source_sha', 'version', 'packing_forge_sha'})
+        text = (ACTIONS / 'tag-guard' / 'action.yml').read_text()
+        self.assertIn('release_guard.py" tag', text)
+        self.assertIn('package_workflow: .github/workflows/ci.yml', text)
+        self.assertIn('release_inventory.py" run', text)
+        self.assertNotIn('download-artifact', text)   # the guard reads git and the API; the gate downloads
+
+    def test_tag_gate_verifies_the_preserved_run_before_attesting_from_the_tag_and_never_packs(self):
+        text = (ACTIONS / 'tag-gate' / 'action.yml').read_text()
+        steps = yaml_lite.load(text)['runs']['steps']
+        order = [text.index(n) for n in ('name: release-packages', 'release_inventory.py" prepared --workspace .',
+                                         'release_guard.py" swift-assets', 'release_guard.py" forge-ancestry',
+                                         'checksums --output release-checksums.txt', 'uses: actions/attest@',
+                                         'release_inventory.py" verify --inventory-only')]
+        self.assertEqual(order, sorted(order))        # every per-file provenance, B's manifest and the Forge agreement before signing
+        self.assertNotIn('prepared --inventory-only', text)
+        self.assertIn('SWIFT_ASSETS: release-packages/github', text)
+        self.assertIn('PACKED_FORGE_SHA: ${{ inputs.packing_forge_sha }}', text)
+        download = next(s for s in steps if s.get('with', {}).get('name') == 'release-packages' and 'download' in s['uses'])
+        self.assertEqual(download['with']['run-id'], '${{ inputs.ci_run_id }}')
+        attest = next(s for s in steps if s.get('uses', '').startswith('actions/attest@'))
+        self.assertEqual(attest['if'], "inputs.attest == 'true'")
+        self.assertEqual(attest['with']['predicate-type'], PREDICATE)
+        self.assertEqual(attest['with']['predicate-path'], 'release-packages/inventory.json')
+        self.assertNotIn('attest-build-provenance', text)       # the inventory was attested at A
+        self.assertNotIn('release_inventory.py" create', text)
+        uploads = text[text.index('upload-artifact'):]
+        for name in ('release-packages', 'verified-crate-package', 'verified-maven-central-package'):
+            self.assertIn(f'name: {name}\n', uploads)
 
     def test_gate_takes_npm_and_cran_packages_only_when_asked(self):
         # Off by default: HyperCast and HyperTabular ship neither, and their gates must not
