@@ -14,6 +14,7 @@ def dispatch(repo, sha):
     run_id = subprocess.check_output([
         'gh', 'api', '--method', 'POST', '-H', 'X-GitHub-Api-Version: 2026-03-10',
         f'repos/{repo}/actions/workflows/ci.yml/dispatches', '-f', 'ref=master',
+        '-f', 'inputs[purpose]=release',
         '--jq', '.workflow_run_id'], text=True).strip()
     if not re.fullmatch(r'[1-9][0-9]*', run_id):
         raise ValueError('dispatch did not return an exact CI run ID')

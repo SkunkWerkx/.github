@@ -758,6 +758,21 @@ class DispatchTests(unittest.TestCase):
                 dispatch.dispatch(REPO, sha)
             cancel.assert_called_once_with(['gh', 'run', 'cancel', '42', '--repo', REPO], check=True)
 
+    def test_dispatch_sends_purpose_release(self):
+        with patch.dict(sys.modules, {'release_guard': guard}):
+            spec = importlib.util.spec_from_file_location('dispatch_preparation', SCRIPTS / 'dispatch_preparation.py')
+            dispatch = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(dispatch)
+        sha = 'a' * 40
+        run = dict(id=42, head_sha=sha, head_branch='master', path='.github/workflows/ci.yml',
+                   event='workflow_dispatch', repository={'full_name': REPO})
+        with patch.object(dispatch.subprocess, 'check_output', return_value='42\n') as post, \
+             patch.object(dispatch, 'api', return_value=run):
+            dispatch.dispatch(REPO, sha)
+        argv = post.call_args.args[0]
+        self.assertIn('inputs[purpose]=release', argv)
+        self.assertEqual(argv[argv.index('inputs[purpose]=release') - 1], '-f')
+
     def test_prepare_release_settles_the_headings_before_the_push(self):
         workflow = SCRIPTS.parent / 'workflows/hyper-prepare-release.yml'
         text = workflow.read_text()

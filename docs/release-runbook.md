@@ -96,7 +96,7 @@ the preparation run, so the tag run only signs and publishes what that run prese
 (`release_headings.py`, a no-op when they already read so; a NEWS heading naming another
 release is refused, not relabelled), runs `release_guard.py`'s changelog check on the result (a missing
 section or a `⟨placeholder⟩` fails the dispatch with nothing pushed), pushes A and dispatches
-the release-mode `ci.yml`. After the board, the run's tail: `forge` resolves the one Forge
+the release-mode `ci.yml` (dispatched with `purpose=release`). After the board, the run's tail: `forge` resolves the one Forge
 commit the run uses; the eight pack jobs pack from the run's own artifacts (NuGet, crate and
 Maven through the three reusable workflows, the gems, npm, CRAN, C and the wheels through
 `pack-gems`, `pack-npm`, `pack-r`, `pack-c` and `verify-wheels`), each attesting what it packs;

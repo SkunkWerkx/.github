@@ -11,7 +11,8 @@ name: HyperForge — prepare a release
 # through three releases, and HyperUuid's JNI lockfile at 1.0.0 into the 1.1.0 preparation) and the napi-rs wrappers typescript/binding.js and binding.d.ts (napi bakes
 # package.json's version into binding.js's version-mismatch check, so a bump without a
 # rebuild fails every Node leg's `git diff --exit-code` wrapper guard on the release-mode
-# run), commits straight to master and dispatches the caller's ci.yml against that commit.
+# run), commits straight to master and dispatches the caller's ci.yml against that commit with
+# `purpose=release`, which tells the run to pin its companion repos to released versions.
 # Python needs nothing: pyproject.toml declares its version dynamic, sourced from
 # rust/Cargo.toml. The R wrapper crate's lock needs nothing either: r/tools/vendor.sh
 # derives r/src/rust/Cargo.lock from rust/Cargo.lock wherever the package is built, and it
