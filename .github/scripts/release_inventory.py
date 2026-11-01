@@ -56,7 +56,14 @@ BUILT_AT_SOURCE = ('pypi/', 'github/', 'php/')
 # Signed in the consumer's own release.yml at B rather than by the Forge.
 CONSUMER_SIGNED = ('ruby/', 'npm/', 'cran/', 'c/')
 IDENTITY = ('repository', 'crate', 'version', 'source_sha', 'staging_sha',
-            'ci_run_id', 'package_run_id', 'forge_sha')
+            'ci_run_id', 'package_run_id', 'forge_sha', 'package_workflow')
+# The workflow that packed and built the inventory. release.yml at B is today's flow, where
+# the inventory carries `staging_sha` and is attested at B; ci.yml at A is the release train,
+# where the inventory exists before B does: it carries `package_workflow` and no
+# `staging_sha`, every file is recorded at A, and it verifies against its own `forge_sha` and
+# `package_run_id` rather than the run that publishes (which may run a later Forge).
+RELEASE_WORKFLOW = '.github/workflows/release.yml'
+CI_WORKFLOW = '.github/workflows/ci.yml'
 NPM_REGISTRY = 'https://registry.npmjs.org/'
 
 
@@ -72,10 +79,30 @@ def php_asset_names(version, extension):
     return php_ext_package.release_asset_names(f'v{version}', extension)
 
 
+def normalize_identity(identity):
+    """A copy with `package_workflow` filled in: every caller that builds today's identity
+    without the key (the siblings' actions, the tests) means release.yml at B."""
+    return {**identity, 'package_workflow': identity.get('package_workflow') or RELEASE_WORKFLOW}
+
+
+def staging_commit(inventory):
+    """B: the inventory's own when it was built there, else the running identity's."""
+    return inventory.get('staging_sha') or os.environ['STAGING_SHA']
+
+
+def inventory_commit(inventory):
+    """The commit the inventory's own attestation was signed at."""
+    return inventory['source_sha'] if inventory.get('package_workflow') == CI_WORKFLOW else inventory['staging_sha']
+
+
 def validate_identity(identity):
+    identity = normalize_identity(identity)
     if set(identity) != set(IDENTITY):
         raise ValueError('incomplete release identity')
-    for key in ('source_sha', 'staging_sha', 'forge_sha'):
+    if identity['package_workflow'] not in (RELEASE_WORKFLOW, CI_WORKFLOW):
+        raise ValueError('invalid package_workflow')
+    shas = ['source_sha', 'forge_sha'] + (['staging_sha'] if identity['package_workflow'] == RELEASE_WORKFLOW else [])
+    for key in shas:
         if not re.fullmatch('[0-9a-f]{40}', str(identity[key])):
             raise ValueError(f'invalid {key}')
     for key in ('ci_run_id', 'package_run_id'):
@@ -189,7 +216,9 @@ def entry_path(root, workspace, entry):
 
 
 def build_inventory(root, identity, natives, workspace):
+    identity = normalize_identity(identity)
     validate_identity(identity)
+    at_a = identity['package_workflow'] == CI_WORKFLOW
     paths = payload_files(root)
     cfg = layout_config(workspace, identity['crate'])
     validate_layout([p.relative_to(root).as_posix() for p in paths], identity['crate'], identity['version'], cfg)
@@ -198,7 +227,7 @@ def build_inventory(root, identity, natives, workspace):
     for path in paths:
         name = path.relative_to(root).as_posix()
         files.append(dict(path=name, size=path.stat().st_size, sha256=sha256(path),
-                          source_sha=identity['source_sha' if name.startswith(BUILT_AT_SOURCE) else 'staging_sha'],
+                          source_sha=identity['source_sha' if at_a or name.startswith(BUILT_AT_SOURCE) else 'staging_sha'],
                           signer_repo=identity['repository'] if name.startswith(CONSUMER_SIGNED) else FORGE))
     for entry in files:
         entry['location'] = 'packages'
@@ -212,13 +241,21 @@ def build_inventory(root, identity, natives, workspace):
         if path.suffix in LIBRARY_SUFFIXES:
             entry.update(source_sha=identity['source_sha'], signer_repo=FORGE)
         files.append(entry)
-    return dict(schema=SCHEMA, **identity, tag=f"v{identity['version']}", files=files)
+    recorded = {key: value for key, value in identity.items()
+                if not (at_a and key == 'staging_sha') and not (not at_a and key == 'package_workflow')}
+    return dict(schema=SCHEMA, **recorded, tag=f"v{identity['version']}", files=files)
 
 
 def validate_inventory(root, saved, identity, workspace):
     if saved.get('schema') != SCHEMA:
         raise ValueError(f'only a schema {SCHEMA} inventory verifies')
     natives = [e['path'] for e in saved['files'] if e.get('location') == 'source']
+    if 'package_workflow' in saved:
+        # Built in ci.yml at A: the Forge that packed and the run that packed are the
+        # inventory's own, so the comparison holds across Forge drift between the acts.
+        # What the running identity asserts (repository, crate, version, A, the ci.yml
+        # run) must still agree, or the rebuilt inventory differs.
+        identity = {**identity, **{key: saved[key] for key in ('forge_sha', 'package_run_id', 'package_workflow')}}
     current = build_inventory(root, identity, natives, workspace)
     if saved != current:
         raise ValueError('preserved inventory identity, file set, provenance or bytes differ')
@@ -240,7 +277,7 @@ def verify_release_attestation(root, inventory, registry=None, workspace=None, c
     entries = [e for e in inventory['files'] if in_scope(e, registry)]
     if not entries:
         raise ValueError('no inventory files in scope')
-    repo, staging = inventory['repository'], inventory['staging_sha']
+    repo, staging = inventory['repository'], staging_commit(inventory)
     # Absolute: the download runs in its own directory, where the relative --root and
     # --workspace the actions pass name nothing.
     def path(entry):
@@ -263,14 +300,18 @@ def verify_release_attestation(root, inventory, registry=None, workspace=None, c
 
 
 def validate_package_run(run, identity, current_run_id=''):
-    expected = dict(id=int(identity['package_run_id']), head_sha=identity['staging_sha'],
-                    path='.github/workflows/release.yml')
+    identity = normalize_identity(identity)
+    at_a = identity['package_workflow'] == CI_WORKFLOW
+    expected = dict(id=int(identity['package_run_id']), path=identity['package_workflow'],
+                    head_sha=identity['source_sha'] if at_a else identity['staging_sha'])
+    if at_a:
+        expected['head_branch'] = 'master'
     for key,value in expected.items():
         if run.get(key) != value:
-            raise ValueError(f'prepared run {key} does not match release B')
+            raise ValueError(f'prepared run {key} does not match release {"A" if at_a else "B"}')
     if run.get('repository',{}).get('full_name','').lower() != identity['repository'].lower():
         raise ValueError('prepared run belongs to another repository')
-    if run.get('event') not in ('push','workflow_dispatch'):
+    if run.get('event') not in (('workflow_dispatch',) if at_a else ('push','workflow_dispatch')):
         raise ValueError('prepared run is not a release entry')
     if str(run['id']) != str(current_run_id) and run.get('status') != 'completed':
         raise ValueError('prior package run must have finished before recovery')
@@ -391,11 +432,11 @@ def registry_plan(root, registry, output):
             subprocess.run(['gh','run','download',receipt_run,'--repo',inventory['repository'],
                             '--name','nuget-publication-receipt','--dir',str(receipt_path)], check=True)
             receipt = json.loads((receipt_path/'receipt.json').read_text())
-            if receipt != dict(staging_sha=inventory['staging_sha'],
+            if receipt != dict(staging_sha=staging_commit(inventory),
                                packages={p.name:sha256(p) for p in paths}, symbols_accepted=True):
                 raise ValueError('NuGet receipt does not match prepared packages')
             subprocess.run(['gh','attestation','verify',str(receipt_path/'receipt.json'),
-                            '--repo',inventory['repository'],'--source-digest',inventory['staging_sha']],check=True)
+                            '--repo',inventory['repository'],'--source-digest',staging_commit(inventory)],check=True)
             pending = []
     else:
         raise ValueError('unsupported consumer registry')
@@ -484,7 +525,8 @@ def finalize(repo, version, subject, inventory, notes=None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('command',choices=['create','verify','run','registry-plan','registry-confirm','nuget-finalized','nuget-receipt','finalize','checksums'])
+    parser.add_argument('command',choices=['create','prepared','verify','run','registry-plan','registry-confirm','nuget-finalized','nuget-receipt','finalize','checksums'],
+                        help='prepared: verify as the tag gate does before the release attestation exists (everything verify does but that)')
     parser.add_argument('--root',type=Path,default=Path('release-packages'))
     parser.add_argument('--registry',choices=list(REGISTRIES))
     parser.add_argument('--inventory-only',action='store_true',
@@ -496,13 +538,13 @@ def main():
                         help='create and verify: the checkout at B holding the committed natives')
     parser.add_argument('--notes',type=Path,help='finalize: the release body written by release_notes.py')
     args = parser.parse_args()
-    identity = {key:os.environ.get(key.upper(),'') for key in IDENTITY}
+    identity = normalize_identity({key:os.environ.get(key.upper(),'') for key in IDENTITY})
     if args.command == 'run':
         selected = os.environ.get('PREPARED_RUN_ID','')
         validate_identity({**identity,'package_run_id':selected})
         run = api(f"repos/{identity['repository']}/actions/runs/{selected}")
         validate_package_run(run,{**identity,'package_run_id':selected})
-    elif args.command in ('create','verify'):
+    elif args.command in ('create','prepared','verify'):
         if args.command == 'create':
             if not args.natives:
                 raise ValueError('create needs --natives, the committed payloads release_guard.py paths lists')
@@ -512,17 +554,23 @@ def main():
         else:
             inventory = json.loads((args.root/'inventory.json').read_text())
             # Recovery may originate in an earlier package run but must have the same
-            # repository, A, B, source run and pinned Forge implementation.
+            # repository, A, B, source run and pinned Forge implementation. An inventory
+            # built in ci.yml at A names the Forge and run that packed, which the running
+            # identity takes over; its attestation was signed at A.
             identity['package_run_id'] = str(inventory['package_run_id'])
+            identity['package_workflow'] = inventory.get('package_workflow', RELEASE_WORKFLOW)
+            if identity['package_workflow'] == CI_WORKFLOW:
+                identity['forge_sha'] = inventory['forge_sha']
             validate_inventory(args.root,inventory,identity,args.workspace)
             subprocess.run(['gh','attestation','verify',str(args.root/'inventory.json'),
-                            '--repo',identity['repository'],'--source-digest',identity['staging_sha']],check=True)
+                            '--repo',identity['repository'],'--source-digest',inventory_commit(inventory)],check=True)
         run = api(f"repos/{identity['repository']}/actions/runs/{identity['package_run_id']}")
         validate_package_run(run,identity,os.environ.get('GITHUB_RUN_ID',''))
         if not args.inventory_only:
             attest_files(args.root,inventory,args.registry,args.workspace)
         if args.command == 'verify':
             # The release attestation is new at the gate, so even --inventory-only checks it.
+            # `prepared` is the tag gate's check before it exists.
             verify_release_attestation(args.root,inventory,args.registry,args.workspace)
     elif args.command == 'checksums':
         inventory = json.loads((args.root/'inventory.json').read_text())
@@ -544,7 +592,7 @@ def main():
         saved = json.loads((args.root/'inventory.json').read_text())
         paths = [args.root/e['path'] for e in saved['files'] if e['path'].startswith('nuget/')]
         args.output.mkdir(parents=True,exist_ok=True)
-        receipt = dict(staging_sha=saved['staging_sha'], packages={p.name:sha256(p) for p in paths},symbols_accepted=True)
+        receipt = dict(staging_sha=staging_commit(saved), packages={p.name:sha256(p) for p in paths},symbols_accepted=True)
         (args.output/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
     else:
         finalize(identity['repository'],identity['version'],identity['staging_sha'],args.root/'inventory.json',args.notes)

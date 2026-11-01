@@ -3,6 +3,7 @@ the inventory and the release notes."""
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -120,6 +121,28 @@ class ZipTests(unittest.TestCase):
         (assets / self.cfg.swift_assets[1]).write_bytes(b'other bytes')
         with self.assertRaisesRegex(ValueError, 'CoreApple.xcframework.zip'):
             swift_release.check(self.cfg, text, '0.9.0', assets)
+
+    def test_unpack_restores_the_release_trees_exactly(self):
+        assets = self.root / 'assets'
+        swift_release.build_zips(self.cfg, self.root, assets)
+        expected = {f for _, files in swift_release.expected_files(self.cfg).values() for f in files}
+        for tree in (self.cfg.bundle, self.cfg.xcframework):
+            shutil.rmtree(self.root / tree)
+        swift_release.unpack(self.cfg, self.root, assets)
+        present = {p.relative_to(self.root).as_posix() for tree in (self.cfg.bundle, self.cfg.xcframework)
+                   for p in (self.root / tree).rglob('*') if p.is_file()}
+        self.assertEqual(present, expected)
+        self.assertEqual((self.root / self.cfg.bundle / 'info.json').read_text(), f'{self.cfg.bundle}/info.json')
+        with self.assertRaisesRegex(ValueError, 'already'):
+            swift_release.unpack(self.cfg, self.root, assets)
+        for tree in (self.cfg.bundle, self.cfg.xcframework):
+            shutil.rmtree(self.root / tree)
+        with zipfile.ZipFile(assets / self.cfg.swift_assets[0], 'a') as archive:
+            archive.writestr('../escape.txt', 'out')
+        with self.assertRaisesRegex(ValueError, 'outside'):
+            swift_release.unpack(self.cfg, self.root, assets)
+        self.assertFalse((self.root / 'escape.txt').exists())
+        self.assertFalse((self.root / self.cfg.bundle).exists(), 'nothing is written on a refusal')
 
 
 class ConfigTests(unittest.TestCase):

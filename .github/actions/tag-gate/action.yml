@@ -1,0 +1,173 @@
+name: Tag gate
+description: >
+  The release train's gate, the body of a consumer release.yml's tag-gate job: downloads the
+  release-packages the ci.yml run at A preserved, re-verifies every file's build provenance and
+  the inventory's own attestation at A (release_inventory.py prepared), holds B's Package.swift
+  to the preserved Swift zips, requires the Forge that packed (the inventory's forge_sha, B's
+  trailer) to be an ancestor of the Forge this run uses, and then, on the tag push alone, makes
+  the release attestation: one statement over every file, the inventory as its predicate,
+  signed by this repository's release.yml at the tag. A publication replay verifies that
+  attestation instead of re-making it. Never packs. Preserves release-packages and the two
+  verified publisher inputs in this run. Runs in the consumer's checkout at B with .hyperforge
+  beside it; the caller grants id-token and attestations write, and actions read for the
+  cross-run download.
+
+inputs:
+  version:
+    description: "The release version (the tag without its v)"
+    required: true
+  source_sha:
+    description: "Preparation source A"
+    required: true
+  ci_run_id:
+    description: "The release-mode ci.yml run at A that packed and preserved release-packages"
+    required: true
+  forge_sha:
+    description: "The Forge commit this run resolved and checked out as .hyperforge"
+    required: true
+  packing_forge_sha:
+    description: "The Forge that packed, from B's Release-Forge-SHA trailer (tag-guard's output)"
+    required: true
+  token:
+    description: "github.token"
+    required: true
+  attest:
+    description: "\"true\" makes the release attestation (the tag push); \"false\" verifies it (a publication replay)"
+    required: false
+    default: "false"
+  npm_packages:
+    description: "\"true\" when the inventory carries npm packages (a consumer with the TypeScript binding); verification reads the inventory, so this is informational"
+    required: false
+    default: "false"
+  cran_packages:
+    description: "\"true\" when the inventory carries the CRAN tarball (a consumer with the R binding); informational, as npm_packages"
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.hyperforge/.github/actions/release-identity
+      with:
+        version: ${{ inputs.version }}
+        source_sha: ${{ inputs.source_sha }}
+        ci_run_id: ${{ inputs.ci_run_id }}
+        forge_sha: ${{ inputs.forge_sha }}
+        token: ${{ inputs.token }}
+        package_run_id: ${{ inputs.ci_run_id }}
+        package_workflow: .github/workflows/ci.yml
+
+    # The preserved bytes, from the run B names; nothing is packed here, on any path.
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: release-packages
+        path: release-packages
+        run-id: ${{ inputs.ci_run_id }}
+        github-token: ${{ inputs.token }}
+
+    # The full per-file pass, not --inventory-only: every registry file and every GitHub Release
+    # asset is checked against its build provenance at A before the tag signs it, since the
+    # Release assets have no publisher to recheck them later. The inventory's own attestation is
+    # verified at A, against the Forge and run that packed it (its identity, not this run's).
+    - name: Verify the preserved packages and the inventory against their preparation
+      shell: bash
+      run: python3 "$FORGE_SCRIPTS/release_inventory.py" prepared --workspace .
+
+    # B's Package.swift names the two zips about to be signed, and each carries the Forge's
+    # build provenance at A (release_guard.py, swift_release.py).
+    - name: Read what this repository attaches to its GitHub Release
+      id: config
+      shell: bash
+      run: |
+        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
+        echo "swift_remote=$SWIFT_REMOTE" >> "$GITHUB_OUTPUT"
+    - name: Hold the tagged Package.swift to the preserved Swift zips
+      if: steps.config.outputs.swift_remote == 'true'
+      shell: bash
+      env:
+        SWIFT_ASSETS: release-packages/github
+      run: python3 "$FORGE_SCRIPTS/release_guard.py" swift-assets
+
+    # The Forge that packed is B's trailer, the inventory agrees, and this run's Forge descends
+    # from it: the scripts verifying here can only have moved forward from the ones that packed.
+    - name: Require the packing Forge to be an ancestor of this run's
+      shell: bash
+      env:
+        PACKED_FORGE_SHA: ${{ inputs.packing_forge_sha }}
+        INVENTORY: release-packages/inventory.json
+      run: python3 "$FORGE_SCRIPTS/release_guard.py" forge-ancestry
+
+    # The checksums file is written beside, never inside, release-packages: an extra file there
+    # is an unexpected payload.
+    - name: List the release attestation subjects from the verified inventory
+      shell: bash
+      run: python3 "$FORGE_SCRIPTS/release_inventory.py" checksums --output release-checksums.txt
+
+    # One statement for the whole release: every file in the inventory is a subject (equal
+    # bytes under two paths stay two subjects; verification matches by digest), the inventory
+    # is the predicate, and the signer is this repository's release.yml at the tag. That is
+    # what makes `gh attestation verify <file> --repo <owner>/<repo> --source-ref refs/tags/vX.Y.Z
+    # --predicate-type <type>` true for a wheel, a Swift archive or a gem alike.
+    - name: Attest every release file from the tag
+      if: inputs.attest == 'true'
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+      with:
+        subject-checksums: release-checksums.txt
+        predicate-type: https://github.com/SkunkWerkx/.github/predicates/release/v1
+        predicate-path: release-packages/inventory.json
+
+    # The release attestation, present on both paths now: made moments ago on the tag push,
+    # the tag run's on a replay. Per-file build provenance was prepared's job above.
+    - name: Revalidate the preserved inventory and the release attestation
+      shell: bash
+      run: python3 "$FORGE_SCRIPTS/release_inventory.py" verify --inventory-only --workspace .
+
+    - name: Summarize the release
+      shell: bash
+      env:
+        PACKED_FORGE_SHA: ${{ inputs.packing_forge_sha }}
+      run: |
+        set -euo pipefail
+        {
+          echo "### Release v$VERSION at $STAGING_SHA (built from $SOURCE_SHA, ci.yml run $CI_RUN_ID, packed by Forge $PACKED_FORGE_SHA, published by Forge $FORGE_SHA)"
+          echo
+          echo "Every file below verifies with:"
+          echo
+          echo '```sh'
+          echo "gh attestation verify <file> --repo $REPOSITORY --source-ref refs/tags/v$VERSION \\"
+          echo "  --predicate-type https://github.com/SkunkWerkx/.github/predicates/release/v1"
+          echo '```'
+          echo
+          echo '```'
+          cat release-checksums.txt
+          echo '```'
+          if grep -q ' cran/' release-checksums.txt; then
+            echo
+            echo "The CRAN source tarball under cran/ is uploaded by no job: submit those preserved bytes by hand."
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Preserve the complete verified release inputs
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: release-packages
+        path: release-packages
+        if-no-files-found: error
+        retention-days: 90
+        overwrite: true
+
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: verified-crate-package
+        path: release-packages/crate
+        if-no-files-found: error
+        retention-days: 90
+        overwrite: true
+
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: verified-maven-central-package
+        path: release-packages/maven
+        if-no-files-found: error
+        retention-days: 90
+        overwrite: true

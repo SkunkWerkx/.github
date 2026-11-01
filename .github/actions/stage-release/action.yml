@@ -1,0 +1,114 @@
+name: Stage the release commit
+description: >
+  The release train's B, made in the same ci.yml run that prepared: for a consumer whose
+  hyper.json sets swift_remote, the run's own attested Swift zips are verified, their checksums
+  and the release version written into the root Package.swift (swift_release.py stage), and
+  that one file committed on master with the trailers tag-guard reads back (Release-Source-SHA,
+  Release-CI-Run-ID, Release-Forge-SHA). Runs in a checkout of master with .hyperforge beside
+  it, after release-prepare; master must still be A. A consumer that commits a native tree stays
+  on hyper-stage-natives.yml. Deliberately a direct push, not a bot-opened PR: nobody reviews a
+  checksum pair, and the guard holds B to its trailers.
+
+inputs:
+  source_sha:
+    description: "Preparation source A, the commit this ci.yml run is on"
+    required: true
+  ci_run_id:
+    description: "This release-mode ci.yml run at A, whose swift-release-assets are staged"
+    required: true
+  forge_sha:
+    description: "The Forge commit this run resolved and checked out as .hyperforge"
+    required: true
+  token:
+    description: "github.token, with contents: write"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Hold master at preparation source A
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source_sha }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Expected a full preparation SHA"; exit 1; }
+        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
+        if [ "$SWIFT_REMOTE" != true ]; then
+          echo "::error::stage-release serves swift_remote consumers; others stage through hyper-stage-natives.yml"
+          exit 1
+        fi
+        git fetch origin master
+        python3 "$FORGE_SCRIPTS/release_guard.py" master
+        [ "$(git rev-parse HEAD)" = "$SOURCE_SHA" ] || { echo "::error::Checkout is not preparation source A"; exit 1; }
+
+    # The zips the static-libs job built and attested in this run: nothing from another run.
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: swift-release-assets
+        path: artifacts/swift-release-assets
+
+    # --signer-repo is not optional: `--repo X` alone asserts the artifact's source repo and its
+    # signing workflow both live in X, and the signing step is in hyper-build-native.yml, here in
+    # the Forge. The digests go into the commit body, beside the trailers.
+    - name: Verify the zips' provenance, then write Package.swift
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        SOURCE_SHA: ${{ inputs.source_sha }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        : > digests.txt
+        for zip in artifacts/swift-release-assets/*.zip; do
+          echo "::group::verify ${zip##*/}"
+          if ! gh attestation verify "$zip" --repo "$GITHUB_REPOSITORY" --signer-repo SkunkWerkx/.github \
+               --source-digest "$SOURCE_SHA"; then
+            echo "::error::No valid build provenance for ${zip##*/} — refusing to stage it."
+            exit 1
+          fi
+          echo "::endgroup::"
+          echo "$(sha256sum "$zip" | cut -d' ' -f1)  ${zip##*/}" >> digests.txt
+        done
+        python3 "$FORGE_SCRIPTS/swift_release.py" stage --assets artifacts/swift-release-assets
+        sort -k2 -o digests.txt digests.txt
+        {
+          echo "### Staged Package.swift (zip attestations verified)"
+          echo '```'
+          cat digests.txt
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    # The trailers are what tag-guard reads: A, this run, and the Forge that staged. The commit
+    # is made even when the bytes are unchanged, so B always exists and always differs from A
+    # in its trailers; tag-guard holds the tag to B and B's parent to A.
+    - name: Commit and push the release commit
+      shell: bash
+      env:
+        SOURCE_SHA: ${{ inputs.source_sha }}
+        RUN_ID: ${{ inputs.ci_run_id }}
+        FORGE_SHA: ${{ inputs.forge_sha }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
+        git fetch origin master
+        python3 "$FORGE_SCRIPTS/release_guard.py" master
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        if [ "$SWIFT_REMOTE" = true ]; then
+          git add Package.swift
+        fi
+        python3 "$FORGE_SCRIPTS/release_guard.py" index
+        if git diff --cached --quiet; then
+          echo "::notice::Package.swift is unchanged; recording the verified source/run relationship."
+        fi
+        git commit --allow-empty \
+          -m "chore: stage release from ci.yml run $RUN_ID ($SOURCE_SHA)" \
+          -m "Build provenance verified with \`gh attestation verify\` before staging." \
+          -m "sha256:" -m "$(cat digests.txt)" \
+          -m "Release-Source-SHA: $SOURCE_SHA
+        Release-CI-Run-ID: $RUN_ID
+        Release-Forge-SHA: $FORGE_SHA"
+        git push origin HEAD:master

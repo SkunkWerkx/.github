@@ -1,10 +1,12 @@
 name: Bind the release identity
 description: >
   Exports the release identity every release_inventory.py command reads (REPOSITORY, CRATE,
-  VERSION, SOURCE_SHA, STAGING_SHA, CI_RUN_ID, PACKAGE_RUN_ID, FORGE_SHA), GH_TOKEN and
-  FORGE_SCRIPTS into the job's environment, so the gate, the publishers and the finalizer
-  cannot bind different identities. CRATE comes from the consumer's .github/hyper.json.
-  Runs in the consumer's checkout at B with .hyperforge checked out beside it.
+  VERSION, SOURCE_SHA, STAGING_SHA, CI_RUN_ID, PACKAGE_RUN_ID, PACKAGE_WORKFLOW, FORGE_SHA),
+  GH_TOKEN and FORGE_SCRIPTS into the job's environment, so the gate, the publishers and the
+  finalizer cannot bind different identities. CRATE comes from the consumer's
+  .github/hyper.json. Runs in the consumer's checkout at B with .hyperforge checked out
+  beside it. The package run and workflow default to the running release.yml, today's flow;
+  the release train names the ci.yml run at A that packed instead.
 
 inputs:
   version:
@@ -26,6 +28,14 @@ inputs:
     description: "Prior publication attempt holding registry receipts, if any"
     required: false
     default: ""
+  package_run_id:
+    description: "The run that packed and built the inventory: the release run itself, or the ci.yml run at A on the release train"
+    required: false
+    default: ${{ github.run_id }}
+  package_workflow:
+    description: "The workflow that packed: release.yml at B (today), or ci.yml at A (the release train)"
+    required: false
+    default: .github/workflows/release.yml
 
 runs:
   using: composite
@@ -38,6 +48,8 @@ runs:
         CI_RUN_ID: ${{ inputs.ci_run_id }}
         FORGE_SHA: ${{ inputs.forge_sha }}
         PUBLICATION_RUN_ID: ${{ inputs.publication_run_id }}
+        PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
+        PACKAGE_WORKFLOW: ${{ inputs.package_workflow }}
         GH_TOKEN: ${{ inputs.token }}
         FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
       run: |
@@ -53,7 +65,8 @@ runs:
           echo "SOURCE_SHA=$SOURCE_SHA"
           echo "STAGING_SHA=$GITHUB_SHA"
           echo "CI_RUN_ID=$CI_RUN_ID"
-          echo "PACKAGE_RUN_ID=$GITHUB_RUN_ID"
+          echo "PACKAGE_RUN_ID=$PACKAGE_RUN_ID"
+          echo "PACKAGE_WORKFLOW=$PACKAGE_WORKFLOW"
           echo "FORGE_SHA=$FORGE_SHA"
           echo "PUBLICATION_RUN_ID=$PUBLICATION_RUN_ID"
           echo "FORGE_SCRIPTS=$(cd "$FORGE_SCRIPTS" && pwd)"

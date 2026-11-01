@@ -1,0 +1,154 @@
+name: Release preparation
+description: >
+  The release train's act one, in the consumer's release-mode ci.yml run at A: every registry
+  input and every committed native meets here, each package is verified against its build
+  provenance, the schema 2 inventory is built (release_inventory.py create, identity
+  package_workflow ci.yml and package_run_id this run) and attested, and release-packages is
+  preserved for 90 days in this run. The release attestation over every file is not made here:
+  the tag run (tag-gate) signs the preserved bytes at B, so a consumer verifies with --repo and
+  --source-ref refs/tags/vX.Y.Z alone. Nothing here recovers: a failed preparation is prepared
+  again from a new ci.yml run.
+
+inputs:
+  version:
+    description: "The release version (the tag without its v)"
+    required: true
+  source_sha:
+    description: "Preparation source A, the commit this ci.yml run is on"
+    required: true
+  ci_run_id:
+    description: "This release-mode ci.yml run at A, the run that packed"
+    required: true
+  forge_sha:
+    description: "The Forge commit this run resolved and checked out as .hyperforge"
+    required: true
+  token:
+    description: "github.token"
+    required: true
+  npm_packages:
+    description: "\"true\" takes pack-npm's npm-packages into release-packages/npm (a consumer with the TypeScript binding)"
+    required: false
+    default: "false"
+  cran_packages:
+    description: "\"true\" takes pack-r's cran-packages into release-packages/cran (a consumer with the R binding)"
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.hyperforge/.github/actions/release-identity
+      with:
+        version: ${{ inputs.version }}
+        source_sha: ${{ inputs.source_sha }}
+        ci_run_id: ${{ inputs.ci_run_id }}
+        forge_sha: ${{ inputs.forge_sha }}
+        token: ${{ inputs.token }}
+        package_run_id: ${{ inputs.ci_run_id }}
+        package_workflow: .github/workflows/ci.yml
+
+    # Every artifact below is this run's: the pack jobs ran in this ci.yml run, as did the
+    # legs that built the Swift zips and the PHP extension's PIE zips.
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: nuget-org-package
+        path: release-packages/nuget
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: ruby-packages
+        path: release-packages/ruby
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: pypi-packages
+        path: release-packages/pypi
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: crate-package
+        path: release-packages/crate
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: maven-central-package
+        path: release-packages/maven
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: inputs.npm_packages == 'true'
+      with:
+        name: npm-packages
+        path: release-packages/npm
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: inputs.cran_packages == 'true'
+      with:
+        name: cran-packages
+        path: release-packages/cran
+    # The GitHub Release's own files. With swift_remote, the two Swift zips the Forge built and
+    # attested in this run; the tag guard checks them against the tagged Package.swift later.
+    # With c_assets, this run's pack-c archives.
+    - name: Read what this repository attaches to its GitHub Release
+      id: config
+      shell: bash
+      run: |
+        eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"
+        echo "swift_remote=$SWIFT_REMOTE" >> "$GITHUB_OUTPUT"
+        echo "c_assets=$C_ASSETS" >> "$GITHUB_OUTPUT"
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: steps.config.outputs.swift_remote == 'true'
+      with:
+        name: swift-release-assets
+        path: release-packages/github
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      if: steps.config.outputs.c_assets == 'true'
+      with:
+        name: c-packages
+        path: release-packages/c
+    # The PHP extension's PIE zips, one per platform and PHP minor, built, load-checked, tested,
+    # checked against PIE's own names and attested in this run as php-ext-<rid>-<minor>. create
+    # below verifies each zip's build provenance and that the set is exactly the names
+    # release_inventory.py's php_asset_names gives; the finalizer attaches them to the Release.
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        pattern: php-ext-*
+        merge-multiple: true
+        path: release-packages/php
+
+    # Every registry file is verified against its build provenance, and the natives committed
+    # at A are hashed into the inventory as schema 2 entries built at A (release_guard.py
+    # paths lists them from hyper.json). The checksums file is written beside, never inside,
+    # release-packages: an extra file there is an unexpected payload.
+    - name: Verify every final package and create the source/run inventory
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "$FORGE_SCRIPTS/release_guard.py" paths > "$RUNNER_TEMP/natives.txt"
+        python3 "$FORGE_SCRIPTS/release_inventory.py" create --natives "$RUNNER_TEMP/natives.txt" --workspace .
+        python3 "$FORGE_SCRIPTS/release_inventory.py" checksums --output release-checksums.txt
+
+    - name: Attest the complete package inventory
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      with:
+        subject-path: release-packages/inventory.json
+
+    - name: Summarize the preparation
+      shell: bash
+      run: |
+        set -euo pipefail
+        {
+          echo "### Release v$VERSION prepared at $SOURCE_SHA (ci.yml run $CI_RUN_ID, Forge $FORGE_SHA)"
+          echo
+          echo "The tag run attests every file below from the tag; until then each verifies by its build provenance alone."
+          echo
+          echo '```'
+          cat release-checksums.txt
+          echo '```'
+          if grep -q ' cran/' release-checksums.txt; then
+            echo
+            echo "The CRAN source tarball under cran/ is uploaded by no job: submit those preserved bytes by hand."
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Preserve the complete verified release inputs
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: release-packages
+        path: release-packages
+        if-no-files-found: error
+        retention-days: 90
+        overwrite: true

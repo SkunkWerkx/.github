@@ -1,0 +1,70 @@
+name: Tag guard
+description: >
+  The release train's guard, the body of a consumer release.yml's tag-guard job: requires the
+  root tag at B, reads B's Release-Source-SHA, Release-CI-Run-ID and Release-Forge-SHA trailers
+  and checks the tag, the versions, the tree, the ci.yml run at A, the CHANGELOG section and
+  the Swift manifest (release_guard.py tag), and that the run still holds release-packages.
+  Takes no overrides: the tag's B says what was prepared, and nothing here packs or downloads.
+  Runs in the consumer's checkout at B (fetch-depth 2) with .hyperforge checked out at the
+  Forge commit the consumer resolved first, because this action lives in it. tag-gate takes
+  the outputs.
+
+inputs:
+  forge_sha:
+    description: "The Forge commit this run resolved and checked out as .hyperforge"
+    required: true
+  token:
+    description: "github.token"
+    required: true
+
+outputs:
+  run_id:
+    description: "The release-mode ci.yml run at A that packed, from B's trailer"
+    value: ${{ steps.find.outputs.run_id }}
+  source_sha:
+    description: "Preparation source A"
+    value: ${{ steps.find.outputs.source_sha }}
+  version:
+    description: "The release version (the tag without its v)"
+    value: ${{ steps.subject.outputs.version }}
+  packing_forge_sha:
+    description: "The Forge that packed and staged, from B's Release-Forge-SHA trailer"
+    value: ${{ steps.find.outputs.packing_forge_sha }}
+
+runs:
+  using: composite
+  steps:
+    - name: Require the exact release tag at B
+      id: subject
+      shell: bash
+      run: |
+        set -euo pipefail
+        [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Run release.yml at the root version tag, including a publication replay"; exit 1; }
+        echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+    - name: Verify the release commit, its preparation run and the preserved packages
+      id: find
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: python3 "$FORGE_SCRIPTS/release_guard.py" tag
+
+    # The identity every later step binds: the ci.yml run at A packed, so it is the package run
+    # and its workflow is ci.yml. release_inventory.py run then holds that run to A, master and
+    # a dispatch, as the inventory's own identity will be held to it in tag-gate.
+    - uses: ./.hyperforge/.github/actions/release-identity
+      with:
+        version: ${{ steps.subject.outputs.version }}
+        source_sha: ${{ steps.find.outputs.source_sha }}
+        ci_run_id: ${{ steps.find.outputs.run_id }}
+        forge_sha: ${{ inputs.forge_sha }}
+        token: ${{ inputs.token }}
+        package_run_id: ${{ steps.find.outputs.run_id }}
+        package_workflow: .github/workflows/ci.yml
+
+    - name: Validate the exact preparation run as the package run
+      shell: bash
+      env:
+        PREPARED_RUN_ID: ${{ steps.find.outputs.run_id }}
+      run: python3 "$FORGE_SCRIPTS/release_inventory.py" run

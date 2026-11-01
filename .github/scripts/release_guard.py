@@ -9,6 +9,11 @@ consumer's `abi_probe` file, compiled here against the Swift bundle's header.
 
 Modes, all but `staged` run from the consumer's checkout:
   record    at release entry: read B's trailers, check tag, versions, tree, CI run and CHANGELOG
+  tag       the release train's entry: record with the tag required, then the run named by B
+            must still hold release-packages, and on the tag push master must still be B (a
+            later preparation supersedes it); prints B's Release-Forge-SHA as packing_forge_sha
+  forge-ancestry  the preserved inventory's forge_sha is B's trailer, and an ancestor of FORGE_SHA
+  swift-assets    B's Package.swift names the zips in SWIFT_ASSETS, each with its provenance at A
   run       re-check a CI run id against A, waiting up to RUN_WAIT_SECONDS for it to complete
   staged    print B when master is already A's staging commit, else master must be A (API only)
   master    origin/master must still be A
@@ -186,6 +191,49 @@ def release_record(root, cfg, commit, tag, override, repo):
     return sha, run_id
 
 
+def forge_trailer(message):
+    """B's Release-Forge-SHA: the Forge that packed and staged, exactly one, a full commit."""
+    values = re.findall(r'^Release-Forge-SHA: (.*)$', message, re.M)
+    if len(values) != 1 or not re.fullmatch('[0-9a-f]{40}', values[0]):
+        raise ValueError('staging commit requires exactly one Release-Forge-SHA trailer')
+    return values[0]
+
+
+def require_master_at(repo, commit):
+    """master is the tagged release commit: a tag pushed at a B that a later preparation
+    superseded would publish the bytes the owner prepared again to replace. Read through the
+    API, as `staged` does (the checkout is shallow). The push alone is held to this; a replay
+    dispatch runs after master has legitimately moved on."""
+    head = api(repo, 'commits/master')['sha']
+    if head != commit:
+        raise ValueError(f'master is {head}, not the tagged release commit {commit}; a later preparation '
+                         'superseded it, so tag that one instead')
+
+
+def require_prepared_release(repo, run_id):
+    """The one unexpired release-packages artifact of the ci.yml run B names.
+
+    The preparation is preserved for 90 days; a tag pushed after that, or at a B whose run
+    was deleted, has nothing to sign and fails here, before anything is attested."""
+    listing = api(repo, f'actions/runs/{run_id}/artifacts?name=release-packages')
+    artifacts = [a for a in listing.get('artifacts', []) if a.get('name') == 'release-packages']
+    if len(artifacts) != 1:
+        raise ValueError(f'ci.yml run {run_id} holds {len(artifacts)} release-packages artifacts, not one; '
+                         'prepare again')
+    if artifacts[0].get('expired'):
+        raise ValueError(f'ci.yml run {run_id}: release-packages has expired; prepare again')
+    return artifacts[0]
+
+
+def require_forge_ancestry(packed, running):
+    """The Forge that packed (the inventory's forge_sha, B's trailer) is an ancestor of, or the
+    same as, the Forge this run resolved: the tag run verifies what a known Forge produced
+    with scripts that can only have moved forward since."""
+    status = api(FORGE, f'compare/{packed}...{running}')['status']
+    if status not in ('identical', 'ahead'):
+        raise ValueError(f'the Forge that packed, {packed}, is not an ancestor of the Forge this run uses, {running}')
+
+
 # Every staged payload is a static archive or generated text, never executable.
 PAYLOAD_MODE = '100644'
 
@@ -258,10 +306,11 @@ def swift_assets_dir(root):
     return root / 'artifacts' / 'swift-release-assets'
 
 
-def check_swift_assets(root, cfg, manifest, sha=None, repo=None):
+def check_swift_assets(root, cfg, manifest, sha=None, repo=None, assets=None):
     """The CI run's Swift zips are the ones `manifest` (Package.swift) names, for the crate's
-    version; with `sha`, each also carries the Forge's build provenance at A."""
-    assets = swift_assets_dir(root)
+    version; with `sha`, each also carries the Forge's build provenance at A. The zips are in
+    `assets` (the tag run's preserved release-packages/github) or the staging download."""
+    assets = Path(assets) if assets else swift_assets_dir(root)
     if sha:
         for name in cfg.swift_assets:
             verify_attestation(assets / name, sha, repo)
@@ -342,7 +391,8 @@ def validate_payloads(root, cfg, paths, sha, repo, compare=False, attest=True):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('mode', choices=('record', 'run', 'staged', 'master', 'index', 'payloads', 'compare', 'paths'))
+    parser.add_argument('mode', choices=('record', 'tag', 'run', 'staged', 'master', 'index', 'payloads',
+                                         'compare', 'paths', 'forge-ancestry', 'swift-assets'))
     args = parser.parse_args()
     if args.mode == 'staged':
         # Run before anything is checked out: it reads master through the API alone.
@@ -366,6 +416,28 @@ def main():
                                      os.environ.get('CI_RUN_ID_OVERRIDE', ''), repo)
         with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             output.write(f'source_sha={sha}\nrun_id={run_id}\n')
+    elif args.mode == 'tag':
+        ref = os.environ.get('GITHUB_REF', '')
+        if not ref.startswith('refs/tags/'):
+            raise ValueError(f'the release train starts at a tag push, not {ref!r}')
+        commit = os.environ['GITHUB_SHA']
+        sha, run_id = release_record(root, cfg, commit, ref.removeprefix('refs/tags/'), '', repo)
+        packing = forge_trailer(git(root, 'show', '-s', '--format=%B', commit))
+        if os.environ.get('GITHUB_EVENT_NAME') == 'push':
+            require_master_at(repo, commit)
+        require_prepared_release(repo, run_id)
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write(f'source_sha={sha}\nrun_id={run_id}\npacking_forge_sha={packing}\n')
+    elif args.mode == 'forge-ancestry':
+        trailer, running = os.environ['PACKED_FORGE_SHA'], os.environ['FORGE_SHA']
+        inventory = Path(os.environ.get('INVENTORY') or 'release-packages/inventory.json')
+        packed = json.loads(inventory.read_text())['forge_sha']
+        if packed != trailer:
+            raise ValueError(f'B names Forge {trailer} but the preserved inventory was packed by {packed}')
+        require_forge_ancestry(packed, running)
+    elif args.mode == 'swift-assets':
+        check_swift_assets(root, cfg, (root / swift_release.MANIFEST).read_text(), sha, repo,
+                           assets=os.environ['SWIFT_ASSETS'])
     elif args.mode == 'run':
         await_run(repo, sha, run_id, int(os.environ.get('RUN_WAIT_SECONDS') or 0))
     elif args.mode == 'master':
