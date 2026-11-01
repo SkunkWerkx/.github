@@ -1,0 +1,207 @@
+name: HyperForge — test the Python binding
+
+# One of the hyper-test-<binding>.yml workflows: this binding's suite on every leg, against
+# the core hyper-core.yml built and uploaded as `native-<rid>`, in a job of its own so a
+# consumer's board runs it only when the binding (or the core, or the workflows) changed,
+# after its hyper-lint-<binding>.yml gate. It never builds a second core: the bindings that
+# load the shared library download it, the ones that link the static archive download
+# `static-libs`, and the ones that compile their own extension from rust/ download nothing.
+# The steps are hyper-build-native.yml's, with that job's `!cancelled()` and shard guards
+# gone: here a red step is the binding's own, and the job stops on it.
+#
+# Python (PyO3): the extension built from the crate's `python` feature on every leg and
+# tested on the primary CPython and, rebuilt, on a free-threaded one; on Alpine as the
+# musllinux wheel the release ships, on the primary and the declared floor. No core artifact:
+# the extension is the core.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "`release` (the default) attests every artifact the binding ships and runs its osx-x64 leg; `pr` drops both and trims what the PR board does once per board"
+        required: false
+        type: string
+        default: release
+      project:
+        description: "PascalCase project name (Swift target, e.g. HyperCast)"
+        required: true
+        type: string
+      crate:
+        description: "Lowercase core name (lib{crate}.so / {crate}.dll)"
+        required: true
+        type: string
+      attest_native:
+        description: "Sign SLSA build provenance for every compiled artifact this binding ships, in `release` mode and never from a fork; the CALLING job must grant `id-token: write` and `attestations: write`"
+        required: false
+        type: boolean
+        default: true
+      pyo3:
+        description: "Build and test the Python PyO3 extension backend (every leg — Windows needs only the MSVC linker plus CPython's bundled import library)"
+        required: false
+        type: boolean
+        default: true
+      python_version:
+        description: "The CPython the suite runs on, and the Alpine image tag"
+        required: false
+        type: string
+        default: "3.14"
+      python_freethreaded_version:
+        description: "Free-threaded CPython the PyO3 suite runs on a second time, against the extension rebuilt for it: the abi3t floor the crate's PyO3 `abi3t-py3XX` feature names, with a `t`. Empty skips it."
+        required: false
+        type: string
+        default: "3.15t"
+      python_floor_version:
+        description: "Oldest Python the package declares (requires-python, and the abi3 floor) — the musl job runs the suite on it as well as on python_version. Empty skips the floor run."
+        required: false
+        type: string
+        default: "3.11"
+
+jobs:
+  test:
+    if: inputs.pyo3
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-x64
+          - os: ubuntu-26.04-arm
+            rid: linux-arm64
+          - os: xcode-27
+            rid: osx-arm64
+          - os: windows-2025-vs2026
+            rid: win-x64
+          - os: windows-11-vs2026-arm
+            rid: win-arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      # The PyO3 extension is the crate's `python` feature, built here from rust/ (the only
+      # Python backend, and what every PyPI release ships), so it is proven on every PR.
+      - name: Build Python (PyO3) extension
+        working-directory: rust
+        run: cargo rustc --release --crate-type cdylib --features python
+
+      - name: Stage Python (PyO3) extension
+        run: |
+          case "${{ runner.os }}" in
+            macOS)   cp "rust/target/release/lib${{ inputs.crate }}.dylib" "python/src/${{ inputs.crate }}/_native.so" ;;
+            Linux)   cp "rust/target/release/lib${{ inputs.crate }}.so" "python/src/${{ inputs.crate }}/_native.so" ;;
+            Windows) cp "rust/target/release/${{ inputs.crate }}.dll" "python/src/${{ inputs.crate }}/_native.pyd" ;;
+          esac
+
+      - name: Test Python bindings
+        working-directory: python
+        run: |
+          # mypy is what tests/test_typing.py checks a consumer file with; without it that
+          # test skips, and the package's `py.typed` claim goes unexercised.
+          pip install pytest mypy
+          pytest
+
+      # The same suite on a free-threaded CPython, where threads run in parallel and a GIL
+      # assumption in the extension would show (the suite's threading tests are written for
+      # that), against the extension rebuilt for it: PYO3_PYTHON picks the interpreter, and
+      # with abi3t-py3XX enabled a free-threaded one builds abi3t. Then the GIL must still be
+      # off after the import. Off PATH, so every later step keeps the interpreter above. On a
+      # PR board linux-x64 alone carries it (what differs is the interpreter, not the
+      # platform); a release run keeps every leg.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: ft-python
+        if: inputs.python_freethreaded_version != '' && (inputs.mode != 'pr' || matrix.rid == 'linux-x64')
+        with:
+          python-version: ${{ inputs.python_freethreaded_version }}
+          update-environment: false
+
+      - name: Test Python bindings — free-threaded
+        if: inputs.python_freethreaded_version != '' && (inputs.mode != 'pr' || matrix.rid == 'linux-x64')
+        env:
+          PY: ${{ steps.ft-python.outputs.python-path }}
+          PYO3_PYTHON: ${{ steps.ft-python.outputs.python-path }}
+          CRATE: ${{ inputs.crate }}
+        run: |
+          set -euo pipefail
+          (cd rust && cargo rustc --release --crate-type cdylib --features python)
+          case "${{ runner.os }}" in
+            macOS)   cp "rust/target/release/lib$CRATE.dylib" "python/src/$CRATE/_native.so" ;;
+            Linux)   cp "rust/target/release/lib$CRATE.so" "python/src/$CRATE/_native.so" ;;
+            Windows) cp "rust/target/release/$CRATE.dll" "python/src/$CRATE/_native.pyd" ;;
+          esac
+          cd python
+          "$PY" -m pip install --quiet pytest
+          "$PY" -m pytest
+          PYTHONPATH=src "$PY" -W error::RuntimeWarning -c "import sys, $CRATE; assert not sys._is_gil_enabled(), 'the GIL came back on'; print('$CRATE on', sys.version.split()[0], 'GIL', sys._is_gil_enabled())"
+
+      # No wheel is built in this job: maturin is its own compile step, and the extension
+      # staged and tested above is what this matrix is for. The wheels a release publishes
+      # are built, installed and attested by hyper-build-wheels.yml.
+
+  test-musl:
+    if: inputs.pyo3
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-musl-x64
+          - os: ubuntu-26.04-arm
+            rid: linux-musl-arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-${{ matrix.rid }}
+          path: out-musl
+      # Builds a musllinux wheel the way the release does, then installs it on a bare image
+      # with no compiler and no libgcc — see suite-musl.sh.
+      - name: Python on Alpine (musllinux wheel on a bare image)
+        uses: ./.hyperforge/.github/actions/musl-suite
+        with:
+          binding: python
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: python:${{ inputs.python_version }}-alpine
+
+      - name: Python on Alpine — the declared floor
+        if: ${{ inputs.python_floor_version != '' && inputs.python_floor_version != inputs.python_version }}
+        uses: ./.hyperforge/.github/actions/musl-suite
+        with:
+          binding: python
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: python:${{ inputs.python_floor_version }}-alpine

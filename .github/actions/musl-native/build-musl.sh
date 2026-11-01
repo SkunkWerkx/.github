@@ -7,6 +7,9 @@
 # With JNI=true (the Java binding's JNI shim) java/jni is copied in as well and built after
 # the core, under the same RUSTFLAGS and held to the same NEEDED gate; lib{crate}_jni.so
 # lands in <out-dir> beside the core.
+# With CORE=false only the shim is built (the core's cdylib build, its suite and its copy
+# are skipped; the shim still compiles the crate as its dependency), for a job whose core
+# is already in <out-dir> from another leg's artifact.
 #
 # Runs on the host (a GitHub runner, or a developer's machine with Docker) and does the
 # work in `docker run`, so the result is the same file wherever it is produced. The
@@ -51,13 +54,15 @@ mkdir -p "${3:?$usage}"
 out_dir=$(cd "$3" && pwd)
 
 jni=${JNI:-false}
+core=${CORE:-true}
 image=${ALPINE_IMAGE:-alpine:3.22}
+[ "$core" = true ] || [ "$jni" = true ] || { echo "::error::CORE=false with nothing else to build"; exit 1; }
 platform_args=()
 [ -n "${DOCKER_PLATFORM:-}" ] && platform_args=(--platform "$DOCKER_PLATFORM")
 
 docker run --rm "${platform_args[@]}" \
   -v "$repo_root:/src:ro" -v "$out_dir:/out" \
-  -e CRATE="$crate" -e JNI="$jni" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+  -e CRATE="$crate" -e JNI="$jni" -e CORE="$core" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   "$image" sh -euc '
     apk add --no-cache build-base curl >/dev/null
     curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null 2>&1
@@ -73,8 +78,10 @@ docker run --rm "${platform_args[@]}" \
     export RUSTFLAGS="-C target-feature=-crt-static -L native=/unwind"
 
     # The cdylib alias from the crate itself, as in hyper-build-native.yml (its comment has why).
-    cargo cdylib
-    cargo test --release
+    if [ "$CORE" = true ]; then
+      cargo cdylib
+      cargo test --release
+    fi
 
     # The count as well as the name: a bare "libc.musl-"*".so.1 " pattern also matches
     # "libc.musl-aarch64.so.1 libgcc_s.so.1 ", since * spans the space (measured).
@@ -91,7 +98,7 @@ docker run --rm "${platform_args[@]}" \
     }
 
     lib="target/release/lib$CRATE.so"
-    gate "$lib"
+    if [ "$CORE" = true ]; then gate "$lib"; fi
 
     if [ "$JNI" = true ]; then
       cd /work/java/jni
@@ -103,9 +110,11 @@ docker run --rm "${platform_args[@]}" \
       cd /work/rust
     fi
 
-    cp "$lib" /out/
-    chown "$HOST_UID:$HOST_GID" "/out/lib$CRATE.so"
+    if [ "$CORE" = true ]; then
+      cp "$lib" /out/
+      chown "$HOST_UID:$HOST_GID" "/out/lib$CRATE.so"
+    fi
   '
 
-ls -l "$out_dir/lib$crate.so"
+if [ "$core" = true ]; then ls -l "$out_dir/lib$crate.so"; fi
 if [ "$jni" = true ]; then ls -l "$out_dir/lib${crate}_jni.so"; fi

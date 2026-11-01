@@ -1,0 +1,285 @@
+name: HyperForge — test the C# binding
+
+# One of the hyper-test-<binding>.yml workflows: this binding's suite on every leg, against
+# the core hyper-core.yml built and uploaded as `native-<rid>`, in a job of its own so a
+# consumer's board runs it only when the binding (or the core, or the workflows) changed,
+# after its hyper-lint-<binding>.yml gate. It never builds a second core: the bindings that
+# load the shared library download it, the ones that link the static archive download
+# `static-libs`, and the ones that compile their own extension from rust/ download nothing.
+# The steps are hyper-build-native.yml's, with that job's `!cancelled()` and shard guards
+# gone: here a red step is the binding's own, and the job stops on it.
+#
+# C#: the real [LibraryImport] resolution/marshalling path per OS, then the Native AOT publish
+# with the core linked in from the static archive, then both again on Alpine.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "`release` (the default) attests every artifact the binding ships and runs its osx-x64 leg; `pr` drops both and trims what the PR board does once per board"
+        required: false
+        type: string
+        default: release
+      project:
+        description: "PascalCase project name (Swift target, e.g. HyperCast)"
+        required: true
+        type: string
+      crate:
+        description: "Lowercase core name (lib{crate}.so / {crate}.dll)"
+        required: true
+        type: string
+      attest_native:
+        description: "Sign SLSA build provenance for every compiled artifact this binding ships, in `release` mode and never from a fork; the CALLING job must grant `id-token: write` and `attestations: write`"
+        required: false
+        type: boolean
+        default: true
+      csharp:
+        description: "Run the C# binding's suite, its Native AOT publish, and its Alpine run"
+        required: false
+        type: boolean
+        default: true
+      csharp_test_project:
+        description: "Path to the C# test csproj"
+        required: true
+        type: string
+      csharp_runtimes_dir:
+        description: "If set, place the native lib at {dir}/{rid}/native/ before dotnet test (repos whose csproj stages from rust/target/release leave this empty)"
+        required: false
+        type: string
+        default: ""
+      csharp_aot_project:
+        description: >
+          If set, Native-AOT-publish this project on every leg and fail the run on any
+          ILxxxx/AOTxxxx trim warning, then execute the published binary and require exit 0.
+          The publish log uploads as aot-report-{rid}. Assumes the project's assembly name matches
+          its .csproj filename.
+        required: false
+        type: string
+        default: ""
+      csharp_aot_frameworks:
+        description: >
+          Space-separated target frameworks (e.g. "net10.0 net11.0") to Native-AOT-publish
+          csharp_aot_project for, one `-f` publish and one run each, into aot-out/<tfm>/. Empty
+          keeps the single publish into aot-out/.
+        required: false
+        type: string
+        default: ""
+      csharp_extra_runtime:
+        description: >
+          A .NET runtime channel (e.g. "10.0") to install beside global.json's SDK, and to copy
+          into the Alpine suite, for the older target frameworks of a multi-targeted test project.
+          Empty installs nothing extra.
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  test:
+    if: inputs.csharp
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-x64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: ubuntu-26.04-arm
+            rid: linux-arm64
+            lib_name: lib${{ inputs.crate }}.so
+          - os: xcode-27
+            rid: osx-arm64
+            lib_name: lib${{ inputs.crate }}.dylib
+          - os: windows-2025-vs2026
+            rid: win-x64
+            lib_name: ${{ inputs.crate }}.dll
+          - os: windows-11-vs2026-arm
+            rid: win-arm64
+            lib_name: ${{ inputs.crate }}.dll
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-${{ matrix.rid }}
+          path: out
+      # hyper-build-native.yml built the core in place, so a csproj or Gradle build that
+      # stages from rust/target/release (the empty default of the *_dir input above) found it
+      # there; this job only downloads it, so the download goes where that default looks.
+      - name: Stage the core where a dev-loop build looks
+        run: |
+          mkdir -p rust/target/release
+          cp "out/${{ matrix.lib_name }}" rust/target/release/
+      # The static archives, laid out by repository path: csharp/{Project}/staticlibs/<rid>/ is what
+      # the Native AOT publish links when it is there.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: static-libs
+          path: .
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          # An extra runtime for the older target frameworks of a multi-targeted test project
+          # (see csharp_extra_runtime); the empty string installs nothing.
+          dotnet-version: ${{ inputs.csharp_extra_runtime != '' && format('{0}.x', inputs.csharp_extra_runtime) || '' }}
+
+      - name: Place native lib for C# in-repo testing
+        if: inputs.csharp_runtimes_dir != ''
+        run: |
+          mkdir -p "${{ inputs.csharp_runtimes_dir }}/${{ matrix.rid }}/native"
+          cp "out/${{ matrix.lib_name }}" "${{ inputs.csharp_runtimes_dir }}/${{ matrix.rid }}/native/"
+
+      # An absolute project path: for a multi-targeted project `dotnet test` re-resolves a
+      # relative --project against the project's own directory and fails with a doubled
+      # path (.../HyperUuid.Tests/csharp/HyperUuid.Tests/HyperUuid.Tests.csproj). A
+      # single-TFM project loads either way.
+      - name: Test C# bindings against this platform's native lib
+        env:
+          CSHARP_TEST_PROJECT: ${{ inputs.csharp_test_project }}
+        run: dotnet test --project "$GITHUB_WORKSPACE/$CSHARP_TEST_PROJECT" -c Release
+
+      # The bar here is "zero warnings, exit 0" on every platform, not "the csproj sets
+      # PublishAot". Three separate things get proven per leg: the publish emits no
+      # ILxxxx/AOTxxxx trim diagnostic, a real native binary comes out the other side, and
+      # that binary runs its own correctness assertions against the native core and exits 0.
+      # The log is uploaded either way, so a failure is diagnosable from the artifact alone.
+      #
+      # -p: not /p:. Under Git Bash on Windows, MSYS2 rewrites arguments that look like POSIX
+      # paths on their way to a native process and ate the slash off /p:PublishAot=true, so
+      # MSBuild read `p:PublishAot=true` as a second project file (MSB1008). The -p: spelling
+      # is identical to MSBuild and left alone everywhere.
+      - name: Native AOT publish (zero trim warnings required)
+        if: inputs.csharp_aot_project != ''
+        run: |
+          set -uo pipefail
+          # Empty list: today's single publish into aot-out. Otherwise one -f publish per
+          # target framework into aot-out/<tfm> (a multi-targeted project needs -f).
+          frameworks="${{ inputs.csharp_aot_frameworks }}"
+          [ -n "$frameworks" ] || frameworks=-
+          : > aot-publish.log
+          for tfm in $frameworks; do
+            if [ "$tfm" = "-" ]; then
+              out=aot-out
+              fargs=()
+            else
+              out="aot-out/$tfm"
+              fargs=(-f "$tfm")
+              echo "== Native AOT, $tfm" | tee -a aot-publish.log
+            fi
+            dotnet publish "${{ inputs.csharp_aot_project }}" \
+              -c Release -r ${{ matrix.rid }} -p:PublishAot=true \
+              ${fargs[@]+"${fargs[@]}"} -o "$out" 2>&1 | tee -a aot-publish.log
+            status=${PIPESTATUS[0]}
+            if [ "$status" -ne 0 ]; then
+              echo "::error::Native AOT publish failed for ${{ matrix.rid }} $tfm (exit $status)"
+              exit "$status"
+            fi
+            if grep -nE 'warning (IL|AOT)[0-9]{4}' aot-publish.log; then
+              echo "::error::Native AOT publish emitted trim/AOT warnings on ${{ matrix.rid }}"
+              exit 1
+            fi
+            echo "No ILxxxx/AOTxxxx diagnostics on ${{ matrix.rid }}." | tee -a aot-publish.log
+            # Where the package has a static library for this RID the core is linked into the
+            # executable, and the shared library must not have been published beside it.
+            if ls "csharp/${{ inputs.project }}/staticlibs/${{ matrix.rid }}"/* >/dev/null 2>&1; then
+              if ls "$out" | grep -E '^(lib${{ inputs.crate }}\.(so|dylib)|${{ inputs.crate }}\.dll)$'; then
+                echo "::error::the shared library was published beside an executable that should have the core linked in"
+                exit 1
+              fi
+              echo "Core linked into the executable: no shared library in the publish output." | tee -a aot-publish.log
+            fi
+          done
+
+      - name: Run the AOT-published binary (must exit 0)
+        if: inputs.csharp_aot_project != ''
+        run: |
+          set -euo pipefail
+          name=$(basename "${{ inputs.csharp_aot_project }}" .csproj)
+          frameworks="${{ inputs.csharp_aot_frameworks }}"
+          [ -n "$frameworks" ] || frameworks=-
+          for tfm in $frameworks; do
+            if [ "$tfm" = "-" ]; then exe="aot-out/$name"; else exe="aot-out/$tfm/$name"; fi
+            if [ "$RUNNER_OS" = "Windows" ]; then exe="$exe.exe"; fi
+            ls -l "$exe" | tee -a aot-publish.log
+            "./$exe" 2>&1 | tee -a aot-publish.log
+          done
+
+      - name: Upload the AOT report
+        if: inputs.csharp_aot_project != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: aot-report-${{ matrix.rid }}
+          path: aot-publish.log
+
+  test-musl:
+    if: inputs.csharp
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-musl-x64
+          - os: ubuntu-26.04-arm
+            rid: linux-musl-arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-${{ matrix.rid }}
+          path: out-musl
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: static-libs
+          path: .
+      # The major.minor of the caller's global.json SDK -> 11.0-alpine-aot. The `-aot` variant
+      # carries the clang and linker Native AOT needs; a channel's rc and GA builds are both served
+      # under the bare major.minor tag, and global.json's latestFeature roll-forward takes it.
+      - name: Resolve the Alpine image that follows the caller's SDK
+        id: images
+        run: |
+          set -euo pipefail
+          echo "dotnet=mcr.microsoft.com/dotnet/sdk:$(jq -r .sdk.version global.json | cut -d. -f1,2)-alpine-aot" >> "$GITHUB_OUTPUT"
+
+      - name: C# on Alpine (suite + Native AOT)
+        if: inputs.csharp_runtimes_dir != ''
+        uses: ./.hyperforge/.github/actions/musl-suite
+        with:
+          binding: csharp
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: ${{ steps.images.outputs.dotnet }}
+          csharp_test_project: ${{ inputs.csharp_test_project }}
+          csharp_aot_project: ${{ inputs.csharp_aot_project }}
+          csharp_aot_frameworks: ${{ inputs.csharp_aot_frameworks }}
+          csharp_extra_runtime: ${{ inputs.csharp_extra_runtime }}
+          csharp_runtimes_dir: ${{ inputs.csharp_runtimes_dir }}

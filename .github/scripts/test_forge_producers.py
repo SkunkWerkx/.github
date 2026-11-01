@@ -169,9 +169,25 @@ class PhpExtensionContracts(unittest.TestCase):
 
     def test_inputs(self):
         inputs = self.workflow['on']['workflow_call']['inputs']
-        self.assertEqual(set(inputs), {'crate', 'mode', 'php_versions', 'php_floor_version', 'attest_native'})
+        self.assertEqual(set(inputs), {'crate', 'mode', 'php_versions', 'php_floor_version', 'attest_native', 'pr_legs'})
         self.assertEqual(inputs['php_versions']['default'], '8.3 8.4 8.5')
         self.assertEqual(inputs['mode']['default'], 'release')
+
+    def test_php_workflow_wires_pr_legs(self):
+        inputs = self.workflow['on']['workflow_call']['inputs']
+        self.assertEqual(inputs['pr_legs']['default'], 'newest-plus-floor')
+        matrix = next(step for step in self.jobs['version']['steps'] if step.get('id') == 'matrix')
+        self.assertEqual(matrix['env']['PR_LEGS'], '${{ inputs.pr_legs }}')
+        self.assertIn('--floor "$PHP_FLOOR_VERSION" --pr-legs "$PR_LEGS"', matrix['run'])
+        # Under two-paths the linux-x64 leg takes the image's PHP: setup-php is off there, and
+        # a step holds the image's PHP to the leg's minor (with php-config beside it).
+        setup = next(step for step in self.steps if step.get('uses', '').startswith('shivammathur/setup-php'))
+        two_paths = "inputs.pr_legs == 'two-paths' && inputs.mode == 'pr' && matrix.rid == 'linux-x64'"
+        self.assertIn(f"!({two_paths})", setup['if'])
+        image = self.step("The image's PHP is the leg's minor")
+        self.assertEqual(image['if'], two_paths)
+        self.assertIn('php-config', image['run'])
+        self.assertIn('PHP_MINOR_VERSION', image['run'])
 
     def test_version_job_reads_the_crate_version_at_the_commit_and_derives_the_tag(self):
         version = self.jobs['version']
@@ -1268,6 +1284,27 @@ class WasmToolchainContracts(unittest.TestCase):
         self.assertNotIn('if', workload)
         self.assertEqual(workload['run'], 'dotnet workload install wasm-tools-net10')
         self.assertNotIn('if', steps['wasm-tools workload'])
+
+
+class WasmArchiveGateTests(unittest.TestCase):
+    """`archive` (default true) switches the browser-wasm archive build off: a consumer's PR
+    board passes `core || ci || csharp`, so a TypeScript- or Go-only pull request runs the WASI
+    and Go wasm jobs here without the build-std archive; the Blazor check needs the archive and
+    skips with it."""
+
+    def test_archive_input_gates_the_archive_job(self):
+        import yaml_lite
+        workflow = yaml_lite.load((WORKFLOWS / 'hyper-build-wasm.yml').read_text())
+        archive = workflow['on']['workflow_call']['inputs']['archive']
+        self.assertEqual(archive['type'], 'boolean')
+        self.assertIs(archive['default'], True)
+        self.assertEqual(workflow['jobs']['build-wasm']['if'], 'inputs.archive')
+        blazor = workflow['jobs']['test-blazor']
+        self.assertEqual(blazor['needs'], 'build-wasm')
+        self.assertNotIn('always()', blazor['if'])
+        for name, job in workflow['jobs'].items():
+            if name not in ('build-wasm', 'test-blazor'):
+                self.assertNotEqual(job.get('needs'), 'build-wasm', name)
 
 
 if __name__ == '__main__':

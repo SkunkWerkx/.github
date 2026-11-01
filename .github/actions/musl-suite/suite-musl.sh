@@ -36,8 +36,12 @@ binding=${1:?$usage}
 crate=${2:?$usage}
 rid=${3:?$usage}
 repo_root=$(cd "${4:?$usage}" && pwd)
-lib_dir=$(cd "${5:?$usage}" && pwd)
-[ -f "$lib_dir/lib$crate.so" ] || { echo "::error::no $lib_dir/lib$crate.so — run build-musl.sh first"; exit 1; }
+# Go's translated core loads no library, so its suite takes an empty (or absent) <musl-lib-dir>;
+# every other binding needs the core build-musl.sh put there.
+lib_dir=${5:?$usage}
+[ "$binding" = go ] && mkdir -p "$lib_dir"
+[ "$binding" = go ] || [ -f "$lib_dir/lib$crate.so" ] || { echo "::error::no $lib_dir/lib$crate.so — run build-musl.sh first"; exit 1; }
+lib_dir=$(cd "$lib_dir" && pwd)
 
 platform_args=()
 [ -n "${DOCKER_PLATFORM:-}" ] && platform_args=(--platform "$DOCKER_PLATFORM")

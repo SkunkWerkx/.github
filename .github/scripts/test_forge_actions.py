@@ -525,5 +525,59 @@ class PrepareMavenPackageJniTests(unittest.TestCase):
                     self.assertEqual(call['with']['jni'], '${{ inputs.java_jni }}')
 
 
+class MuslNativeTests(unittest.TestCase):
+    """`core: "false"` builds nothing but the JNI shim: a consumer's hyper-test-java.yml musl
+    leg takes the core from hyper-core.yml's `native-<rid>` and must not produce a second."""
+
+    def test_musl_native_core_false_builds_only_the_jni_shim(self):
+        action = yaml_lite.load((ACTIONS / 'musl-native/action.yml').read_text())
+        self.assertEqual(action['inputs']['core']['default'], 'true')
+        steps = action['runs']['steps']
+        build = next(s for s in steps if 'build-musl.sh' in (s.get('run') or ''))
+        self.assertEqual(build['env']['CORE'], '${{ inputs.core }}')
+        uploads = [s for s in steps if s.get('uses', '').startswith('actions/upload-artifact')]
+        core_upload = next(s for s in uploads if s['with']['name'] == 'native-${{ inputs.rid }}')
+        self.assertIn("inputs.core == 'true'", core_upload['if'])
+        core_attest = next(s for s in steps if s.get('name', '').startswith('Attest native build provenance'))
+        self.assertIn("inputs.core == 'true'", core_attest['if'])
+        jni_upload = next(s for s in uploads if s['with']['name'] == 'jni-${{ inputs.rid }}')
+        self.assertNotIn('inputs.core', jni_upload['if'])
+        script = (ACTIONS / 'musl-native/build-musl.sh').read_text()
+        self.assertIn('core=${CORE:-true}', script)
+        self.assertIn('if [ "$CORE" = true ]', script)
+
+
+class MuslSuiteTests(unittest.TestCase):
+    """suite-musl.sh demands the musl core for every binding that loads it; Go's translated
+    core loads nothing, so a consumer's hyper-test-go.yml musl leg runs it with no library dir."""
+
+    def run_suite(self, binding, lib_dir):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'repo/rust').mkdir(parents=True)
+            (root / 'repo/rust/Cargo.toml').write_text('[package]\n')
+            (root / 'bin').mkdir()
+            fake = root / 'bin/docker'
+            fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$DOCKER_LOG"\n')
+            fake.chmod(0o755)
+            env = {**os.environ, 'PATH': f"{root / 'bin'}:{os.environ['PATH']}", 'DOCKER_LOG': str(root / 'docker.log')}
+            run = subprocess.run(['bash', str(ACTIONS / 'musl-suite/suite-musl.sh'), binding, 'crate', 'linux-musl-x64',
+                                  str(root / 'repo'), str(root / lib_dir)], env=env, capture_output=True, text=True)
+            log = (root / 'docker.log').read_text() if (root / 'docker.log').exists() else ''
+            return run, log
+
+    def test_go_runs_without_a_musl_library(self):
+        run, log = self.run_suite('go', 'missing')
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn('golang:1.26-alpine', log)
+        self.assertIn('CGO_ENABLED=0 go test', log)
+
+    def test_the_other_bindings_still_demand_the_library(self):
+        run, log = self.run_suite('python', 'missing')
+        self.assertEqual(run.returncode, 1)
+        self.assertIn('run build-musl.sh first', run.stdout + run.stderr)
+        self.assertEqual(log, '')
+
+
 if __name__ == '__main__':
     unittest.main()

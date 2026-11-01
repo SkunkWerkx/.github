@@ -1,0 +1,49 @@
+name: HyperForge — lint the PHP binding
+
+# One of the nine hyper-lint-<binding>.yml workflows: the binding's doc linter and formatter,
+# moved out of hyper-check-core.yml into a job of its own so a consumer's board runs it the
+# moment its `changes` job says this binding moved, with nothing to wait for and no artifact
+# to download. On ubuntu-26.04-arm, the host that finishes first on every board and the one
+# nothing else queues for; a red lint cancels the binding's suite before any leg has paid for
+# a toolchain. Each step has its hyper-check-core.yml toggle, so a repository can say, in its
+# ci.yml and with a reason, why a check does not apply.
+on:
+  workflow_call:
+    inputs:
+      crate:
+        description: "Lowercase core name, from the caller's .github/hyper.json"
+        required: true
+        type: string
+      project:
+        description: "PascalCase project name, from the caller's .github/hyper.json"
+        required: true
+        type: string
+      mode:
+        description: "`release` or `pr`; the lint is the same in both unless a step says otherwise"
+        required: false
+        type: string
+        default: release
+      lint_php:
+        description: "phpcs over php/ (php/phpcs.xml)"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-26.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        if: inputs.lint_php
+        with:
+          php-version: "8.5"
+          extensions: ffi
+      - name: composer install
+        if: inputs.lint_php
+        working-directory: php
+        run: composer install --no-progress --prefer-dist
+      - name: phpcs
+        if: inputs.lint_php
+        working-directory: php
+        run: vendor/bin/phpcs

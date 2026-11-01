@@ -1,0 +1,313 @@
+name: HyperForge — test the TypeScript binding
+
+# One of the hyper-test-<binding>.yml workflows: this binding's suite on every leg, against
+# the core hyper-core.yml built and uploaded as `native-<rid>`, in a job of its own so a
+# consumer's board runs it only when the binding (or the core, or the workflows) changed,
+# after its hyper-lint-<binding>.yml gate. It never builds a second core: the bindings that
+# load the shared library download it, the ones that link the static archive download
+# `static-libs`, and the ones that compile their own extension from rust/ download nothing.
+# The steps are hyper-build-native.yml's, with that job's `!cancelled()` and shard guards
+# gone: here a red step is the binding's own, and the job stops on it.
+#
+# TypeScript (napi-rs): the addon is its own cdylib path-depending on rust/, built on every
+# leg, tested on Node and on Bun, shipped as `node-<rid>`; on Alpine in Node's own image, then
+# on every Node major `engines` admits; and cross-built for osx-x64 and tested on an x64 Node
+# under Rosetta, release mode only. No core artifact: the addon never loads it.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "`release` (the default) attests every artifact the binding ships and runs its osx-x64 leg; `pr` drops both and trims what the PR board does once per board"
+        required: false
+        type: string
+        default: release
+      project:
+        description: "PascalCase project name (Swift target, e.g. HyperCast)"
+        required: true
+        type: string
+      crate:
+        description: "Lowercase core name (lib{crate}.so / {crate}.dll)"
+        required: true
+        type: string
+      attest_native:
+        description: "Sign SLSA build provenance for every compiled artifact this binding ships, in `release` mode and never from a fork; the CALLING job must grant `id-token: write` and `attestations: write`"
+        required: false
+        type: boolean
+        default: true
+      node:
+        description: "Build the TypeScript binding's napi-rs addon on every leg (osx-x64 cross-built, both musl RIDs in Alpine), run its suite on Node and on Bun, and upload and attest each addon as `node-{rid}`"
+        required: false
+        type: boolean
+        default: true
+      node_version:
+        description: "Primary Node.js major — the current release. Every leg builds and tests the addon on it."
+        required: false
+        type: string
+        default: "26"
+      node_floor_versions:
+        description: "Older Node.js majors the package's `engines` admits, space-separated — the musl job runs the suite on each as well as on node_version. Empty skips the floor runs."
+        required: false
+        type: string
+        default: "22 24"
+      bun_version:
+        description: "The Bun setup-bun installs for the suite's Bun run on the matrix legs"
+        required: false
+        type: string
+        default: "latest"
+
+jobs:
+  test:
+    if: inputs.node
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-x64
+          - os: ubuntu-26.04-arm
+            rid: linux-arm64
+          - os: xcode-27
+            rid: osx-arm64
+          - os: windows-2025-vs2026
+            rid: win-x64
+          - os: windows-11-vs2026-arm
+            rid: win-arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      # The addon built for this leg's own target — every runner here is native, so napi's
+      # --platform picks the host triple — then the suite on Node and on Bun. The addon is its
+      # own cdylib in typescript/, path-depending on rust/ and building into typescript/target,
+      # so it never touches the core library the other suites load.
+      #
+      # `--js binding.js --dts binding.d.ts` is in the package's build script for a reason:
+      # without them napi writes its own loader over the hand-written index.js and index.d.ts.
+      # The git diff after the build is what proves no napi release changed what it writes.
+      - name: Build the TypeScript (napi-rs) addon
+        id: node_addon
+        run: |
+          set -euo pipefail
+          (cd typescript && npm ci && npm run build)
+          git diff --exit-code -- typescript/index.js typescript/index.d.ts typescript/binding.js typescript/binding.d.ts
+          ls -l typescript/*.node
+
+      # Print-only, for now: the highest glibc symbol version the addon references. The core's
+      # 2.34 floor is a no_std library's; the addon links std, so its floor is measured here
+      # first and stated in the TypeScript README from that, then enforced.
+      - name: glibc the TypeScript addon references (printed, never fails)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          echo "::group::glibc symbol versions referenced by typescript/*.node"
+          objdump -T typescript/*.node | grep -o 'GLIBC_[0-9.]*' | sort -V | uniq || true
+          echo "newest: $(objdump -T typescript/*.node | grep -o 'GLIBC_[0-9.]*' | sort -V | uniq | tail -1)"
+          echo "::endgroup::"
+
+      - name: Test TypeScript bindings on Node
+        working-directory: typescript
+        run: |
+          set -euo pipefail
+          npm test
+          npm run typecheck
+
+      # Bun on Windows ARM64 is not verified yet; until it is, the Bun run skips that leg.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: matrix.rid != 'win-arm64'
+        with:
+          bun-version: ${{ inputs.bun_version }}
+
+      - name: Test TypeScript bindings on Bun
+        if: matrix.rid != 'win-arm64'
+        working-directory: typescript
+        run: npm run test:bun
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: node-${{ matrix.rid }}
+          path: typescript/*.node
+          if-no-files-found: error
+
+      # The same attestation, for the same reason, as this leg's native library.
+      - name: Attest the TypeScript addon's build provenance
+        if: >-
+          inputs.node && inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: typescript/*.node
+
+  test-musl:
+    if: inputs.node
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            rid: linux-musl-x64
+          - os: ubuntu-26.04-arm
+            rid: linux-musl-arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      # The core: suite-musl.sh requires it beside the suite, and the addon's cross-backend
+      # checks load nothing else.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-${{ matrix.rid }}
+          path: out-musl
+      # Builds the TypeScript addon in Node's Alpine image, runs the suite there and again on
+      # Bun's, and leaves the .node in out-musl for the upload below — see suite-musl.sh.
+      - name: Node on Alpine (the napi-rs addon, then Bun on the same addon)
+        id: node_musl
+        uses: ./.hyperforge/.github/actions/musl-suite
+        with:
+          binding: node
+          crate: ${{ inputs.crate }}
+          rid: ${{ matrix.rid }}
+          image: node:${{ inputs.node_version }}-alpine
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: node-${{ matrix.rid }}
+          path: out-musl/*.node
+          if-no-files-found: error
+
+      - name: Attest the TypeScript addon's build provenance
+        if: >-
+          inputs.node && inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out-musl/*.node
+
+      # The floors are a list (every Node major `engines` still admits), so this is a loop over
+      # the same script the action runs rather than one action call per version. Each run builds
+      # and tests in that Node's image. After the upload, so the addon a floor run leaves in
+      # out-musl is never the one shipped.
+      - name: Node on Alpine — the declared floors
+        if: inputs.node_floor_versions != ''
+        env:
+          NODE_FLOOR_VERSIONS: ${{ inputs.node_floor_versions }}
+          NODE_VERSION: ${{ inputs.node_version }}
+          CRATE: ${{ inputs.crate }}
+          RID: ${{ matrix.rid }}
+        run: |
+          set -uo pipefail
+          failed=()
+          for version in $NODE_FLOOR_VERSIONS; do
+            [ "$version" = "$NODE_VERSION" ] && continue
+            echo "::group::node $version on Alpine — $RID"
+            SUITE_IMAGE="node:$version-alpine" .hyperforge/.github/actions/musl-suite/suite-musl.sh node "$CRATE" "$RID" . out-musl || failed+=("$version")
+            echo "::endgroup::"
+          done
+          # Every floor runs and reports; the step fails after the loop if any did.
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::the Node suite failed on Alpine for node ${failed[*]}"
+            exit 1
+          fi
+
+  test-osx-x64:
+    if: inputs.node && inputs.mode != 'pr'
+    runs-on: xcode-27
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: x86_64-apple-darwin
+
+      # The addon, cross-built: npm ci and the napi CLI run on the arm64 Node, and --target
+      # names the x86_64 triple. Then an x64 Node, which runs under Rosetta, loads it and runs
+      # the suite: an x64 Node is a download away, where an x64 Ruby would be the leg.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Cross-build the TypeScript addon for x86_64
+        run: |
+          set -euo pipefail
+          (cd typescript && npm ci && npx napi build --release --platform --target x86_64-apple-darwin --js binding.js --dts binding.d.ts)
+          git diff --exit-code -- typescript/index.js typescript/index.d.ts typescript/binding.js typescript/binding.d.ts
+          archs="$(lipo -archs typescript/*.node)"
+          echo "architectures: $archs"
+          [ "$archs" = x86_64 ] || { echo "::error::expected an x86_64 addon, got: $archs"; exit 1; }
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node_version }}
+          architecture: x64
+
+      - name: Test TypeScript bindings on x64 Node, under Rosetta
+        working-directory: typescript
+        run: |
+          set -euo pipefail
+          node -p '`node ${process.version} on ${process.arch}`'
+          [ "$(node -p process.arch)" = x64 ] || { echo "::error::the Node on PATH is not x64"; exit 1; }
+          npm test
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: node-osx-x64
+          path: typescript/*.node
+          if-no-files-found: error
+
+      - name: Attest the TypeScript addon's build provenance
+        if: >-
+          inputs.node && inputs.attest_native && inputs.mode != 'pr' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: typescript/*.node

@@ -308,5 +308,27 @@ class InventoryAndNotesTests(unittest.TestCase):
         self.assertIn('committed for Swift, and 2 C archives, one per platform, attached below.', text)
 
 
+class WorkflowTests(unittest.TestCase):
+    """hyper-test-c.yml's inputs: a consumer's PR board packs here and smokes the archives on
+    the core legs (hyper-core.yml) and lints the smoke consumers in hyper-core-checks.yml, so
+    `smokes` and `lint` switch those off; the siblings keep both defaults."""
+
+    def test_smokes_and_lint_inputs_gate_their_steps(self):
+        import yaml_lite
+        workflow = yaml_lite.load((SCRIPTS.parent / 'workflows/hyper-test-c.yml').read_text())
+        inputs = workflow['on']['workflow_call']['inputs']
+        self.assertEqual(set(inputs), {'mode', 'smokes', 'lint'})
+        for name in ('smokes', 'lint'):
+            self.assertEqual(inputs[name]['type'], 'boolean', name)
+            self.assertIs(inputs[name]['default'], True, name)
+        jobs = workflow['jobs']
+        self.assertEqual(set(jobs), {'pack', 'smoke', 'smoke-apple-mobile'})
+        self.assertNotIn('if', jobs['pack'])
+        for name in ('smoke', 'smoke-apple-mobile'):
+            self.assertIn('inputs.smokes', jobs[name]['if'], name)
+        lint = next(step for step in jobs['pack']['steps'] if step.get('name') == 'clang-format --dry-run and shellcheck')
+        self.assertIn('inputs.lint', lint['if'])
+
+
 if __name__ == '__main__':
     unittest.main()

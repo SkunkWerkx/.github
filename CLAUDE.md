@@ -85,9 +85,65 @@ Cross-building the library and testing it under Rosetta is a different thing and
 
 `mode: pr` skips everything only a release needs (attestations, the second Ruby ABI,
 osx-x64, native wheels, ruby.wasm, ext-php-rs). Release-only work gates on
-`inputs.mode != 'pr'`; a PR run must sign nothing.
+`inputs.mode != 'pr'`; a PR run must sign nothing. In the per-binding family below, `pr`
+also drops each workflow's osx-x64 job, Python's free-threaded rebuild off linux-x64 and R's
+floor legs, and `hyper-build-php-extension.yml`'s `pr_legs: two-paths` trims PHP to one
+glibc and one Windows leg; release mode ignores `pr_legs`. `hyper-build-wasm.yml`'s `archive`
+(default true) switches the browser-wasm archive build off for a pull request that cannot reach
+it (the Blazor check skips with it); the WASI, Rust browser and Go wasm jobs run without it.
+
+## The per-binding family: a consumer's PR board
+
+`hyper-build-native.yml` runs every binding in one job per leg. A consumer that wants to
+run only what a pull request touched calls the family below instead, one reusable workflow
+per concern, and gates each call on its own change detection; the Forge has no opinion on
+the gating, only on what each workflow does. The old workflows stay for HyperCast and
+HyperTabular until they move; the two families share the composites and the artifact names,
+so a consumer can run one or the other, never both at once (two producers of `native-<rid>`
+fail the upload).
+
+- `hyper-core.yml` (inputs `mode`, `crate`, `project`, `osx_x64`, `musl`, `static_libs`,
+  `attest_native`, `c_smoke`): the core on the seven RIDs, `cargo cdylib`, the crate's suite,
+  the glibc floor, the cdylib's exports against the C ABI and, with `c_smoke`, the C archive
+  assembled from the leg's own libraries and the consumer's `c/smoke/` built against it.
+  Uploads `native-<rid>`, osx-x64 in release mode only; attests in release mode.
+- `hyper-core-checks.yml`: `hyper-check-core.yml`'s source-level checks (fmt, clippy, the
+  ABI parity, release-check, the corpus oracle, semver, the MSRV, no_std, no-panic, big-endian,
+  wasmtime, actionlint, and `c_lint`'s clang-format and shellcheck over `c/smoke/` and the
+  C++ header) in one job on three hosts (ubuntu x64 and arm64, Windows x64); the x64-only
+  steps carry `matrix.arch == 'x64'`. No binding lint lives here.
+- `hyper-lint-<binding>.yml`, nine of them (csharp, java, python, ruby, php, swift,
+  typescript, r, go): the binding's formatter and linter on `ubuntu-26.04-arm`, no artifact,
+  no `needs`. Go's `linters: full` adds the cross-compile sweep and the race run; its fast
+  default keeps `go vet`, revive and the committed-core regeneration check, which is the
+  one check a core change must not skip.
+- `hyper-test-<binding>.yml`, eight of them (csharp, java, typescript, ruby, python, r,
+  swift, go): the binding's suite on the five desktop hosts, the two musl RIDs through
+  `musl-suite` where the binding has a musl story (not R; Swift's is `swift-static-suite`,
+  folded into its Linux legs), and an osx-x64 job in release mode. Each downloads only what
+  it loads: `native-<rid>` for the bindings that load the shared library, `static-libs` for
+  the ones that link it, nothing for Python, TypeScript, R and Go. Java's musl legs build the
+  JNI shim alone through `musl-native` with `core: "false"`. The binding inputs are
+  `hyper-build-native.yml`'s, toggles on by default; there is no `rids` input. Uploads are
+  the old leg's (`aot-report-<rid>`, `jni-<rid>`, `node-<rid>`, `ruby-native-<rid>-<abi>`).
+- `hyper-test-c.yml` gains `smokes` and `lint` (both default true): the board passes false
+  for both, since `hyper-core.yml` smokes each archive on the leg that built it and
+  `hyper-core-checks.yml` lints the consumers; `pack` alone runs.
+- `musl-native` gains `core` (default `"true"`): `"false"` builds and uploads only the JNI
+  shim, so a musl test leg never produces a second `native-<rid>`. `musl-suite`'s script
+  takes an empty library directory for `go` alone.
+- Runner labels in this family are explicit, never `-latest`: `ubuntu-26.04`,
+  `ubuntu-26.04-arm`, `xcode-27`, `windows-2025-vs2026`, `windows-11-vs2026-arm` (the last
+  two are in `.github/actionlint.yaml`); the shape tests (`test_hyper_core.py`,
+  `test_hyper_core_checks.py`, `test_hyper_lint.py`, `test_hyper_test_bindings.py`) pin it.
+  The toolchains those images ship are used where they are the current release (Rust,
+  Python, Node, Go, .NET, the JDKs, Swift on Linux, PHP on linux-x64 under `two-paths`), and
+  a step asserts the version where the leg depends on it.
 
 ## Fail fast: the newest binding runs first
+
+This rule is `hyper-build-native.yml`'s alone: the per-binding family has nothing to order,
+since each binding is its own job.
 
 In `hyper-build-native.yml` the bindings run in one job per leg, in order, and the order is
 newest first: a binding's steps go immediately after the Rust compile steps (core, test
@@ -112,8 +168,9 @@ there broke setup-dotnet's extraction.
   ignored there and refreshed by hand to the head of its `stable` branch. A Dependabot PR
   only runs `validate.yml`; the consumers' next runs are where it proves itself.
 - Every binding's tool pin (ruff, revive, SwiftLint, PHP, Ruby, JDK, actionlint, wasmtime)
-  lives in `hyper-check-core.yml`, once; `validate.yml` repeats the actionlint pin for the
-  Forge itself. wasmtime is a release tarball checked against its SHA-256; Dependabot does not
+  lives in `hyper-check-core.yml`, and again in the `hyper-lint-<binding>.yml` and
+  `hyper-core-checks.yml` it was split into, the same values; bump both families together
+  until the old one goes. `validate.yml` repeats the actionlint pin for the Forge itself. wasmtime is a release tarball checked against its SHA-256; Dependabot does not
   see it, so its version and checksum are bumped together by hand.
 
 ## Writing docs here
