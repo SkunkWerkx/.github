@@ -46,6 +46,22 @@ class HyperConfigTests(unittest.TestCase):
                              capture_output=True, text=True, check=True)
         self.assertEqual(off.stdout.strip(), 'false')
 
+    def test_r_corpus_defaults_to_hyperuuids_and_reaches_shell(self):
+        self.assertEqual(hyper_config.HyperConfig(MINIMAL).r_corpus, hyper_config.R_CORPUS)
+        own = ['boolean.json', 'date_order.json', 'uuid.json']
+        self.assertEqual(hyper_config.HyperConfig({**MINIMAL, 'r_corpus': own}).r_corpus, tuple(own))
+        write_config(self.root, {**MINIMAL, 'r_corpus': own})
+        shell = subprocess.run(['bash', '-c', f'eval "$(python3 {SCRIPTS / "hyper_config.py"} shell --root {self.root})"; echo $R_CORPUS_COUNT'],
+                               capture_output=True, text=True, check=True)
+        self.assertEqual(shell.stdout.strip(), '3')
+        # A fixture a corpus file reads is named by its path under corpus/.
+        nested = ['workbook.json', 'workbook/basic.xlsx', 'workbook/generated-a.numbers']
+        self.assertEqual(hyper_config.HyperConfig({**MINIMAL, 'r_corpus': nested}).r_corpus, tuple(nested))
+        for bad in ([], ['a.json', 'a.json'], ['../x.json'], ['workbook/../x.json'], ['./x.json'],
+                    ['/x.json'], ['workbook/'], ['workbook//x.xlsx'], ['x'], ['.json'], [1]):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'r_corpus'):
+                hyper_config.HyperConfig({**MINIMAL, 'r_corpus': bad})
+
     def test_sdist_must_be_a_boolean(self):
         for bad in ('false', 1, None):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'sdist must be true or false'):

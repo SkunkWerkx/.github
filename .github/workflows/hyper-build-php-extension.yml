@@ -64,6 +64,10 @@ on:
         description: "pr mode's legs: `newest-plus-floor` (the default: every platform on the newest minor, linux-x64 and win-x64 on the floor) or `two-paths` (the PR board's: linux-x64 on the newest minor from the image's own PHP, win-x64 on the floor from setup-php). Ignored in release mode."
         type: string
         default: "newest-plus-floor"
+      php_companions:
+        description: "Crates whose PHP extensions the suite also loads, space-separated (HyperTabular's: `hypercast`). Each is built by php_ext_companions.py from the registry source of the one version this crate's Cargo.lock pins, as its own `cargo php-ext` would, and named to the suite by <COMPANION>_PHP_EXTENSION. Only the suite loads them: they are neither load-checked as this crate, packed nor attested. Empty builds none."
+        type: string
+        default: ""
       attest_native:
         description: "Sign build provenance for each zip in release mode (the calling job must grant id-token and attestations write)"
         type: boolean
@@ -151,6 +155,7 @@ jobs:
       PACKAGE_VERSION: ${{ needs.version.outputs.package_version }}
       RELEASE_TAG: ${{ needs.version.outputs.release_tag }}
       ENV_PREFIX: ${{ needs.version.outputs.env_prefix }}
+      COMPANIONS: ${{ inputs.php_companions }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -337,6 +342,18 @@ jobs:
           cp "$lib" "../php-ext/$CRATE.so"
           echo "EXTENSION=$GITHUB_WORKSPACE/php-ext/$CRATE.so" >> "$GITHUB_ENV"
 
+      # A companion is a dependency whose own PHP extension this one needs at run time
+      # (HyperTabular judges every cell with ext-hypercast's classes): php_ext_companions.py
+      # builds each from the registry source of the one version Cargo.lock pins, as its own
+      # `cargo php-ext` would, stages it beside this crate's and names it to the suite as
+      # <COMPANION>_PHP_EXTENSION. Not this crate's build: that stays the alias above. Windows
+      # runs the script inside its build step, which holds the toolset and RUSTC_BOOTSTRAP.
+      - name: Build the companion extensions
+        if: inputs.php_companions != '' && (matrix.kind == 'glibc' || matrix.kind == 'macos')
+        working-directory: rust
+        shell: bash
+        run: python3 "../$FORGE_SCRIPTS/php_ext_companions.py" --companions "$COMPANIONS" --out ../php-ext --target-root "$RUNNER_TEMP" --env-file "$GITHUB_ENV"
+
       # Clippy over the `php` feature, which check-core can't build (it needs PHP's headers and
       # libclang, both here): once, on the stub leg, with check-core's flags.
       - name: Clippy over the extension (the php feature)
@@ -413,6 +430,13 @@ jobs:
           New-Item -ItemType Directory -Force ../php-ext | Out-Null
           Copy-Item $dll "../php-ext/$env:CRATE.dll"
           "EXTENSION=$env:GITHUB_WORKSPACE/php-ext/$env:CRATE.dll" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          # The companions, if any ("Build the companion extensions" says what they are), here
+          # so they build in this step's toolset and with its one RUSTC_BOOTSTRAP: a companion's
+          # Windows build needs abi_vectorcall too.
+          if ($env:COMPANIONS) {
+            python "../$env:FORGE_SCRIPTS/php_ext_companions.py" --companions $env:COMPANIONS --out ../php-ext --target-root $env:RUNNER_TEMP --env-file $env:GITHUB_ENV
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
 
       # Every binding's README promises linux-x64 and linux-arm64 load on glibc 2.34 or newer;
       # the image's own glibc (2.43 on 26.04) is not that floor.

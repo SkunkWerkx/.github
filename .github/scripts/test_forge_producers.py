@@ -1,10 +1,15 @@
 """Regression contracts for isolated Forge producers and immutable action sources."""
 from pathlib import Path
+import contextlib
 import importlib.util
+import io
+import json
 import os
 import re
 import subprocess
+import tempfile
 import unittest
+import unittest.mock
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / 'workflows'
 
@@ -46,7 +51,7 @@ class PieAcceptanceContracts(unittest.TestCase):
         on = self.workflow['on']
         self.assertEqual(set(on), {'workflow_call', 'workflow_dispatch'})
         called, dispatched = on['workflow_call']['inputs'], on['workflow_dispatch']['inputs']
-        self.assertEqual(list(called), ['package', 'extension', 'package_version', 'repository', 'minors'])
+        self.assertEqual(list(called), ['package', 'extension', 'package_version', 'repository', 'minors', 'companions'])
         self.assertEqual(list(dispatched), list(called))
         for name in called:
             with self.subTest(input=name):
@@ -94,7 +99,7 @@ class PieAcceptanceContracts(unittest.TestCase):
             with self.subTest(step=name):
                 run = self.step(name)['run']
                 self.assertRegex(run, r'pie_acceptance\.sh"? "\$[A-Za-z_]+" "\$[A-Za-z_]+" "?\$?/?[A-Za-z_.]+"? '
-                                      r'"\$PACKAGE" "\$EXTENSION" "\$PACKAGE_VERSION" "\$REPOSITORY" "\$ENTRY_SHA256"')
+                                      r'"\$PACKAGE" "\$EXTENSION" "\$PACKAGE_VERSION" "\$REPOSITORY" "\$ENTRY_SHA256" "\$COMPANIONS"')
         self.assertIn('alpine:3.24', self.step('Install with PIE, then check from a fresh PHP (Alpine)')['run'])
         script = (WORKFLOWS.parent / 'scripts/pie_acceptance.sh').read_text()
         self.assertIn('release_tag="v$package_version"', script)
@@ -103,6 +108,7 @@ class PieAcceptanceContracts(unittest.TestCase):
         self.assertIn('"$target_php" "$here/pie_acceptance.php" "$extension" "$package_version" "$entry_sha256"', script)
         self.assertIn('-e EXTENSION ', self.step('Install with PIE, then check from a fresh PHP (Alpine)')['run'])
         self.assertIn('-e ENTRY_SHA256 ', self.step('Install with PIE, then check from a fresh PHP (Alpine)')['run'])
+        self.assertIn('-e COMPANIONS ', self.step('Install with PIE, then check from a fresh PHP (Alpine)')['run'])
         self.assertEqual(self.workflow['jobs']['install']['env']['EXTENSION'], '${{ inputs.extension }}')
 
     def test_the_installed_file_is_the_release_zips_entry(self):
@@ -147,10 +153,31 @@ class PieAcceptanceContracts(unittest.TestCase):
         self.assertIn("const SQL_ORDER = '07060504-0908-0080-8000-017f22e279b0';", php)
         self.assertIn('phpversion($extension) === $version', php)
         self.assertNotIn('ini_set', php)
-        # The extension is an argument; only the API checks are HyperUuid's, and another
-        # extension fails rather than passing on checks that aren't its own.
+        # The extension is an argument; the API checks are keyed by it, and an extension with
+        # none fails rather than passing on checks that aren't its own.
         self.assertNotIn("const EXTENSION", php)
-        self.assertIn("if ($extension !== 'hyperuuid') {", php)
+        self.assertIn("if (!isset($checks[$extension])) {", php)
+        for extension in ('hyperuuid', 'hypercast', 'hypertabular'):
+            self.assertIn(f"$checks['{extension}'] = static function ()", php)
+        # HyperCast's: corpus/integer.json's ok and malformed i32 lines.
+        self.assertIn('{"type": "i32", "input": "(1,234)", "expect": "ok", "value": -1234}', php)
+        self.assertIn('{"type": "i32", "input": "12.5", "expect": "malformed", "fault": [2, 1]}', php)
+        # HyperTabular's: corpus/delimited.json's faulted-cell case, and its companion.
+        self.assertIn('const TABULAR_INPUT = "a,b,c\\n12x4,256,x\\n -1,7,no\\n";', php)
+        self.assertIn("extension_loaded('hypercast')", php)
+
+    def test_companions_install_first_on_every_leg(self):
+        # HyperTabular's extension requires ext-hypercast: PIE installs each companion before the
+        # package, as a consumer must, on both triggers and both install steps.
+        for trigger in ('workflow_call', 'workflow_dispatch'):
+            companions = self.workflow['on'][trigger]['inputs']['companions']
+            self.assertEqual((companions['type'], companions['default']), ('string', ''))
+        self.assertEqual(self.workflow['jobs']['install']['env']['COMPANIONS'], '${{ inputs.companions }}')
+        script = (WORKFLOWS.parent / 'scripts/pie_acceptance.sh').read_text()
+        self.assertIn('companions=${9:-}', script)
+        loop = script.index('for companion in $companions; do')
+        self.assertIn('"$pie_php" "$phar" install --no-interaction "$@" "$companion"', script)
+        self.assertLess(loop, script.index('install --no-interaction "$@" "$package:$release_tag"'))
 
 
 class PhpExtensionContracts(unittest.TestCase):
@@ -193,8 +220,11 @@ class PhpExtensionContracts(unittest.TestCase):
 
     def test_inputs(self):
         inputs = self.workflow['on']['workflow_call']['inputs']
-        self.assertEqual(set(inputs), {'crate', 'mode', 'php_versions', 'php_floor_version', 'attest_native', 'pr_legs'})
+        self.assertEqual(set(inputs), {'crate', 'mode', 'php_versions', 'php_floor_version', 'attest_native', 'pr_legs',
+                                       'php_companions'})
         self.assertEqual(inputs['php_versions']['default'], '8.3 8.4 8.5')
+        self.assertEqual(inputs['php_companions']['type'], 'string')
+        self.assertEqual(inputs['php_companions']['default'], '')
         self.assertEqual(inputs['mode']['default'], 'release')
 
     def test_php_workflow_wires_pr_legs(self):
@@ -342,8 +372,12 @@ class PhpExtensionContracts(unittest.TestCase):
         for name in ('Build the extension', 'Build the extension (Windows)'):
             self.assertIn('cargo php-ext', self.step(name)['run'], name)
         self.assertIn('cargo php-ext', self.MUSL.read_text())
-        # `--features php` is clippy's only (below); every build is the alias.
+        # `--features php` is clippy's only (below); every build of the crate is the alias. A
+        # companion's build is php_ext_companions.py's, against the companion's own manifest.
         self.assertEqual(self.text.count('--features php'), 1)
+        self.assertNotIn('--features php', self.MUSL.read_text())
+        self.assertNotIn('cargo rustc', self.text)
+        self.assertNotIn('cargo rustc', self.MUSL.read_text())
 
     def test_clippy_runs_over_the_php_feature_on_the_stub_leg(self):
         # check-core lints every other feature set but can't build this one (PHP headers and
@@ -390,6 +424,144 @@ class PhpExtensionContracts(unittest.TestCase):
                 self.assertNotIn(gone, text)
         self.assertNotIn('\n  php)', suite)
 
+
+class PhpCompanionContracts(unittest.TestCase):
+    """`php_companions`: the suite loads each named dependency's own PHP extension, built by
+    php_ext_companions.py from the registry source of the version Cargo.lock pins, beside the
+    crate's; the crate's build, its zip and the one RUSTC_BOOTSTRAP step are untouched."""
+    PATH = WORKFLOWS / 'hyper-build-php-extension.yml'
+    MUSL = WORKFLOWS.parent / 'scripts/php_ext_musl.sh'
+    SCRIPT = WORKFLOWS.parent / 'scripts/php_ext_companions.py'
+    INDEX = 'registry+https://github.com/rust-lang/crates.io-index'
+
+    def setUp(self):
+        import yaml_lite
+        self.text = self.PATH.read_text()
+        self.workflow = yaml_lite.load(self.text)
+        self.steps = self.workflow['jobs']['build']['steps']
+        self.companions = load_script('php_ext_companions')
+
+    def step(self, name):
+        return next(step for step in self.steps if step.get('name') == name)
+
+    def package(self, name='hypercast', version='1.0.0', source=INDEX, kinds=('rlib',)):
+        return {'name': name, 'version': version, 'source': source,
+                'manifest_path': f'/registry/{name}-{version}/Cargo.toml',
+                'targets': [{'name': f'{name}_tests', 'kind': ['test']},
+                            {'name': name.replace('-', '_'), 'kind': list(kinds)}]}
+
+    def test_empty_by_default_and_every_leg_gates_on_it(self):
+        self.assertEqual(self.workflow['on']['workflow_call']['inputs']['php_companions']['default'], '')
+        self.assertEqual(self.workflow['jobs']['build']['env']['COMPANIONS'], '${{ inputs.php_companions }}')
+        unix = self.step('Build the companion extensions')
+        self.assertEqual(unix['if'], "inputs.php_companions != '' && (matrix.kind == 'glibc' || matrix.kind == 'macos')")
+        windows = self.step('Build the extension (Windows)')['run']
+        self.assertIn('if ($env:COMPANIONS) {\n  python "../$env:FORGE_SCRIPTS/php_ext_companions.py"', windows)
+        musl = self.MUSL.read_text()
+        self.assertIn('if [ -n "$COMPANIONS" ]; then\n      apk add --no-cache python3 >/dev/null\n'
+                      '      python3 /forge/.github/scripts/php_ext_companions.py', musl)
+        self.assertIn('for companion in ${COMPANIONS:-}; do', musl)
+        # ... and an empty list builds nothing, without so much as reading the lock.
+        with unittest.mock.patch.object(self.companions.subprocess, 'run', side_effect=AssertionError('ran')):
+            with tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(self.companions.main(['--companions', ' ', '--out', f'{tmp}/out',
+                                                       '--target-root', tmp, '--env-file', f'{tmp}/env']), 0)
+                self.assertEqual(os.listdir(tmp), [])
+
+    def test_every_leg_runs_the_one_script_from_the_crate_rust_dir(self):
+        unix = self.step('Build the companion extensions')
+        self.assertEqual(unix['working-directory'], 'rust')
+        self.assertEqual(unix['run'], 'python3 "../$FORGE_SCRIPTS/php_ext_companions.py" --companions "$COMPANIONS" '
+                                      '--out ../php-ext --target-root "$RUNNER_TEMP" --env-file "$GITHUB_ENV"')
+        windows = self.step('Build the extension (Windows)')
+        self.assertEqual(windows['working-directory'], 'rust')
+        self.assertIn('--companions $env:COMPANIONS --out ../php-ext --target-root $env:RUNNER_TEMP '
+                      '--env-file $env:GITHUB_ENV\n  if ($LASTEXITCODE) { exit $LASTEXITCODE }', windows['run'])
+        # The companion builds after the crate's own, in the step that holds the toolset and the
+        # bootstrap variable: no second step carries it (the RUSTC_BOOTSTRAP contract above).
+        self.assertLess(windows['run'].index('cargo php-ext'), windows['run'].index('php_ext_companions.py'))
+        self.assertEqual(windows['env']['RUSTC_BOOTSTRAP'], '1')
+        self.assertNotIn('RUSTC_BOOTSTRAP', self.SCRIPT.read_text())
+        names = [step.get('name') for step in self.steps]
+        self.assertLess(names.index('Build the extension'), names.index('Build the companion extensions'))
+        self.assertLess(names.index('Build the companion extensions'), names.index('Test the extension (composer test)'))
+        self.assertEqual(sum('php_ext_companions.py' in str(step.get('run', '')) for step in self.steps), 2)
+        musl = self.MUSL.read_text()
+        self.assertIn('-v "$build_dir:/out" -v "$forge_root:/forge:ro"', musl)
+        self.assertLess(musl.index('    cargo php-ext\n'), musl.index('python3 /forge/.github/scripts/php_ext_companions.py'))
+        self.assertIn('--out /out --target-root /companions', musl)
+
+    def test_a_companion_builds_from_the_locked_registry_version_only(self):
+        pick = self.companions.locked_package
+        crates_io = self.package()
+        self.assertIs(pick({'packages': [self.package('hypertabular', source=None), crates_io]}, 'hypercast'), crates_io)
+        sparse = self.package(source='sparse+https://index.crates.io/')
+        self.assertIs(pick({'packages': [sparse]}, 'hypercast'), sparse)
+        refusals = {
+            'a path': [self.package(source=None)],
+            'git': [self.package(source='git+https://github.com/SkunkWerkx/HyperCast#abc')],
+            'absent': [self.package('hyperuuid')],
+            'two versions': [self.package(), self.package(version='0.9.0')],
+            'registry and path': [self.package(), self.package(version='1.1.0', source=None)],
+        }
+        for case, packages in refusals.items():
+            with self.subTest(case=case), self.assertRaises(SystemExit) as refused:
+                pick({'packages': packages}, 'hypercast')
+            self.assertTrue(str(refused.exception.code).startswith('::error::'), case)
+        command = self.companions.build_command(crates_io, '/t/companion-hypercast')
+        self.assertEqual(command[:3], ['cargo', 'rustc', '--locked'])
+        self.assertEqual(command[command.index('--manifest-path') + 1], '/registry/hypercast-1.0.0/Cargo.toml')
+        self.assertEqual(command[command.index('--target-dir') + 1], '/t/companion-hypercast')
+        # The flags of the crates' own alias, `rustc --release --crate-type cdylib --features php`.
+        joined = ' '.join(command)
+        for flags in ('--release', '--crate-type cdylib', '--features php', '--lib'):
+            self.assertIn(flags, joined)
+
+    def test_the_suite_variable_is_named_as_the_crate_one(self):
+        derive = PhpExtensionContracts.DERIVE
+        for crate in ('hypercast', 'hyper-cast', 'hyperuuid'):
+            with self.subTest(crate=crate):
+                prefix = subprocess.run(['bash', '-c', derive], env={'CRATE': crate, 'PATH': os.environ['PATH']},
+                                        capture_output=True, text=True, check=True).stdout
+                self.assertEqual(self.companions.env_name(crate), f'{prefix}_PHP_EXTENSION')
+        musl = self.MUSL.read_text()
+        self.assertIn('companion_env+=(-e "$(' + derive.replace('$CRATE', '$companion') + ')'
+                      '_PHP_EXTENSION=/ext/$companion.so")', musl)
+        self.assertIn('"${companion_env[@]}"', musl)
+        for platform, lib, staged in (('linux', 'libhyper_cast.so', 'hyper-cast.so'),
+                                      ('darwin', 'libhyper_cast.dylib', 'hyper-cast.so'),
+                                      ('win32', 'hyper_cast.dll', 'hyper-cast.dll')):
+            with self.subTest(platform=platform):
+                self.assertEqual(self.companions.library_name(self.package('hyper-cast'), platform), lib)
+                self.assertEqual(self.companions.staged_name('hyper-cast', platform), staged)
+
+    def test_main_builds_stages_and_exports_each_companion(self):
+        metadata = {'packages': [self.package('hypertabular', source=None), self.package()]}
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[:2] == ['cargo', 'metadata']:
+                self.assertEqual(command, ['cargo', 'metadata', '--locked', '--format-version', '1'])
+                return subprocess.CompletedProcess(command, 0, stdout=json.dumps(metadata))
+            release = Path(command[command.index('--target-dir') + 1]) / 'release'
+            release.mkdir(parents=True)
+            (release / self.companions.library_name(self.package())).write_bytes(b'ext')
+            return subprocess.CompletedProcess(command, 0)
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                unittest.mock.patch.object(self.companions.subprocess, 'run', side_effect=run), \
+                contextlib.redirect_stdout(io.StringIO()):
+            env = Path(tmp, 'env')
+            env.write_text('EXTENSION=/crate.so\n')
+            self.companions.main(['--companions', 'hypercast', '--out', f'{tmp}/php-ext',
+                                  '--target-root', f'{tmp}/temp', '--env-file', str(env)])
+            staged = Path(tmp, 'php-ext', self.companions.staged_name('hypercast')).resolve()
+            self.assertEqual(staged.read_bytes(), b'ext')
+            self.assertEqual(env.read_text(), f'EXTENSION=/crate.so\nHYPERCAST_PHP_EXTENSION={staged.as_posix()}\n')
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[1][calls[1].index('--target-dir') + 1],
+                             str(Path(tmp, 'temp', 'companion-hypercast').resolve()))
 
 class ProducerContracts(unittest.TestCase):
     def test_timing_model_waits_for_both_android_architectures(self):

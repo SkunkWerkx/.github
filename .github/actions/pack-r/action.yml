@@ -2,8 +2,8 @@ name: Pack the R source package
 description: >
   Builds the R binding's CRAN source tarball from the checkout at B: tools/vendor.sh vendors
   the crates the wrapper crate builds, the Rust core itself among them from this checkout
-  (CRAN builds offline, and the crate version is not published yet), and stages the five
-  corpus files, `R CMD build` packs it, and the tarball is checked for its corpus members, its
+  (CRAN builds offline, and the crate version is not published yet), and stages the corpus
+  files hyper.json's r_corpus lists, `R CMD build` packs it, and the tarball is checked for its corpus members, its
   DESCRIPTION, the core pin and the vendored core's version, attested in the caller's identity
   and uploaded as cran-packages. No job ever
   uploads it to CRAN: the maintainer submits the preserved bytes by hand. Runs in the
@@ -66,9 +66,9 @@ runs:
         mkdir cran-packages
         (cd cran-packages && R CMD build ../r)
 
-    # Exactly the five corpus JSON files under tests/testthat/corpus/ (the directory entry
-    # itself does not end in .json), then the full member and DESCRIPTION check the release
-    # gate runs again over the preserved bytes.
+    # Exactly the r_corpus count of files under tests/testthat/corpus/, at any depth (directory
+    # entries end in /, and are not counted), then the full member and DESCRIPTION check the
+    # release gate runs again over the preserved bytes.
     - name: Check the tarball's corpus members and DESCRIPTION
       shell: bash
       env:
@@ -80,13 +80,14 @@ runs:
         tarball="cran-packages/${CRATE}_${version}.tar.gz"
         built=(cran-packages/*)
         [ "${built[*]}" = "$tarball" ] || { echo "::error::expected only $tarball, found: ${built[*]}"; exit 1; }
-        corpus=$(tar tzf "$tarball" | grep -c 'tests/testthat/corpus/.*\.json$' || true)
-        [ "$corpus" = 5 ] || { echo "::error::$tarball carries $corpus corpus files; expected 5"; exit 1; }
+        corpus=$(tar tzf "$tarball" | grep -c 'tests/testthat/corpus/.*[^/]$' || true)
+        [ "$corpus" = "$R_CORPUS_COUNT" ] || { echo "::error::$tarball carries $corpus corpus files; expected $R_CORPUS_COUNT"; exit 1; }
         PYTHONPATH="$FORGE_SCRIPTS" python3 -c '
         import sys
         from pathlib import Path
         from release_package_metadata import r_source_tarball
-        r_source_tarball(Path(sys.argv[1]), sys.argv[2], sys.argv[3])
+        import hyper_config
+        r_source_tarball(Path(sys.argv[1]), sys.argv[2], sys.argv[3], hyper_config.load().r_corpus)
         print(sys.argv[1], "carries the core, the vendored crates, the corpus and its DESCRIPTION")
         ' "$tarball" "$CRATE" "$version"
 

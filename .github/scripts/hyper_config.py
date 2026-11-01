@@ -26,7 +26,10 @@ name), `node.wasi` (the napi platform of the WASI fallback package, default `was
 `""` for none), `swift_targets`, `xcframework_slices`, `version_files` (path -> regex
 with one group around the version; the default list adds `typescript/package.json`, and
 `r/DESCRIPTION` with the R wrapper crate's exact pin on the core in `r/src/rust/Cargo.toml`,
-only when that binding's directory exists at the consumer's root).
+only when that binding's directory exists at the consumer's root), `r_corpus` (the corpus
+files every R source tarball must carry under tests/testthat/corpus/, and nothing else there,
+each by its path under corpus/: a JSON file or a fixture it reads, such as
+`workbook/basic.xlsx`; default HyperUuid's five).
 """
 import json
 from pathlib import Path
@@ -58,6 +61,12 @@ NODE_PLATFORMS = {'linux-x64': 'linux-x64-gnu', 'linux-arm64': 'linux-arm64-gnu'
 # installs (a hard dependency of the root, with no `cpu`/`os`/`libc`), loaded only when no
 # native addon for the host exists. Empty (`node.wasi: ""`) means the project ships none.
 NODE_WASI_PLATFORM = 'wasm32-wasip1'
+# The corpus files an R source tarball carries, unless .github/hyper.json names its own.
+R_CORPUS = ('v5.json', 'sql_order.json', 'sql_order_refused.json', 'timestamp.json', 'inspect.json')
+# One r_corpus entry: a file under corpus/, by its relative path: directory segments of word
+# characters and hyphens, then a name with an extension; no `.` or `..` segment, no absolute
+# path, no trailing slash.
+R_CORPUS_PATH = re.compile(r'(?:[\w-]+/)*[\w-][\w.-]*\.\w+')
 WHEELS = 17
 CONFIG_PATH = '.github/hyper.json'
 
@@ -100,6 +109,11 @@ class HyperConfig:
         self.node_wasi = node.get('wasi', NODE_WASI_PLATFORM)
         if not isinstance(self.node_wasi, str):
             raise ValueError('node.wasi must be a napi platform name, or "" for no WASI package')
+        self.r_corpus = tuple(data.get('r_corpus', R_CORPUS))
+        if not self.r_corpus or not all(isinstance(n, str) and R_CORPUS_PATH.fullmatch(n) for n in self.r_corpus) \
+                or len(set(self.r_corpus)) != len(self.r_corpus):
+            raise ValueError('r_corpus must name distinct corpus files, each a relative path such as '
+                             '<name>.json or <dir>/<name>.<ext>')
         self.swift_targets = tuple(data.get('swift_targets', SWIFT_TARGETS))
         self.xcframework_slices = tuple(data.get('xcframework_slices', XCFRAMEWORK_SLICES))
         self.version_files = data.get('version_files') or self.default_version_files()
@@ -271,7 +285,7 @@ def shell(cfg):
              'RUBY_ABIS=(' + ' '.join(cfg.ruby_abis) + ')',
              assoc('LIB_NAMES', cfg.lib_names), assoc('JNI_LIB_NAMES', cfg.jni_lib_names),
              assoc('RUBY_PLATFORMS', cfg.ruby_platforms), assoc('NODE_PLATFORMS', cfg.node_platforms),
-             f'NODE_WASI={cfg.node_wasi}',
+             f'NODE_WASI={cfg.node_wasi}', f'R_CORPUS_COUNT={len(cfg.r_corpus)}',
              assoc('STATIC_TREES', {} if cfg.swift_remote
                    else {cfg.bundle: len(cfg.swift_targets),
                          cfg.xcframework: len(cfg.xcframework_slices)})]
