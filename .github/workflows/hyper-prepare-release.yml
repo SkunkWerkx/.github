@@ -21,9 +21,10 @@ name: HyperForge — prepare a release
 # resolve from the git tag), but the native libraries committed for them embed the crate
 # version (`<crate>_version()`), so they have to be rebuilt from the bump commit and restaged
 # before a tag can be cut. That is why this ends by dispatching ci.yml: the order of a release
-# is bump and dispatch (here), ci.yml green and stage-native-binaries committing that run's
-# libraries on top (hyper-stage-natives.yml), then a human tags the staging commit and
-# release.yml refuses any tag whose run or libraries were built at another version.
+# is bump and dispatch (here), then that run's release-mode board and tail (the pack jobs,
+# release-prepare preserving the attested packages, CodeQL, and stage-release pushing the
+# release commit B with the run's trailers), then a human tags B and release.yml publishes
+# the preserved bytes, refusing any tag whose run was built at another version.
 #
 # The CHANGELOG's [Unreleased] heading and r/NEWS.md's heading are settled at the version in
 # the same commit (release_headings.py), and a section that is missing or still holds a
@@ -170,10 +171,10 @@ jobs:
       # workflow_dispatch is one of the two events a GITHUB_TOKEN is allowed to raise, so this
       # needs no PAT. ci.yml has no push trigger on purpose; this is the one push that must be
       # built, because it is the first commit whose native libraries report the new version.
-      # GitHub raises no workflow_run for a run this token started, so the run asks for its own
-      # staging: the caller's ci.yml ends in request-staging, which dispatches
-      # stage-native-binaries.yml with the run id once every other job is green. Never gated
-      # on "something changed": an unchanged version still needs its run.
+      # GitHub raises no workflow_run for a run this token started, so the run stages its own
+      # release: the caller's ci.yml ends in the release tail, whose stage-release job pushes
+      # B once every other job is green. Never gated on "something changed": an unchanged
+      # version still needs its run.
       - name: Run ci.yml against the preparation source
         env:
           GH_TOKEN: ${{ github.token }}
