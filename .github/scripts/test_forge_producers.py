@@ -27,6 +27,18 @@ class PieAcceptanceContracts(unittest.TestCase):
         self.workflow = yaml_lite.load(self.text)
         self.steps = self.workflow['jobs']['install']['steps']
 
+    def test_macos_php_comes_from_a_trusted_tap(self):
+        # Homebrew refuses to load a formula from a third-party tap until `brew trust` names
+        # it, and `brew info`'s refusal is on stderr: HyperUuid's 1.1.0 preparation fell back
+        # to the tap's current-minor `php` on every 8.3 and 8.4 macOS leg.
+        tap = self.text.index('          brew tap shivammathur/php\n')
+        trust = self.text.index('          brew trust shivammathur/php\n')
+        probe = self.text.index('          formula="shivammathur/php/php@$MINOR"\n')
+        self.assertTrue(tap < trust < probe, (tap, trust, probe))
+        # ... and the probe's refusal, if it ever comes back, is in the log, not /dev/null.
+        self.assertIn('if ! brew info --formula "$formula" >/dev/null; then', self.text)
+        self.assertNotIn('brew info --formula "$formula" >/dev/null 2>&1', self.text)
+
     def step(self, name):
         return next(step for step in self.steps if step.get('name') == name)
 
@@ -156,6 +168,18 @@ class PhpExtensionContracts(unittest.TestCase):
 
     def step(self, name):
         return next(step for step in self.steps if step.get('name') == name)
+
+    def test_macos_php_comes_from_a_trusted_tap(self):
+        # Homebrew refuses to load a formula from a third-party tap until `brew trust` names
+        # it, and `brew info`'s refusal is on stderr: HyperUuid's 1.1.0 preparation fell back
+        # to the tap's current-minor `php` on every 8.3 and 8.4 macOS leg.
+        tap = self.text.index('          brew tap shivammathur/php\n')
+        trust = self.text.index('          brew trust shivammathur/php\n')
+        probe = self.text.index('          formula="shivammathur/php/php@$MINOR"\n')
+        self.assertTrue(tap < trust < probe, (tap, trust, probe))
+        # ... and the probe's refusal, if it ever comes back, is in the log, not /dev/null.
+        self.assertIn('if ! brew info --formula "$formula" >/dev/null; then', self.text)
+        self.assertNotIn('brew info --formula "$formula" >/dev/null 2>&1', self.text)
 
     def test_no_leg_builds_a_php_runtime(self):
         # The osx-x64 leg compiled PHP from php.net's source under Rosetta on every uncached run

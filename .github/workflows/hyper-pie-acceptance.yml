@@ -235,8 +235,12 @@ jobs:
         run: |
           set -euo pipefail
           brew tap shivammathur/php
+          # Homebrew loads a third-party tap's formulae only once the tap is trusted; without
+          # this, `brew info` below refuses every php@MINOR and the leg falls back to `php`.
+          brew trust shivammathur/php
           formula="shivammathur/php/php@$MINOR"
-          if ! brew info --formula "$formula" >/dev/null 2>&1; then
+          # The probe's stderr stays in the log: a refusal must be readable, not a silent fallback.
+          if ! brew info --formula "$formula" >/dev/null; then
             formula=shivammathur/php/php
             # The image's Homebrew core php shares the tap formula's name.
             brew uninstall --ignore-dependencies --force php >/dev/null 2>&1 || true
