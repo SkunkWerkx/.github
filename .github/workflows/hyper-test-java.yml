@@ -115,6 +115,13 @@ jobs:
         with:
           name: native-${{ matrix.rid }}
           path: out
+      # hyper-build-native.yml built the core in place, so a csproj or Gradle build that
+      # stages from rust/target/release (the empty default of the *_dir input above) found it
+      # there; this job only downloads it, so the download goes where that default looks.
+      - name: Stage the core where a dev-loop build looks
+        run: |
+          mkdir -p rust/target/release
+          cp "out/${{ matrix.lib_name }}" rust/target/release/
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
       # Java (JNI): the binding is a JNI base on the floor JDK plus an FFM tree, so the shim

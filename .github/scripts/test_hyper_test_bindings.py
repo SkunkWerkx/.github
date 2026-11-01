@@ -156,6 +156,29 @@ class TestBindingWorkflowTests(unittest.TestCase):
                 self.assertEqual(workflow['on']['workflow_call']['inputs']['mode']['default'], 'release')
 
 
+class DevLoopStagingTests(unittest.TestCase):
+    """hyper-build-native.yml built the core in place, so a csproj or Gradle build that stages
+    from rust/target/release (the empty default of csharp_runtimes_dir and java_resources_dir)
+    found it there. These jobs only download it, so each desktop leg puts the download where
+    that default looks, unconditionally, before the suite."""
+
+    def test_csharp_and_java_stage_the_core_for_the_dev_loop_default(self):
+        for binding, suite in (('csharp', 'dotnet test'), ('java', 'gradlew')):
+            with self.subTest(binding=binding):
+                _, workflow = load(binding)
+                steps = workflow['jobs']['test']['steps']
+                keys = [s.get('name') or s.get('uses', '') for s in steps]
+                download = next(i for i, s in enumerate(steps) if s.get('uses', '').startswith('actions/download-artifact')
+                                and s['with']['name'] == 'native-${{ matrix.rid }}')
+                stage = next(i for i, s in enumerate(steps) if s.get('name') == 'Stage the core where a dev-loop build looks')
+                first_suite = next(i for i, s in enumerate(steps) if suite in (s.get('run') or ''))
+                self.assertLess(download, stage, keys)
+                self.assertLess(stage, first_suite, keys)
+                self.assertNotIn('if', steps[stage])
+                self.assertIn('rust/target/release', steps[stage]['run'])
+                self.assertIn('out/${{ matrix.lib_name }}', steps[stage]['run'])
+
+
 class GoWorkflowTests(unittest.TestCase):
     """hyper-test-go.yml: the translated core needs no artifact, so the suite runs on the seven
     hosts with nothing to wait for but its lint."""
