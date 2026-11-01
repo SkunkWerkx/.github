@@ -782,13 +782,14 @@ class DispatchTests(unittest.TestCase):
                      'java/build.gradle.kts': 'version = System.getenv("HYPERUUID_VERSION") ?: "0.9.0"\n',
                      'ruby/hyperuuid.gemspec': 'spec.version = "0.9.0"\n',
                      'ruby/lib/hyperuuid.rb': 'module HyperUuid\n  VERSION = "0.9.0"\nend\n',
-                     'rust/browser-test/Cargo.lock': 'lock\n', 'rust/Cargo.lock': 'lock\n'}
+                     'rust/browser-test/Cargo.lock': 'lock\n', 'java/jni/Cargo.lock': 'lock\n',
+                     'rust/Cargo.lock': 'lock\n'}
             for path, text in files.items():
                 (root / path).parent.mkdir(parents=True, exist_ok=True)
                 (root / path).write_text(text)
             cargo = root / 'bin/cargo'
             cargo.parent.mkdir()
-            cargo.write_text('#!/bin/sh\necho "$@" >> cargo.log\ncase "$1" in update) echo bumped >> rust/browser-test/Cargo.lock;; check) echo bumped >> rust/Cargo.lock;; esac\n')
+            cargo.write_text('#!/bin/sh\necho "$@" >> cargo.log\ncase "$1" in update) echo bumped >> "$(dirname "$3")/Cargo.lock";; check) echo bumped >> rust/Cargo.lock;; esac\n')
             cargo.chmod(0o755)
             subprocess.run(['git', 'init', '-q', str(root)], check=True)
             subprocess.run(['git', '-C', str(root), 'add', '.'], check=True)
@@ -806,6 +807,7 @@ class DispatchTests(unittest.TestCase):
             log = (root / 'cargo.log').read_text()
             self.assertIn('check --manifest-path rust/Cargo.toml', log)
             self.assertIn('update --manifest-path rust/browser-test/Cargo.toml --package hyperuuid', log)
+            self.assertIn('update --manifest-path java/jni/Cargo.toml --package hyperuuid', log)
             self.assertNotIn('rust/fuzz', log)
             # A push without a remote fails after the commit; the commit itself is what is checked.
             push = push.replace('git push origin HEAD:master', 'true')
@@ -817,6 +819,7 @@ class DispatchTests(unittest.TestCase):
             self.assertEqual(subject, 'chore: prepare v1.0.0')
             staged = subprocess.check_output(['git', '-C', str(root), 'show', '--stat', '--format=', 'HEAD'], text=True)
             self.assertIn('rust/browser-test/Cargo.lock', staged)
+            self.assertIn('java/jni/Cargo.lock', staged)
         dispatch_step = workflow.read_text().split('      - name: Run ci.yml against the preparation source\n')[1]
         self.assertNotIn('if:', dispatch_step.split('\n\n')[0])
         self.assertIn('dispatch_preparation.py', dispatch_step)

@@ -516,13 +516,15 @@ class PrepareReleaseContracts(unittest.TestCase):
         self.assertNotIn('r/src/rust', runs)
         self.assertIn('never committed', self.text.split('\non:', 1)[0])
 
-    def test_companion_loop_names_the_three_crate_dirs(self):
-        self.assertIn('for companion in rust/fuzz rust/browser-test typescript; do',
+    def test_companion_loop_names_the_four_crate_dirs(self):
+        # java/jni path-depends on the core and carries its own lockfile; HyperUuid's 1.1.0
+        # preparation left it at 1.0.0 and lint-java's `cargo clippy --locked` refused it.
+        self.assertIn('for companion in rust/fuzz rust/browser-test typescript java/jni; do',
                       self.text)
 
     def test_commit_step_adds_the_new_locks_under_the_existence_guard(self):
         self.assertIn('for lock in rust/fuzz/Cargo.lock rust/browser-test/Cargo.lock '
-                      'typescript/package-lock.json typescript/Cargo.lock; do\n'
+                      'typescript/package-lock.json typescript/Cargo.lock java/jni/Cargo.lock; do\n'
                       '            if [ -f "$lock" ]; then git add "$lock"; fi', self.text)
 
     def test_napi_wrappers_are_rebuilt_after_the_bump_and_committed(self):

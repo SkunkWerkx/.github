@@ -6,9 +6,9 @@ name: HyperForge — prepare a release
 # wrapper crate's exact pin on the core, where those directories exist), regenerates
 # rust/Cargo.lock's self-referential entry (cargo package
 # --locked fails on a stale one), typescript/package-lock.json (npm, lock only), the
-# lockfile of every companion crate present (rust/fuzz, rust/browser-test, typescript:
-# nothing else regenerates them, and HyperCast's fuzz lockfile once sat at 0.1.0 through
-# three releases) and the napi-rs wrappers typescript/binding.js and binding.d.ts (napi bakes
+# lockfile of every companion crate present (rust/fuzz, rust/browser-test, typescript,
+# java/jni: nothing else regenerates them; HyperCast's fuzz lockfile once sat at 0.1.0
+# through three releases, and HyperUuid's JNI lockfile at 1.0.0 into the 1.1.0 preparation) and the napi-rs wrappers typescript/binding.js and binding.d.ts (napi bakes
 # package.json's version into binding.js's version-mismatch check, so a bump without a
 # rebuild fails every Node leg's `git diff --exit-code` wrapper guard on the release-mode
 # run), commits straight to master and dispatches the caller's ci.yml against that commit.
@@ -96,7 +96,7 @@ jobs:
           if [ -f typescript/package.json ]; then (cd typescript && npm install --package-lock-only --ignore-scripts); fi
           # Companion crates that path-depend on the core carry their own lockfiles, which
           # nothing else regenerates. Each is updated only if this repository has it.
-          for companion in rust/fuzz rust/browser-test typescript; do
+          for companion in rust/fuzz rust/browser-test typescript java/jni; do
             if [ -f "$companion/Cargo.lock" ]; then
               cargo update --manifest-path "$companion/Cargo.toml" --package "$CRATE"
             fi
@@ -153,7 +153,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           python3 "$FORGE_SCRIPTS/hyper_config.py" version-files | cut -f1 | xargs git add rust/Cargo.lock
-          for lock in rust/fuzz/Cargo.lock rust/browser-test/Cargo.lock typescript/package-lock.json typescript/Cargo.lock; do
+          for lock in rust/fuzz/Cargo.lock rust/browser-test/Cargo.lock typescript/package-lock.json typescript/Cargo.lock java/jni/Cargo.lock; do
             if [ -f "$lock" ]; then git add "$lock"; fi
           done
           if [ -f typescript/package.json ]; then git add typescript/binding.js typescript/binding.d.ts; fi
