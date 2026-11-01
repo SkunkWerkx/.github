@@ -31,6 +31,17 @@ class CoreChecksWorkflowTests(unittest.TestCase):
     def step(self, needle):
         return next(s for s in self.steps if needle in s.get('name', ''))
 
+    def test_semver_reads_crates_io_without_colour(self):
+        # dtolnay/rust-toolchain sets CARGO_TERM_COLOR=always; coloured `cargo search` output
+        # never matches the sed that reads the published version, which turned HyperCast's real
+        # semver break into "cannot read the published version". Both workflows that read it
+        # pass --color never.
+        for path in (self.PATH, WORKFLOWS / 'hyper-check-core.yml'):
+            with self.subTest(workflow=path.name):
+                searches = re.findall(r'\$\(cargo search[^|]*\|', path.read_text())
+                self.assertEqual(len(searches), 1)
+                self.assertIn('--color never', searches[0])
+
     def test_three_hosts_fail_fast_off(self):
         self.assertEqual(list(self.workflow['jobs']), ['checks'])
         self.assertIs(self.job['strategy']['fail-fast'], False)

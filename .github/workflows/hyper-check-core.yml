@@ -531,7 +531,10 @@ jobs:
           set -euo pipefail
           name=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
           current=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          published=$(cargo search --limit 1 "$name" | sed -n "s/^$name = \"\([^\"]*\)\".*/\1/p")
+          # --color never: dtolnay/rust-toolchain sets CARGO_TERM_COLOR=always, and the search wraps the
+          # name in escapes the sed below never matches, so a real semver break was reported as
+          # "cannot read the published version" (HyperCast's first board).
+          published=$(cargo search --color never --limit 1 "$name" | sed -n "s/^$name = \"\([^\"]*\)\".*/\1/p")
           if [ -z "$published" ]; then
             echo "::error::cannot read the published version of $name from crates.io" >&2
             exit 1
