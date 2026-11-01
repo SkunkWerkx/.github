@@ -4,6 +4,11 @@
 #
 #   php_ext_musl.sh <crate> <rid> <minor> <repo-root> <forge-root> <pie-phar> <out-dir>
 #
+# COMPANIONS, when set, names crates (space-separated) whose PHP extensions the suite also loads:
+# php_ext_companions.py builds each in the build container, with the same flags, from the
+# registry source of the one version Cargo.lock pins, and the suite gets <COMPANION>_PHP_EXTENSION,
+# as on hyper-build-php-extension.yml's other legs.
+#
 # with PACKAGE_VERSION (the crate's bare X.Y.Z, which the load check asserts) and RELEASE_TAG
 # ("v" + it, the zip name's version segment) in the environment. <rid> is linux-musl-x64 or
 # linux-musl-arm64 and has to match the host's architecture (DOCKER_PLATFORM overrides it).
@@ -49,6 +54,11 @@ apk_php="php${minor/./}"
 # them: <CRATE>_PHP_EXTENSION names the library to load.
 env_prefix=$(printf '%s' "$crate" | tr '[:lower:]-' '[:upper:]_')
 
+companion_env=()
+for companion in ${COMPANIONS:-}; do
+  companion_env+=(-e "$(printf '%s' "$companion" | tr '[:lower:]-' '[:upper:]_')_PHP_EXTENSION=/ext/$companion.so")
+done
+
 platform_args=()
 [ -n "${DOCKER_PLATFORM:-}" ] && platform_args=(--platform "$DOCKER_PLATFORM")
 build_dir=$(mktemp -d)
@@ -59,8 +69,8 @@ trap 'rm -rf "$build_dir"' EXIT
 # php85-dev). It moves when 8.3 leaves php_versions or Alpine drops php83, whichever is first.
 echo "::group::build against Alpine's $apk_php-dev — $rid"
 docker run --rm "${platform_args[@]}" \
-  -v "$repo_root:/src:ro" -v "$build_dir:/out" \
-  -e CRATE="$crate" -e APK_PHP="$apk_php" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+  -v "$repo_root:/src:ro" -v "$build_dir:/out" -v "$forge_root:/forge:ro" \
+  -e CRATE="$crate" -e COMPANIONS="${COMPANIONS:-}" -e APK_PHP="$apk_php" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   alpine:3.24 sh -euc '
     apk add --no-cache build-base curl clang-dev "$APK_PHP-dev" >/dev/null
     curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null 2>&1
@@ -91,6 +101,12 @@ docker run --rm "${platform_args[@]}" \
     esac
     cp "$ext" "/out/$CRATE.so"
     chown "$HOST_UID:$HOST_GID" "/out/$CRATE.so"
+
+    if [ -n "$COMPANIONS" ]; then
+      apk add --no-cache python3 >/dev/null
+      python3 /forge/.github/scripts/php_ext_companions.py --companions "$COMPANIONS" --out /out --target-root /companions
+      chown "$HOST_UID:$HOST_GID" /out/*.so
+    fi
   '
 echo "::endgroup::"
 
@@ -99,7 +115,7 @@ docker run --rm "${platform_args[@]}" \
   -v "$repo_root:/src:ro" -v "$build_dir:/ext:ro" -v "$forge_root:/forge:ro" -v "$pie:/pie.phar:ro" \
   -v "$out_dir:/dist" \
   -e CRATE="$crate" -e PACKAGE_VERSION="$PACKAGE_VERSION" -e RELEASE_TAG="$RELEASE_TAG" \
-  -e "${env_prefix}_PHP_EXTENSION=/ext/$crate.so" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+  -e "${env_prefix}_PHP_EXTENSION=/ext/$crate.so" "${companion_env[@]}" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   "php:$minor-cli-alpine" sh -euc '
     echo "== $(php -v | head -1), Alpine $(cat /etc/alpine-release)"
     EXTENSION="/ext/$CRATE.so"

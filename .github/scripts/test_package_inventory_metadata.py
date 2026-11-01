@@ -424,6 +424,40 @@ class PackageMetadataTests(unittest.TestCase):
         write_cran(self.root, 'hypercast', '0.10.0')
         self.validate()
 
+    def test_r_corpus_is_the_projects_own(self):
+        # A project whose corpus is not HyperUuid's names it in hyper.json (`r_corpus`); the
+        # tarball must carry exactly those members, and the default still requires the five.
+        from types import SimpleNamespace
+        own = ('boolean.json', 'date_order.json')
+        cfg = SimpleNamespace(**{**vars(self.m.DEFAULTS), 'r_corpus': own})
+        entries = [(name, data) for name, data in r_entries('hypercast', '0.10.0')
+                   if '/corpus/' not in name]
+        entries += [(f'hypercast/tests/testthat/corpus/{name}', b'[]') for name in own]
+        (self.root / 'cran').mkdir(parents=True, exist_ok=True)
+        write_tar(self.root / 'cran/hypercast_0.10.0.tar.gz', entries)
+        self.m.validate_package_metadata(self.root, 'hypercast', '0.10.0', cfg)
+        with self.assertRaisesRegex(ValueError, 'corpus/v5.json'):
+            self.validate()
+        write_tar(self.root / 'cran/hypercast_0.10.0.tar.gz', entries[:-1])
+        with self.assertRaisesRegex(ValueError, 'corpus/date_order.json'):
+            self.m.validate_package_metadata(self.root, 'hypercast', '0.10.0', cfg)
+
+    def test_r_corpus_reaches_fixtures_below_corpus(self):
+        # A corpus file that reads fixtures (HyperTabular's workbook.json reads the packages
+        # under corpus/workbook/) names each by its path; a tarball missing one fails.
+        from types import SimpleNamespace
+        own = ('workbook.json', 'workbook/basic.xlsx', 'workbook/basic.ods')
+        cfg = SimpleNamespace(**{**vars(self.m.DEFAULTS), 'r_corpus': own})
+        entries = [(name, data) for name, data in r_entries('hypercast', '0.10.0')
+                   if '/corpus/' not in name]
+        entries += [(f'hypercast/tests/testthat/corpus/{name}', b'PK') for name in own]
+        (self.root / 'cran').mkdir(parents=True, exist_ok=True)
+        write_tar(self.root / 'cran/hypercast_0.10.0.tar.gz', entries)
+        self.m.validate_package_metadata(self.root, 'hypercast', '0.10.0', cfg)
+        write_tar(self.root / 'cran/hypercast_0.10.0.tar.gz', entries[:-1])
+        with self.assertRaisesRegex(ValueError, 'corpus/workbook/basic.ods'):
+            self.m.validate_package_metadata(self.root, 'hypercast', '0.10.0', cfg)
+
     def test_rejects_r_source_tarball_whose_core_pin_or_vendored_core_is_off(self):
         # The wrapper crate depends on the core from crates.io at exactly the release
         # version, and vendor.sh puts that version's source in the vendor tarball; either

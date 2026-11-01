@@ -5,7 +5,7 @@
 # it in a bare alpine image (BusyBox sh); bash runs it unchanged on Linux, macOS and Windows.
 #
 #   pie_acceptance.sh <pie-php> <target-php> <pie.phar> <package> <extension> <package_version> \
-#     [repository] [entry_sha256]
+#     [repository] [entry_sha256] [companions]
 #
 # <pie-php> runs PIE; <target-php> is the PHP it installs into and the one the checks run on.
 # Every leg passes the same PHP for both today; the split stays for a leg whose PIE would need
@@ -14,10 +14,14 @@
 # for, as Composer's pretty version for that tag is what PIE looks the Release up by. An empty
 # <repository> means Packagist; otherwise it is added as a `vcs` repository first. <extension> is
 # the extension's name (the consumer's crate), and <entry_sha256>, when given, the sha256 of the
-# file in this leg's zip on the Release, which the installed file must match.
+# file in this leg's zip on the Release, which the installed file must match. <companions>, when
+# given, are Composer packages of extensions this one needs loaded (HyperTabular's:
+# skunkwerkx/hypercast), space-separated: PIE installs each first, from Packagist at its newest
+# release, as a consumer's own `pie install` would have to before this package's ext- requirement
+# is met. Their bytes are their own release's business: only this extension's are checked.
 set -eu
 
-usage='usage: pie_acceptance.sh <pie-php> <target-php> <pie.phar> <package> <extension> <package_version> [repository] [entry_sha256]'
+usage='usage: pie_acceptance.sh <pie-php> <target-php> <pie.phar> <package> <extension> <package_version> [repository] [entry_sha256] [companions]'
 pie_php=${1:?$usage}
 target_php=${2:?$usage}
 phar=${3:?$usage}
@@ -26,6 +30,7 @@ extension=${5:?$usage}
 package_version=${6:?$usage}
 repository=${7:-}
 entry_sha256=${8:-}
+companions=${9:-}
 if ! printf '%s\n' "$package_version" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
   echo "::error::package_version '$package_version' is not a bare X.Y.Z" >&2
   exit 2
@@ -55,6 +60,10 @@ fi
 
 echo "== PIE $("$pie_php" "$phar" --version 2>/dev/null | head -1)"
 echo "== target: $("$target_php" -v | head -1)"
+for companion in $companions; do
+  echo "== companion: $companion"
+  "$pie_php" "$phar" install --no-interaction "$@" "$companion"
+done
 if [ -n "$repository" ]; then
   "$pie_php" "$phar" repository:add "$@" vcs "$repository"
 fi

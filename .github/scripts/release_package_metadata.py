@@ -28,11 +28,9 @@ import hyper_config
 from package_preparation import crate_payload
 
 NPM_SCOPE = '@skunkwerkx'
-# The corpus members every R source tarball must carry (tests/testthat/corpus/), so a
-# tarball missing one fails the tag run, not the CRAN check weeks later.
-R_CORPUS_FILES = ('v5.json', 'sql_order.json', 'sql_order_refused.json', 'timestamp.json', 'inspect.json')
 DEFAULTS = SimpleNamespace(wheels=hyper_config.WHEELS, sdist=False, ruby_platforms=hyper_config.RUBY_PLATFORMS,
-                           node_platforms=hyper_config.NODE_PLATFORMS, node_wasi=hyper_config.NODE_WASI_PLATFORM)
+                           node_platforms=hyper_config.NODE_PLATFORMS, node_wasi=hyper_config.NODE_WASI_PLATFORM,
+                           r_corpus=hyper_config.R_CORPUS)
 # The WASI package's runtime dependencies, exactly these three, each pinned to one version: the
 # loader napi writes imports the first, which drives the other two. A range here would let a
 # consumer's resolution pick a runtime the tarball was never tested with.
@@ -310,16 +308,17 @@ def npm_tarball(path, crate, version, platforms, wasi='', wasi_runtime=None):
     return name
 
 
-def r_source_tarball(path, crate, version):
+def r_source_tarball(path, crate, version, corpus=hyper_config.R_CORPUS):
     """The R source package as `R CMD build` wrote it: DESCRIPTION, the wrapper crate's
     manifest pinning the core at exactly this version, the vendored crates with the core
     itself among them at that version, the wrapper's lock (derived at staging, never
-    committed, so only the tarball carries it) and the five corpus files under one top-level
-    `{crate}/`."""
+    committed, so only the tarball carries it) and the project's corpus files (`r_corpus` in
+    hyper.json; a tarball missing one fails the tag run, not the CRAN check weeks later),
+    all under one top-level `{crate}/`."""
     entries = tar_entries(path)
     required = [f'{crate}/DESCRIPTION', f'{crate}/src/rust/Cargo.toml', f'{crate}/src/rust/vendor.tar.xz',
                 f'{crate}/src/rust/Cargo.lock']
-    required += [f'{crate}/tests/testthat/corpus/{name}' for name in R_CORPUS_FILES]
+    required += [f'{crate}/tests/testthat/corpus/{name}' for name in corpus]
     for name in required:
         if name not in entries:
             raise ValueError(f'R source tarball member missing: {name}')
@@ -379,7 +378,8 @@ def validate_package_metadata(root: Path, crate: str, version: str, cfg=None) ->
                 raise ValueError(f'expected the npm root package, {len(platforms)} platform packages'
                                  f'{" and the wasi package" if wasi else ""}, once each')
         if (root / 'cran').exists():
-            r_source_tarball(one((root / 'cran').rglob('*'), 'R source tarball'), crate, version)
+            r_source_tarball(one((root / 'cran').rglob('*'), 'R source tarball'), crate, version,
+                             getattr(cfg, 'r_corpus', hyper_config.R_CORPUS))
     except (OSError, UnicodeError, EOFError, KeyError, TypeError, zipfile.BadZipFile,
             tarfile.TarError, ET.ParseError) as error:
         raise ValueError(f'invalid package metadata: {error}') from error

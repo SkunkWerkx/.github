@@ -18,7 +18,9 @@ name: HyperForge — PIE installs the released PHP extension
 # tools. PIE installs `<package>:v<package_version>` (the tag, which is the version PIE looks the
 # Release up by), then a fresh `php` with no -d flags runs pie_acceptance.php: the extension is
 # loaded, reports package_version, is byte for byte the file in that leg's zip on the Release, and
-# makes a v4, the corpus's v5 vector, a v7 and a SQL order round trip.
+# computes vectors from the consumer's own corpus (pie_acceptance.php has each consumer's). An
+# extension that needs another's classes names its package in `companions`, which PIE installs
+# first, as a consumer must.
 #
 # The bytes: before installing, each leg downloads its own zip from the Release and, against a
 # real release (no `repository`), verifies the release attestation over it, the one release.yml
@@ -56,6 +58,10 @@ on:
         description: "The PHP minors, space-separated (the release's php_versions)"
         type: string
         default: "8.3 8.4 8.5"
+      companions:
+        description: "Composer packages of extensions this one needs loaded, space-separated (HyperTabular's: skunkwerkx/hypercast); PIE installs each first, at its newest release on Packagist"
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       package:
@@ -78,6 +84,10 @@ on:
         description: "The PHP minors, space-separated (the release's php_versions)"
         type: string
         default: "8.3 8.4 8.5"
+      companions:
+        description: "Composer packages of extensions this one needs loaded, space-separated (HyperTabular's: skunkwerkx/hypercast); PIE installs each first, at its newest release on Packagist"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -138,6 +148,7 @@ jobs:
       EXTENSION: ${{ inputs.extension }}
       PACKAGE_VERSION: ${{ inputs.package_version }}
       REPOSITORY: ${{ inputs.repository }}
+      COMPANIONS: ${{ inputs.companions }}
     steps:
       - name: Validate Forge workflow revision
         shell: bash
@@ -267,7 +278,7 @@ jobs:
           set -euo pipefail
           pie_php=${PIE_PHP:-php}
           target_php=${TARGET_PHP:-php}
-          "$FORGE_SCRIPTS/pie_acceptance.sh" "$pie_php" "$target_php" "$PIE_PHAR" "$PACKAGE" "$EXTENSION" "$PACKAGE_VERSION" "$REPOSITORY" "$ENTRY_SHA256"
+          "$FORGE_SCRIPTS/pie_acceptance.sh" "$pie_php" "$target_php" "$PIE_PHAR" "$PACKAGE" "$EXTENSION" "$PACKAGE_VERSION" "$REPOSITORY" "$ENTRY_SHA256" "$COMPANIONS"
 
       # A bare alpine image with Alpine's PHP of this minor and what PIE needs to run, nothing
       # else: the image the build workflow's musl legs built against (php_ext_musl.sh).
@@ -283,8 +294,8 @@ jobs:
           apk_php="php${MINOR/./}"
           docker run --rm \
             -v "$GITHUB_WORKSPACE/$FORGE_SCRIPTS:/forge:ro" -v "$PIE_PHAR:/pie.phar:ro" \
-            -e APK_PHP="$apk_php" -e PACKAGE -e EXTENSION -e PACKAGE_VERSION -e REPOSITORY -e ENTRY_SHA256 -e COMPOSER_AUTH \
+            -e APK_PHP="$apk_php" -e PACKAGE -e EXTENSION -e PACKAGE_VERSION -e REPOSITORY -e ENTRY_SHA256 -e COMPANIONS -e COMPOSER_AUTH \
             alpine:3.24 sh -euc '
               apk add --no-cache "$APK_PHP" "$APK_PHP-openssl" "$APK_PHP-iconv" "$APK_PHP-phar" unzip >/dev/null
-              sh /forge/pie_acceptance.sh "$APK_PHP" "$APK_PHP" /pie.phar "$PACKAGE" "$EXTENSION" "$PACKAGE_VERSION" "$REPOSITORY" "$ENTRY_SHA256"
+              sh /forge/pie_acceptance.sh "$APK_PHP" "$APK_PHP" /pie.phar "$PACKAGE" "$EXTENSION" "$PACKAGE_VERSION" "$REPOSITORY" "$ENTRY_SHA256" "$COMPANIONS"
             '

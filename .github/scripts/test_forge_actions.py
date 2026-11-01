@@ -436,8 +436,14 @@ class NpmAndCranActionTests(unittest.TestCase):
         self.assertLess(runs.index('bash r/tools/vendor.sh\n'), runs.index(authors))
         self.assertLess(runs.index(authors), runs.index('R CMD build'))
         self.assertIn('R CMD build', runs)
-        self.assertIn("grep -c 'tests/testthat/corpus/.*\\.json$'", runs)
-        self.assertIn('r_source_tarball', runs)
+        # Every file under tests/testthat/corpus/, at any depth (directory entries end in /),
+        # counted against r_corpus's length from hyper.json, never a hard-coded count.
+        self.assertIn('eval "$(python3 "$FORGE_SCRIPTS/hyper_config.py" shell)"', runs)
+        self.assertIn("corpus=$(tar tzf \"$tarball\" | grep -c 'tests/testthat/corpus/.*[^/]$' || true)", runs)
+        self.assertIn('[ "$corpus" = "$R_CORPUS_COUNT" ] || {', runs)
+        self.assertNotRegex(runs, r'\[ "\$corpus" = "?[0-9]')
+        self.assertLess(runs.index('hyper_config.py" shell'), runs.index('$R_CORPUS_COUNT'))
+        self.assertIn('r_source_tarball(Path(sys.argv[1]), sys.argv[2], sys.argv[3], hyper_config.load().r_corpus)', runs)
         attest = self.uses('pack-r', 'actions/attest-build-provenance@')
         upload = self.uses('pack-r', 'actions/upload-artifact@')
         self.assertEqual(attest[0]['with']['subject-path'], upload[0]['with']['path'])

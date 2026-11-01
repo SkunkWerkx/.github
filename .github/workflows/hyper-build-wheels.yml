@@ -183,8 +183,9 @@ jobs:
           rustup_at() {
             echo "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain $1 && . \"\$HOME/.cargo/env\""
           }
-          # HyperUuid's entry points below; a sibling opting in must generalise this smoke.
-          check="import uuid, $CRATE as h; assert h.native_version() == '$WANT', h.native_version(); h.new_v4(); h.new_v7(); h.new_v5(uuid.NAMESPACE_DNS, 'hyperuuid'); print('built from source:', h.native_version())"
+          # Every Hyper* package's one shared entry point: the extension loads, and it was
+          # built from this sdist's core.
+          check="import $CRATE as h; assert h.native_version() == '$WANT', h.native_version(); print('built from source:', h.native_version())"
           image=quay.io/pypa/manylinux2014_x86_64
           script() {
             echo "$(rustup_at "$1") && /opt/python/cp311-cp311/bin/python -m venv /v && /v/bin/pip install -q /dist/$CRATE-$WANT.tar.gz && /v/bin/python -I -c \"$check\""
@@ -208,8 +209,9 @@ jobs:
           rustup_at() {
             echo "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain $1 && . \"\$HOME/.cargo/env\""
           }
-          # HyperUuid's entry points below; a sibling opting in must generalise this smoke.
-          check="import uuid, $CRATE as h; assert h.native_version() == '$WANT', h.native_version(); h.new_v4(); h.new_v7(); h.new_v5(uuid.NAMESPACE_DNS, 'hyperuuid'); print('built from source:', h.native_version())"
+          # Every Hyper* package's one shared entry point: the extension loads, and it was
+          # built from this sdist's core.
+          check="import $CRATE as h; assert h.native_version() == '$WANT', h.native_version(); print('built from source:', h.native_version())"
           in_image python:3.11-alpine "apk add --no-cache gcc musl-dev curl >/dev/null && $(rustup_at "$MSRV") && python -m venv /v && /v/bin/pip install -q /dist/$CRATE-$WANT.tar.gz && /v/bin/python -I -c \"$check\""
 
       - name: Attest sdist build provenance
@@ -330,10 +332,14 @@ jobs:
           unexpected=0
           while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            # HyperUuid's skip reasons; a sibling opting in must generalise these three.
+            # The skips a suite may take for the interpreter it runs on; a package with another
+            # interpreter-bound skip adds its reason string here.
             if [[ "$gil_on" == True && "$line" == *"needs a free-threaded CPython"* ]]; then continue; fi
             if [[ "$before_314" == True && "$line" == *"stdlib uuid.uuid7() was added in Python 3.14"* ]]; then continue; fi
             if [[ "$PYTHON" == pypy* && "$line" == *"mypy does not run on PyPy"* ]]; then continue; fi
+            # An optional interop test (HyperTabular's numpy one) whose package this job does
+            # not install, as the test-python legs do not.
+            if [[ "$line" == *"could not import 'numpy'"* ]]; then continue; fi
             unexpected=1
           done < "$skips"
           if [[ "$unexpected" -ne 0 ]]; then
