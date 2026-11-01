@@ -162,7 +162,7 @@ runs:
             awk -v p="native/$rid/$name" '$NF == p {found = 1} END {exit !found}' <<<"$listing" || { echo "::error::$jar lacks native/$rid/$name"; exit 1; }
           done
         done
-        unzip -p "$jar" META-INF/MANIFEST.MF | tr -d '\r' | grep -qx 'Multi-Release: true' || { echo "::error::$jar's manifest lacks Multi-Release: true"; exit 1; }
+        unzip -p "$jar" META-INF/MANIFEST.MF | tr -d '\r' | grep -x 'Multi-Release: true' >/dev/null || { echo "::error::$jar's manifest lacks Multi-Release: true"; exit 1; }
         echo "$jar: both libraries for every staged RID, Multi-Release: true"
 
     - name: Preserve the complete signed Central bundle

@@ -55,7 +55,7 @@ jobs:
           SWIFT_MINOR: ${{ inputs.swift_version }}
         run: |
           set -euo pipefail
-          swift --version 2>&1 | tee /dev/stderr | grep -q "Swift version ${SWIFT_MINOR}" \
+          swift --version 2>&1 | tee /dev/stderr | grep "Swift version ${SWIFT_MINOR}" >/dev/null \
             || { echo "::error::the image's Swift is not ${SWIFT_MINOR}; move swift_version or the runner image"; exit 1; }
       # `swiftlint-static`, not `swiftlint`: the dynamic binary links libxml2.so.2, which Ubuntu
       # 26.04 does not ship, and wants a Swift toolchain's libsourcekitdInProc.so. The static

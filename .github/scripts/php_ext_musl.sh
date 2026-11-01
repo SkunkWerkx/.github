@@ -91,7 +91,7 @@ docker run --rm "${platform_args[@]}" \
 
     ext="target/php/release/lib$CRATE.so"
     [ -f "$ext" ] || { echo "::error::no $ext — the cdylib was not produced, is crt-static back on?"; exit 1; }
-    readelf -Ws --dyn-syms "$ext" | grep -q " get_module$" \
+    readelf -Ws --dyn-syms "$ext" | grep " get_module$" >/dev/null \
       || { echo "::error::$ext exports no get_module — not a PHP extension"; exit 1; }
     needed=$(readelf -d "$ext" | sed -n "s/.*(NEEDED).*\[\(.*\)\]/\1/p" | sort | tr "\n" " ")
     echo "NEEDED: $needed"

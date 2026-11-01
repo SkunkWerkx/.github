@@ -74,7 +74,7 @@ docker run --rm "${platform_args[@]}" \
 
     ext="target/release/lib$CRATE.so"
     [ -f "$ext" ] || { echo "::error::no $ext — the cdylib was not produced, is crt-static back on?"; exit 1; }
-    readelf -Ws --dyn-syms "$ext" | grep -q " Init_${CRATE}_native$" \
+    readelf -Ws --dyn-syms "$ext" | grep " Init_${CRATE}_native$" >/dev/null \
       || { echo "::error::$ext exports no Init_${CRATE}_native — not a Ruby extension"; exit 1; }
 
     needed=$(readelf -d "$ext" | sed -n "s/.*(NEEDED).*\[\(.*\)\]/\1/p" | sort | tr "\n" " ")

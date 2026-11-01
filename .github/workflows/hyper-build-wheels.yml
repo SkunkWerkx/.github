@@ -538,7 +538,7 @@ jobs:
               docker run --rm -v "$PWD/python/dist:/dist:ro" "$1" sh -euc "$2"
             }
             for wheel in "${wheels[@]}"; do
-              if ! python -m zipfile -l "$wheel" | grep -q "$CRATE.libs/libgcc_s-"; then
+              if ! python -m zipfile -l "$wheel" | grep "$CRATE.libs/libgcc_s-" >/dev/null; then
                 echo "::error::$wheel does not bundle libgcc_s"
                 exit 1
               fi

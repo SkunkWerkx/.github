@@ -31,7 +31,7 @@ package_version=${6:?$usage}
 repository=${7:-}
 entry_sha256=${8:-}
 companions=${9:-}
-if ! printf '%s\n' "$package_version" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
+if ! printf '%s\n' "$package_version" | grep -Ex '[0-9]+\.[0-9]+\.[0-9]+' >/dev/null; then
   echo "::error::package_version '$package_version' is not a bare X.Y.Z" >&2
   exit 2
 fi

@@ -99,7 +99,7 @@ jobs:
           "$readelf" -d "$lib" | grep NEEDED || true
           exports="$("$readelf" --dyn-syms -W "$lib" | awk '$5 == "GLOBAL" && $7 != "UND" { print $8 }' | sort -u)"
           printf '%s\n' "$exports"
-          printf '%s\n' "$exports" | grep -qx "${{ inputs.crate }}_version" \
+          printf '%s\n' "$exports" | grep -x "${{ inputs.crate }}_version" >/dev/null \
             || { echo "::error::${{ inputs.crate }}_version is not exported"; exit 1; }
           count="$(printf '%s\n' "$exports" | grep -cvx "${{ inputs.crate }}_version" || true)"
           echo "exports besides ${{ inputs.crate }}_version: $count"
