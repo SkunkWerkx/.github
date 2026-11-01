@@ -144,20 +144,28 @@ def stage(cfg, root, assets):
 def unpack(cfg, root, assets):
     """Extract the two zips into the checkout, each tree under its own parent (`swift/`), so the
     root Package.swift links the core locally as a CI leg does: for a CodeQL build on a checkout
-    that commits no core. Every member must sit inside its tree and the tree must not exist yet;
-    nothing is written when either check refuses. The extracted files are then exactly
-    `expected_files`."""
+    that commits no core. Every member must sit inside its tree, and whatever the tree already
+    holds must be release files with the release's bytes (HyperUuid commits the bundle's
+    include/, the cbindgen header and its module map, and ignores the rest); a differing file
+    or one the release tree does not name is a refusal, and nothing is written when any check
+    refuses. The extracted files are then exactly `expected_files`."""
     root, assets = Path(root), Path(assets)
     plan = []
     for asset, (tree, files) in expected_files(cfg).items():
         name = Path(tree).name
-        if (root / tree).exists():
-            raise ValueError(f'{tree} already exists; unpack into a checkout without a core')
         archive = zipfile.ZipFile(assets / asset)
         for member in archive.namelist():
             parts = Path(member).parts
             if not parts or parts[0] != name or '..' in parts or Path(member).is_absolute():
                 raise ValueError(f'{asset}: {member} is outside {name}/')
+        for present in sorted(p for p in (root / tree).rglob('*') if p.is_file()) if (root / tree).exists() else []:
+            relative = present.relative_to(root).as_posix()
+            if relative not in files:
+                raise ValueError(f'{tree} already exists ({relative} is not a release file); '
+                                 f'unpack into a checkout without a core')
+            member = present.relative_to(root / Path(tree).parent).as_posix()
+            if present.read_bytes() != archive.read(member):
+                raise ValueError(f'{relative} differs from the release tree; unpack into a checkout without a core')
         plan.append((archive, root / Path(tree).parent, tree, files))
     extracted = []
     for archive, destination, tree, files in plan:

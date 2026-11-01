@@ -133,8 +133,9 @@ class ZipTests(unittest.TestCase):
                    for p in (self.root / tree).rglob('*') if p.is_file()}
         self.assertEqual(present, expected)
         self.assertEqual((self.root / self.cfg.bundle / 'info.json').read_text(), f'{self.cfg.bundle}/info.json')
-        with self.assertRaisesRegex(ValueError, 'already'):
-            swift_release.unpack(self.cfg, self.root, assets)
+        # A second unpack over the identical trees changes nothing; a stale core is caught by
+        # its bytes (the next test), not by the directory's existence.
+        swift_release.unpack(self.cfg, self.root, assets)
         for tree in (self.cfg.bundle, self.cfg.xcframework):
             shutil.rmtree(self.root / tree)
         with zipfile.ZipFile(assets / self.cfg.swift_assets[0], 'a') as archive:
@@ -143,6 +144,41 @@ class ZipTests(unittest.TestCase):
             swift_release.unpack(self.cfg, self.root, assets)
         self.assertFalse((self.root / 'escape.txt').exists())
         self.assertFalse((self.root / self.cfg.bundle).exists(), 'nothing is written on a refusal')
+
+    def test_unpack_accepts_a_checkout_that_commits_only_identical_bundle_files(self):
+        # HyperUuid commits the bundle's include/ (the cbindgen header and its module map) and
+        # ignores the rest, so the tree exists before the unpack. Files that are in the release
+        # tree with the same bytes are fine; a differing one, or a file the release tree does not
+        # name, is still a refusal, and the first CodeQL Swift leg of 1.1.0 died on the former.
+        assets = self.root / 'assets'
+        swift_release.build_zips(self.cfg, self.root, assets)
+        expected = {f for _, files in swift_release.expected_files(self.cfg).values() for f in files}
+        for tree in (self.cfg.bundle, self.cfg.xcframework):
+            shutil.rmtree(self.root / tree)
+        bundle_asset, (bundle_tree, bundle_files) = next(
+            (a, v) for a, v in swift_release.expected_files(self.cfg).items() if v[0] == self.cfg.bundle)
+        committed = sorted(f for f in bundle_files if f.endswith('info.json'))[0]
+        with zipfile.ZipFile(assets / bundle_asset) as archive:
+            member = Path(committed).relative_to(Path(bundle_tree).parent).as_posix()
+            (self.root / committed).parent.mkdir(parents=True)
+            (self.root / committed).write_bytes(archive.read(member))
+        swift_release.unpack(self.cfg, self.root, assets)
+        present = {p.relative_to(self.root).as_posix() for tree in (self.cfg.bundle, self.cfg.xcframework)
+                   for p in (self.root / tree).rglob('*') if p.is_file()}
+        self.assertEqual(present, expected)
+        for tree in (self.cfg.bundle, self.cfg.xcframework):
+            shutil.rmtree(self.root / tree)
+        (self.root / committed).parent.mkdir(parents=True)
+        (self.root / committed).write_text('edited by hand')
+        with self.assertRaisesRegex(ValueError, 'differs'):
+            swift_release.unpack(self.cfg, self.root, assets)
+        self.assertEqual((self.root / committed).read_text(), 'edited by hand', 'nothing is written on a refusal')
+        self.assertFalse((self.root / self.cfg.xcframework).exists())
+        shutil.rmtree(self.root / self.cfg.bundle)
+        (self.root / self.cfg.bundle).mkdir(parents=True)
+        (self.root / self.cfg.bundle / 'stale.dylib').write_text('old core')
+        with self.assertRaisesRegex(ValueError, 'already'):
+            swift_release.unpack(self.cfg, self.root, assets)
 
 
 class ConfigTests(unittest.TestCase):
