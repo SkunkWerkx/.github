@@ -95,8 +95,10 @@ runs:
       run: |
         set -euo pipefail
         shopt -s nullglob
-        root="pending-npm/skunkwerkx-$CRATE-$VERSION.tgz"
-        platforms=(pending-npm/skunkwerkx-"$CRATE"-*-"$VERSION".tgz)
+        # `./`, or npm reads `pending-npm/<name>.tgz` as the GitHub shorthand `<owner>/<repo>`
+        # and runs `git ls-remote` against it instead of opening the tarball (v1.1.0's tag run).
+        root="./pending-npm/skunkwerkx-$CRATE-$VERSION.tgz"
+        platforms=(./pending-npm/skunkwerkx-"$CRATE"-*-"$VERSION".tgz)
         all=(pending-npm/*)
         expected=$(( ${#platforms[@]} + $([ -f "$root" ] && echo 1 || echo 0) ))
         [ "${#all[@]}" -eq "$expected" ] \

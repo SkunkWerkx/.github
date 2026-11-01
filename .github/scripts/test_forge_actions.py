@@ -493,12 +493,13 @@ class NpmAndCranActionTests(unittest.TestCase):
         code, log = self.publish_order(['skunkwerkx-hyperuuid-1.2.3.tgz', *platforms])
         self.assertEqual(code, 0)
         self.assertEqual(len(log), 9)
-        self.assertEqual(log[-1], 'publish pending-npm/skunkwerkx-hyperuuid-1.2.3.tgz --access public')
-        self.assertEqual(sorted(log[:-1]), sorted(f'publish pending-npm/{p} --access public' for p in platforms))
+        self.assertEqual(log[-1], 'publish ./pending-npm/skunkwerkx-hyperuuid-1.2.3.tgz --access public')
+        self.assertEqual(sorted(log[:-1]), sorted(f'publish ./pending-npm/{p} --access public' for p in platforms))
+
         # A half-published first release: only what is missing, platform first.
         code, log = self.publish_order(['skunkwerkx-hyperuuid-1.2.3.tgz', platforms[3]])
-        self.assertEqual((code, log), (0, [f'publish pending-npm/{platforms[3]} --access public',
-                                           'publish pending-npm/skunkwerkx-hyperuuid-1.2.3.tgz --access public']))
+        self.assertEqual((code, log), (0, [f'publish ./pending-npm/{platforms[3]} --access public',
+                                           'publish ./pending-npm/skunkwerkx-hyperuuid-1.2.3.tgz --access public']))
         code, log = self.publish_order(platforms[:2])
         self.assertEqual((code, len(log)), (0, 2))
         # Anything else in the plan is not a package this release ships: nothing is pushed.
@@ -506,6 +507,14 @@ class NpmAndCranActionTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertEqual(log, [])
 
+    def test_publish_npm_hands_npm_a_path_it_reads_as_a_file(self):
+        # v1.1.0's tag run: `npm publish pending-npm/<name>.tgz` is an `<owner>/<repo>` GitHub
+        # shorthand to npm, which ran `git ls-remote ssh://git@github.com/pending-npm/...` and
+        # died with code 128 before the first upload. A `./` prefix is what makes it a file.
+        code, log = self.publish_order(['skunkwerkx-hyperuuid-1.2.3.tgz', 'skunkwerkx-hyperuuid-linux-x64-gnu-1.2.3.tgz'])
+        self.assertEqual(code, 0)
+        for line in log:
+            self.assertRegex(line, r'^publish \./pending-npm/[^ /]+\.tgz --access public$')
 
 class VerifyWheelsTests(unittest.TestCase):
     """The step that holds the preparation run's wheels and sdist to what hyper.json expects."""

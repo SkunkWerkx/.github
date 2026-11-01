@@ -49,7 +49,7 @@ first one `release.yml` publishes through Trusted Publishing, and it carries npm
    listing, a diff touching only committed payloads, and a green staging run. If master
    advanced beyond A for any other reason, prepare again. Run CodeQL on B and tag only once
    it is green.
-3. Create the root `vX.Y.Z` tag at B (lightweight, unsigned). **The tag run prepares and
+3. Create the root `vX.Y.Z` tag at B (annotated and signed). **The tag run prepares and
    proves; it uploads nothing.** It verifies B against A's run, packs every registry input,
    builds and attests the inventory, attests every file from the tag (`release/v1`),
    preserves `release-packages` for 90 days, plans every registry (what nuget.org, RubyGems,
@@ -131,7 +131,9 @@ The hand steps:
    placeholder. Nothing else about the release is prose.
 2. Dispatch `prepare-release.yml` with the bare version.
 3. Read act one's summary: B's trailers, the inventory, the digest listing, CodeQL clean.
-4. Push `vX.Y.Z` at B, lightweight and unsigned.
+4. Push `vX.Y.Z` at B, annotated and signed: `git tag -m "<Project> vX.Y.Z" vX.Y.Z <B>`
+   (`tag.gpgsign` on; the guard reads the peeled commit, so an annotated tag is held to B
+   exactly as a lightweight one is).
 5. Read the tag run's summary: six registries confirmed, the Release written, PIE green. Then
    dispatch `release.yml` at the tag once with that run's id as `publication_run_id`: every
    publisher must report nothing to do. That is the replay proof, so every release still

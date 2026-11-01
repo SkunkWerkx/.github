@@ -219,7 +219,7 @@ release.
   alias or CI step uses before trusting a check.
 - Formatters and their CI checks cover src, tests, benchmarks and smoke tests in every
   language.
-- Tags are lightweight and unsigned (`git -c tag.gpgsign=false tag`); commits are always
-  signed.
+- Tags are annotated and signed: `git tag -m "<Project> vX.Y.Z" vX.Y.Z <B>` (`tag.gpgsign` is on,
+  so the tag carries the owner's SSH signature); commits are always signed.
 - Remove agent worktrees and their branches once the work is in the main checkout;
   `.claude/` is untracked and `git add` picks it up.
