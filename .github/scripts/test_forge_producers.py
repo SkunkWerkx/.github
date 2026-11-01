@@ -311,6 +311,21 @@ class PhpExtensionContracts(unittest.TestCase):
         glibc = self.step('glibc floor — nothing newer than GLIBC_2.34 is referenced')
         self.assertEqual(glibc['if'], "matrix.kind == 'glibc'")
 
+    def test_pie_acceptance_runs_as_root_where_pie_would_refuse_to_prompt(self):
+        # v1.1.0's replay: the six glibc legs died in PIE with "PIE needed to elevate privileges
+        # with /usr/bin/sudo, but you are running in a non-interactive terminal". PIE's rule
+        # (src/File/Sudo.php) is: extension_dir not writable, not root, no terminal -> refuse.
+        # Under exactly that condition the script re-runs itself as root before any PIE call,
+        # so PIE's per-user repositories, cache and ini writes all happen as one user.
+        script = (WORKFLOWS.parent / 'scripts/pie_acceptance.sh').read_text()
+        guard = ('if [ "$(id -u)" != 0 ] && [ ! -t 0 ] '
+                 '&& [ ! -w "$("$target_php" -r \'echo ini_get("extension_dir");\')" ]; then')
+        self.assertIn(guard, script)
+        self.assertIn('exec sudo -n -E "$0" "$@"', script)
+        self.assertLess(script.index(guard), script.index('"$pie_php" "$phar"'))
+        self.assertLess(script.index(guard), script.index('\nset --\n'))
+        self.assertNotIn('sudo', script[script.index('"$pie_php" "$phar"'):])
+
     def test_pie_comes_from_the_packer_pin_checked_by_hash_and_attestation_before_any_pack(self):
         fetch = self.step('Fetch PIE, and verify its checksum and attestation')
         self.assertIn('php_ext_package.py" pie-pin', fetch['run'])

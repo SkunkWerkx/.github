@@ -33,6 +33,20 @@ fi
 release_tag="v$package_version"
 here=$(cd "$(dirname "$0")" && pwd)
 
+# PIE elevates with sudo when the target's extension_dir is not writable (a distribution PHP
+# on Linux keeps /usr/lib/php/<api> root's) and, with no terminal to prompt on and not root,
+# refuses: "PIE needed to elevate privileges with /usr/bin/sudo, but you are running in a
+# non-interactive terminal" took v1.1.0's six glibc legs. Under exactly PIE's own condition
+# (src/File/Sudo.php) the whole run moves to root instead, before any PIE call, so PIE's
+# per-user repositories, cache and ini writes all happen as one user: `sudo -n` never prompts
+# (the hosted runners' passwordless sudo, or a clean failure), `-E` keeps the environment,
+# Composer's GitHub token and HOME included. Interactive runs, root (the Alpine container) and
+# user-owned PHPs (Homebrew, Windows) are untouched.
+if [ "$(id -u)" != 0 ] && [ ! -t 0 ] && [ ! -w "$("$target_php" -r 'echo ini_get("extension_dir");')" ]; then
+  echo "== extension_dir is not writable and there is no terminal: re-running as root (sudo -n -E)"
+  exec sudo -n -E "$0" "$@"
+fi
+
 # PIE keeps its repositories per target PHP, so both commands name the same target.
 set --
 if [ "$target_php" != "$pie_php" ]; then
