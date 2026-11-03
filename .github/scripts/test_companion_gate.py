@@ -22,6 +22,13 @@ def load(name):
     return json.loads((FIXTURES / f'{name}.json').read_text(encoding='utf-8'))
 
 
+
+def _is_cran(url):
+    """Whether a URL reaches CRAN: its host is r-project.org's or a CRAN mirror's, by name."""
+    from urllib.parse import urlparse
+    host = (urlparse(url).hostname or '').lower()
+    return host == 'r-project.org' or host.endswith('.r-project.org') or 'cran' in host
+
 class Replay:
     """Serves the recorded responses, refuses CRAN and any URL nobody recorded, and remembers
     what was asked."""
@@ -31,7 +38,7 @@ class Replay:
         self.asked = []
 
     def __call__(self, url):
-        if 'cran' in url.lower() or 'r-project.org' in url:
+        if _is_cran(url):
             raise AssertionError(f'the gate queried CRAN: {url}')
         if url not in self.responses:
             raise AssertionError(f'no recorded response for {url}')
@@ -108,7 +115,7 @@ class RegistryTests(unittest.TestCase):
             return 404, ''
         companion_gate.check('hypercast', '1.1.0', http=spy, repo=HYPERCAST)
         self.assertTrue(asked)
-        self.assertFalse([u for u in asked if 'cran' in u.lower() or 'r-project.org' in u])
+        self.assertFalse([u for u in asked if _is_cran(u)])
 
     def test_repo_defaults_to_the_owners_repository_by_its_github_name(self):
         fixture = load('hypercast-1.1.0')

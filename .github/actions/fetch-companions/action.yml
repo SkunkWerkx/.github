@@ -20,7 +20,7 @@ inputs:
     description: "This leg, `<workflow>:<job>[:<rid>][:key=value...]`: the calling Forge workflow's file name, the job, the matrix rid, and the matrix values that choose artifacts (`abi=`, `minor=`, `shard=`; companion_map.parse_leg)"
     required: true
   ecosystems:
-    description: "Space-separated ecosystems to wire in place of the leg's own (companion_map.ecosystems_for); empty takes the leg's"
+    description: "Space-separated ecosystems to wire in place of the leg's own (companion_map.ecosystems_for); empty takes the leg's. A job whose suites need toolchains that can't all be on PATH at once fetches once per pass, each naming its ecosystems, together the leg's: a later pass keeps what an earlier one wired"
     required: false
     default: ''
   root:
@@ -98,6 +98,8 @@ runs:
         MIRROR: ${{ runner.temp }}/companion-${{ steps.plan.outputs.name }}
       run: '"$PYTHON" "$FORGE_SCRIPTS/companion_fetch.py" confirm --root "$ROOT" --dir "$MIRROR" --outcome "$DOWNLOAD_OUTCOME"'
 
+    # Not cleaned: a job's second pass checks out the same commit over the first pass's tree,
+    # whose untracked files (the C# payload, the Swift bundle) that pass's wiring laid in.
     - name: Check out the companion's source at the pin
       if: steps.plan.outputs.has_block == 'true' && steps.mode.outputs.companion_mode == 'companion'
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -105,6 +107,7 @@ runs:
         repository: ${{ steps.plan.outputs.repo }}
         ref: ${{ steps.plan.outputs.commit }}
         path: ${{ inputs.root }}/.companions/${{ steps.plan.outputs.name }}
+        clean: false
         persist-credentials: false
 
     - name: Stage and verify this leg's artifacts

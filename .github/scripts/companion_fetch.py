@@ -504,7 +504,9 @@ def write_env(root, companion, leg_files, ecosystems):
     """.companions/env: `<NAME>_SOURCE`, `_ARTIFACTS`, `_COMMIT`, `_VERSION`, and one
     `<NAME>_<ECOSYSTEM>_REQ` per ecosystem, the reference that ecosystem's wiring points at.
     Every path is relative to root, with `/`, so a container mounting the checkout anywhere
-    resolves it; a list is comma-separated. Any other companion's lines are kept."""
+    resolves it; a list is comma-separated. Every line this call doesn't write is kept: any other
+    companion's, and this one's requirements from an earlier fetch in the same job (a job that
+    wires its ecosystems in two passes, each once its toolchain is on PATH)."""
     import companion_map
     root = Path(root)
     source = Path(WORKDIR) / companion.name
@@ -546,7 +548,7 @@ def write_env(root, companion, leg_files, ecosystems):
     path = root / WORKDIR / ENV
     kept = []
     if path.is_file():
-        kept = [line for line in path.read_text(encoding='utf-8').splitlines() if not line.startswith(prefix + '_')]
+        kept = [line for line in path.read_text(encoding='utf-8').splitlines() if line.split('=', 1)[0] not in lines]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(''.join(line + '\n' for line in kept + [f'{k}={v}' for k, v in lines.items()]), encoding='utf-8')
     return path

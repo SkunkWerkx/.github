@@ -205,11 +205,13 @@ JOBS = {
     # Each artifact list mirrors that job's download-artifact steps in HyperTabular's ci.yml:
     # test-apple-mobile, static-libs (before "What is installed, and what was staged") and
     # c-packages-ci (before "Unpack the four Apple mobile archives"), and the Swift suites on the
-    # iOS simulator and Mac Catalyst (xcodebuild), which link the XCFramework;
-    ('ci.yml', 'test-apple-mobile'): ('csharp-apple', 'c', 'swift'),
+    # iOS simulator and Mac Catalyst (xcodebuild), which link the XCFramework, and the Go suite
+    # (the translated core, from the pin's source; no artifact);
+    ('ci.yml', 'test-apple-mobile'): ('csharp-apple', 'c', 'swift', 'go'),
     # test-android, the native-android-* pattern and static-libs (before "Stage
-    # runtimes/android-{rid}/native/");
-    ('ci.yml', 'test-android'): ('csharp-android',),
+    # runtimes/android-{rid}/native/"), and the Go and Swift suites cross-built for the emulator:
+    # Go from the pin's source, Swift linking the bundle's *-unknown-linux-android variants;
+    ('ci.yml', 'test-android'): ('csharp-android', 'go', 'swift'),
     # test-nuget-package, native-linux-x64 and static-libs (before "Stage
     # runtimes/linux-x64/native/");
     ('ci.yml', 'test-nuget-package'): ('csharp',),

@@ -350,7 +350,7 @@ companion_java() {
   case $j_step in
     wire)
       companion_copy "$j_src" "$j_work" .companions/m2
-      j_held=$(sha256sum "$j_work/$j_jar" 2>/dev/null | cut -d' ' -f1)
+      j_held=$(sha256sum 2>/dev/null < "$j_work/$j_jar" | cut -d' ' -f1)
       if [ "$j_held" != "$j_sha" ]; then
         echo "::error::Java ($j_work): found $j_work/$j_jar with sha256 ${j_held:-absent}, expected $j_expected"
         return 1
@@ -447,7 +447,7 @@ companion_csharp() {
   case $d_step in
     wire)
       companion_copy "$d_src" "$d_work" .companions/nuget
-      d_held=$(sha512sum "$d_work/$d_nupkg" 2>/dev/null | cut -d' ' -f1)
+      d_held=$(sha512sum 2>/dev/null < "$d_work/$d_nupkg" | cut -d' ' -f1)
       if [ "$d_held" != "$d_sha" ]; then
         echo "::error::C# ($d_work): found $d_work/$d_nupkg with sha512 ${d_held:-absent}, expected $d_expected"
         return 1
@@ -487,7 +487,7 @@ companion_csharp() {
   d_metadata="$d_folder/.nupkg.metadata"
   d_source=$(sed -n 's/.*"source"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$d_metadata" 2>/dev/null || true)
   d_content=$(sed -n 's/.*"contentHash"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$d_metadata" 2>/dev/null || true)
-  d_copy=$(sha512sum "$d_folder/$d_lower.$d_version.nupkg" 2>/dev/null | cut -d' ' -f1)
+  d_copy=$(sha512sum 2>/dev/null < "$d_folder/$d_lower.$d_version.nupkg" | cut -d' ' -f1)
   # The sha512 of the package's own entry under "libraries", not any line that carries the hash.
   d_library=$(D_KEY="\"$d_package/$d_version\": {" awk '
     /"libraries"/ { libraries = 1 }
@@ -647,7 +647,7 @@ companion_swift_link() {
     return 1
   fi
   for sl_file in $sl_linked; do
-    sl_hash=$(sha256sum "$sl_file" 2>/dev/null | cut -d' ' -f1)
+    sl_hash=$(sha256sum 2>/dev/null < "$sl_file" | cut -d' ' -f1)
     if [ -z "$sl_hash" ] || ! grep -q "^$sl_hash  " "$sl_work/$sr_record"; then
       echo "::error::Swift ($sl_dir): found $sl_file linked, expected $sl_expected"
       return 1
@@ -758,7 +758,7 @@ COMPANION_CMAKE_PROBE
     return 1
   fi
   for cc_import in $cc_imports; do
-    cc_hash=$(sha256sum "$cc_import" 2>/dev/null | cut -d' ' -f1)
+    cc_hash=$(sha256sum 2>/dev/null < "$cc_import" | cut -d' ' -f1)
     case "$(cd "$(dirname "$cc_import")" 2>/dev/null && pwd -P)/" in
       "$cc_archive/"*) ;;
       *) cc_hash= ;;

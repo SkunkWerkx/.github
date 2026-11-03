@@ -450,6 +450,8 @@ class FetchCompanionsActionTests(unittest.TestCase):
         self.assertEqual(checkout['with'], {'repository': '${{ steps.plan.outputs.repo }}',
                                             'ref': '${{ steps.plan.outputs.commit }}',
                                             'path': '${{ inputs.root }}/.companions/${{ steps.plan.outputs.name }}',
+                                            # A job's second pass keeps the first's wiring.
+                                            'clean': False,
                                             'persist-credentials': False})
 
     def test_fetch_passes_inputs_through_env_only(self):
@@ -2824,6 +2826,23 @@ class SwiftCWorkflowTests(unittest.TestCase):
     ACTIVE = "steps.companions.outputs.active == 'true'"
     ORIGIN = '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py'
 
+    def test_containers_get_every_step_variable_their_script_reads(self):
+        # A step's env reaches the runner's shell, not a container: each one a `docker run`'s
+        # single-quoted script reads must be passed with `-e` (PR #11's review: hyper-core.yml's
+        # pinned Alpine smoke handed companion_c an empty $RID).
+        checked = 0
+        for path in sorted(WORKFLOWS.glob('hyper-*.yml')):
+            for job_name, job in (yaml_lite.load(path.read_text()).get('jobs') or {}).items():
+                for step in job.get('steps') or []:
+                    run, env = str(step.get('run') or ''), step.get('env') or {}
+                    for args, script in re.findall(r"docker run ((?:[^'\n]|\\\n)*?)sh -c \\?\s*'([^']*)'", run):
+                        passed = set(re.findall(r'-e ([A-Za-z_][A-Za-z0-9_]*)(?=[\s=])', args))
+                        read = set(re.findall(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)', script)) & set(env)
+                        checked += 1
+                        with self.subTest(workflow=path.name, job=job_name, step=step.get('name')):
+                            self.assertEqual(read - passed, set())
+        self.assertGreater(checked, 0)
+
     # HEAD 666a621's commands, by step, as for npm above: without a pin, every step but the fetch
     # and the steps gated on its `active` output being 'true' runs exactly these (the Alpine
     # smokes stay, under `!= 'true'`, with their commands unchanged). The C smoke jobs' Validate
@@ -2981,7 +3000,8 @@ class SwiftCWorkflowTests(unittest.TestCase):
     def test_alpine_smokes_have_a_pinned_twin(self):
         # The host's <NAME>_PACKAGES names a runner path: in the container, companion_c sets it
         # to the /work one and proves it there. The twin is the original's command and nothing
-        # else, but for that call (and the rid it needs).
+        # else, but for that call and the rid it needs, in the step's env and passed into the
+        # container (`-e RID`; core-musl's env had it, its container didn't: PR #11's review).
         source = '. /work/.hyperforge/.github/scripts/companion_container.sh && companion_c /work "$RID" && '
         for workflow, job_name, original, extra in (
                 ('hyper-test-c.yml', 'smoke', 'Smoke-test the ${{ matrix.rid }} archive on Alpine',
@@ -2997,7 +3017,8 @@ class SwiftCWorkflowTests(unittest.TestCase):
                 base = condition.removesuffix(" && steps.companions.outputs.active != 'true'")
                 self.assertEqual(twin['if'], f'${{{{ {base} && {self.ACTIVE} }}}}')
                 self.assertEqual(twin['env'], {**first['env'], **extra})
-                run = first['run'].replace('-e SMOKE_CXX=1', '-e RID -e SMOKE_CXX=1' if extra else '-e SMOKE_CXX=1')
+                self.assertEqual(twin['env']['RID'], '${{ matrix.rid }}')
+                run = first['run'].replace('-e SMOKE_CXX=1', '-e RID -e SMOKE_CXX=1')
                 self.assertEqual(twin['run'], run.replace('&& bash c/smoke/run.sh', '&& ' + source + 'bash c/smoke/run.sh'))
                 self.assertEqual(run.count('bash c/smoke/run.sh'), 1)
 
@@ -3203,6 +3224,18 @@ class CompanionSwiftCContainerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn(f'::error::C (CMake, linux-musl-x64): found find_package(hypercast 1.1.0) choosing '
                       f'{other}/lib/cmake/hypercast, expected', result.stdout)
+
+    def test_container_hashes_read_stdin(self):
+        # GNU sha256sum and sha512sum escape a file name holding a backslash or newline and put
+        # a `\` before the hash, so `sha512sum "$f" | cut -f1` gives `\<hash>` for such a path
+        # (CI run 41570924946); a stream's name is `-`, never escaped. macOS's shasum, which the
+        # shims here stand in with, doesn't escape, so only this pins it off Linux.
+        text = (SCRIPTS / 'companion_container.sh').read_text()
+        hashed = re.findall(r'\$\((sha(?:256|512)sum[^|\n]*\|)', text)
+        self.assertEqual(len(hashed), 5)
+        for line in hashed:
+            with self.subTest(line=line):
+                self.assertRegex(line, r'^sha(?:256|512)sum 2>/dev/null < "\$[^"]+" \|$')
 
     def test_c_cmake_probe_is_the_hosts(self):
         # One probe for both: the container's heredoc is companion_origin.py's _CMAKE_PROBE.

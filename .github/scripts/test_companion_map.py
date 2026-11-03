@@ -296,8 +296,11 @@ class MappingRowTests(unittest.TestCase):
         self.assertEqual(arts('hyper-test-csharp.yml', 'test', 'win-x64'), ['native-win-x64', 'static-libs'])
         self.assertEqual(arts('hyper-test-csharp.yml', 'test-musl', 'linux-musl-x64'), ['native-linux-musl-x64', 'static-libs'])
         self.assertEqual(arts('hyper-build-wasm.yml', 'test-blazor', 'linux-x64'), ['wasm-emscripten-staticlib'])
-        self.assertEqual(arts('ci.yml', 'test-android'), ['native-android-arm64', 'native-android-x64', 'static-libs'])
-        self.assertEqual(ecos('ci.yml', 'test-apple-mobile'), ['csharp', 'swift', 'c'])
+        # Each job also runs a Go suite and a Swift one, which resolve the companion too.
+        self.assertEqual(ecos('ci.yml', 'test-android'), ['go', 'csharp', 'swift'])
+        self.assertEqual(arts('ci.yml', 'test-android'),
+                         ['native-android-arm64', 'native-android-x64', 'static-libs', 'swift-release-assets'])
+        self.assertEqual(ecos('ci.yml', 'test-apple-mobile'), ['go', 'csharp', 'swift', 'c'])
         self.assertEqual(arts('ci.yml', 'test-apple-mobile'), ['c-packages-ci', 'static-libs', 'swift-release-assets'])
         self.assertEqual(arts('ci.yml', 'test-nuget-package', 'linux-x64'), ['native-linux-x64', 'static-libs'])
         # `dotnet format whitespace` restores nothing (measured: no project.assets.json, no package

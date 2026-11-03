@@ -465,7 +465,7 @@ jobs:
           PACKAGE=$(python3 .hyperforge/.github/scripts/c_package.py assemble --rid "$RID" --out c-archive \
                       --static "$static" --shared "$LIB")
           export PACKAGE VERSION
-          docker run --rm -v "$PWD:/work" -w /work -e PACKAGE -e VERSION -e SMOKE_CXX=1 alpine:3.22 sh -c \
+          docker run --rm -v "$PWD:/work" -w /work -e PACKAGE -e VERSION -e RID -e SMOKE_CXX=1 alpine:3.22 sh -c \
             'apk add -q bash build-base cmake pkgconf && . /work/.hyperforge/.github/scripts/companion_container.sh && companion_c /work "$RID" && bash c/smoke/run.sh "$PACKAGE" "$VERSION"'
 
   # ===========================================================================

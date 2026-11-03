@@ -593,7 +593,7 @@ def _ruby_wasm_consumer(root, name, version, only=None):
     path = gemfiles[0]
     binding = f'Ruby wasm ({_relative(root, path)})'
     gem_call = re.compile(r'gem\s*\(?\s*["\']' + re.escape(wasm_name) + r'["\']')
-    path_arg = re.compile(r'(?:\bpath:|:path\s*=>)\s*([\'"])((?:\\.|(?!\1).)*)\1')
+    path_arg = re.compile(r'(?:\bpath:|:path\s*=>)\s*([\'"])((?:\\.|(?!\1)[^\\])*)\1')
     statements = [s for s in _ruby_statements(path.read_text(encoding='utf-8')) if gem_call.match(s)]
     if not statements:
         raise OriginError(binding, f'no gem {wasm_name!r} with the pin\'s path: (rubygems.org resolves it, through '
@@ -700,7 +700,7 @@ def _ruby_consumers_simple(root, name, gem, expected):
     otherwise, or one beside a gemspec requiring the gem without it, is an OriginError."""
     from companion_fetch import _ruby_statements
     gem_call = re.compile(r'gem\s*\(?\s*["\']' + re.escape(name) + r'["\']')
-    path_arg = re.compile(r'(?:\bpath:|:path\s*=>)\s*([\'"])((?:\\.|(?!\1).)*)\1')
+    path_arg = re.compile(r'(?:\bpath:|:path\s*=>)\s*([\'"])((?:\\.|(?!\1)[^\\])*)\1')
     dependency = re.compile(companion_wire._GEMSPEC_DEPENDENCY + r'\s*\(?\s*["\']' + re.escape(name) + r'["\']')
     consumers = []
     for directory, files in companion_wire._walk_dirs(root):
@@ -1027,7 +1027,9 @@ def origin_csharp(root, env, sums, installed=False, only=None):
             metadata = json.loads((folder / '.nupkg.metadata').read_text(encoding='utf-8'))
             origin = str(metadata.get('source', ''))
             if origin.rstrip('/') != feed.as_posix() and Path(origin).resolve() != feed:
-                what = "nuget.org's copy" if 'nuget.org' in origin else 'another source\'s copy'
+                from urllib.parse import urlparse
+                host = (urlparse(origin).hostname or '').lower()
+                what = "nuget.org's copy" if host == 'nuget.org' or host.endswith('.nuget.org') else 'another source\'s copy'
                 raise OriginError(binding, f'{package} {found} at {folder}, {what} (source {origin})', expected)
             if metadata.get('contentHash') != record['content_hash']:
                 raise OriginError(binding, f'{package} {found} at {folder} with contentHash '

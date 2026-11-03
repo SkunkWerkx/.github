@@ -482,6 +482,23 @@ class EnvTests(unittest.TestCase):
                 finally:
                     os.rename(moved, root)
 
+    def test_a_second_fetch_adds_its_ecosystems(self):
+        # A job whose suites need different toolchains on PATH fetches twice, `ecosystems:` naming
+        # each pass's (HyperTabular's test-android: C# and Go first, Swift after setup-swift,
+        # which must follow the APKs). The second pass keeps the first's requirements, which its
+        # later origin proofs read.
+        with tempfile.TemporaryDirectory() as root:
+            consumer(root)
+            source(root)
+            companion = hyper_config.load_companions(root)['hypercast']
+            companion_fetch.write_env(root, companion, [], ['csharp', 'go'])
+            path = companion_fetch.write_env(root, companion, [], ['swift'])
+            env = read_env(path)
+            self.assertEqual(sorted(k for k in env if k.endswith('_REQ')),
+                             ['HYPERCAST_CSHARP_REQ', 'HYPERCAST_GO_REQ', 'HYPERCAST_SWIFT_REQ'])
+            self.assertEqual(env['HYPERCAST_COMMIT'], COMMIT)
+            self.assertEqual(len(path.read_text().splitlines()), len(env))
+
     def test_env_needs_the_sources_version_and_refuses_whitespace(self):
         with tempfile.TemporaryDirectory() as root:
             consumer(root)
