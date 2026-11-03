@@ -1,0 +1,16 @@
+   Compiling hypercast v1.0.0 (/home/runner/work/HyperCast/HyperCast/rust)
+error: linking with `cc` failed: exit status: 1
+  |
+  = note: /usr/bin/ld: hypercast.no_panic_harness.rcgu.o: in function `hypercast_canary':
+          undefined reference to `
+
+          ERROR[no-panic]: detected panic in function `hypercast_canary`
+          '
+          /usr/bin/ld: hypercast.ffi.rcgu.o: in function `cast_text':
+          undefined reference to `
+
+          ERROR[no-panic]: detected panic in function `cast_text`
+          '
+          collect2: error: ld returned 1 exit status
+
+error: could not compile `hypercast` (lib) due to 1 previous error

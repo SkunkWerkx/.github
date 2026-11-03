@@ -24,6 +24,12 @@ import uuid
 import zipfile
 
 
+# A page of a run's jobs. GitHub answers 100 a page of a large run with a 502 every time (HyperCast
+# run 41661544217, 139 jobs over three attempts, 2026-11-03) and serves 50. A page short of it before
+# the last means the list is incomplete.
+JOBS_PER_PAGE = 50
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -99,7 +105,7 @@ def require_unattempted_publication(repo, run_id, sha, workflow_path, registry,
         expected = None
         page = 1
         while True:
-            batch = api(f'{attempt_prefix}/jobs?per_page=100&page={page}')
+            batch = api(f'{attempt_prefix}/jobs?per_page={JOBS_PER_PAGE}&page={page}')
             count = batch.get('total_count')
             current = batch.get('jobs')
             if (not isinstance(count, int) or count < 0 or not isinstance(current, list)
@@ -109,7 +115,7 @@ def require_unattempted_publication(repo, run_id, sha, workflow_path, registry,
             jobs.extend(current)
             if len(jobs) >= count:
                 break
-            if len(current) != 100:
+            if len(current) != JOBS_PER_PAGE:
                 raise ValueError('Publication jobs list is not complete')
             page += 1
         if len(jobs) != expected or len({job.get('id') for job in jobs}) != expected:

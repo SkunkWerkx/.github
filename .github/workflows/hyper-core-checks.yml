@@ -44,6 +44,11 @@ on:
         required: false
         type: string
         default: '["ubuntu-26.04", "windows-2025-vs2026"]'
+      no_panic_canary:
+        description: "The crate's canary: a function that can panic, compiled in only under the cfg of the same name, which no_panic_command must then reject by that name alone (HyperCast: hypercast_canary); empty for none. The canary build sets RUSTFLAGS to that cfg, which replaces the rustflags .cargo/config.toml sets for the target"
+        required: false
+        type: string
+        default: ""
       core_script:
         description: "A repository-owned core check script, run in rust/ on x64 and arm64 with rustfmt, clippy and llvm-tools installed (HyperTabular's check-core.sh); empty for none"
         required: false
@@ -350,6 +355,18 @@ jobs:
         if: inputs.no_panic && contains(fromJSON(inputs.no_panic_runners), matrix.os)
         working-directory: rust
         run: ${{ inputs.no_panic_command }}
+
+      # The step above passing proves nothing on its own if the functions it should check were
+      # never linked, or the check stopped running: a proof that has never rejected anything has
+      # not been shown to check anything. A crate that names its canary gets the same build with
+      # the canary compiled in, which must fail, naming the canary and nothing else.
+      - name: the canary panics, and is the only function the no-panic proof names
+        if: inputs.no_panic && inputs.no_panic_canary != '' && contains(fromJSON(inputs.no_panic_runners), matrix.os)
+        working-directory: rust
+        env:
+          CANARY: ${{ inputs.no_panic_canary }}
+          NO_PANIC_COMMAND: ${{ inputs.no_panic_command }}
+        run: python ../.hyperforge/.github/scripts/no_panic_canary.py --name "$CANARY" -- bash -c "$NO_PANIC_COMMAND"
 
       # The corpus pins bytes in other people's indexes, so the crate's whole default-feature
       # suite runs on a big-endian target: cross-compiled, executed under qemu-user. The last
