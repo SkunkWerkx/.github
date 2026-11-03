@@ -1354,11 +1354,14 @@ def csharp_checkout(root, artifacts=CSHARP_ARTIFACTS):
 
 
 def write_zip(path, entries):
+    """A zip of `entries`, each stamped with one fixed time, so packing the same tree twice gives
+    the same bytes (a name alone takes the clock's time, and two packs either side of a
+    two-second tick would differ)."""
     import zipfile
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, 'w') as archive:
         for name, data in entries.items():
-            archive.writestr(name, data)
+            archive.writestr(zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0)), data)
 
 
 def zip_entries(path):
