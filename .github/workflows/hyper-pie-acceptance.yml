@@ -13,7 +13,8 @@ name: HyperForge — PIE installs the released PHP extension
 #   * workflow_dispatch, for the rehearsal before a first release: `repository` names a scratch
 #     repository (added as a `vcs` repository) whose Release carries the zips.
 #
-# One leg per platform and PHP minor, the platforms php_ext_package.py builds. Each starts with
+# One leg per platform, PHP minor and thread safety (NTS and ZTS), the legs php_ext_package.py
+# builds. Each starts with
 # PHP and the pinned, attested PIE phar and nothing of the consumer's: no checkout, no build
 # tools. PIE installs `<package>:v<package_version>` (the tag, which is the version PIE looks the
 # Release up by), then a fresh `php` with no -d flags runs pie_acceptance.php: the extension is
@@ -30,8 +31,9 @@ name: HyperForge — PIE installs the released PHP extension
 # comparison runs.
 #
 # How each platform gets its PHP mirrors the build workflow: setup-php on Linux glibc and Windows
-# (NTS), Alpine's php8X packages in a bare alpine:3.24 container on musl, and the shivammathur/php
-# tap on osx-arm64. No leg builds a PHP (the build workflow has why there is no Intel macOS leg).
+# (`phpts` from the leg), on musl Alpine's php8X packages in a bare alpine:3.24 container (NTS) or
+# the official php:<minor>-zts-alpine image (ZTS, which carries openssl, iconv and phar built in),
+# and the shivammathur/php tap on osx-arm64 (each formula's -zts twin for ZTS). No leg builds a PHP (the build workflow has why there is no Intel macOS leg).
 # PIE itself needs openssl, iconv and phar, and `unzip`
 # (Composer extracts a zip with it on Unix; macOS and the Ubuntu runners ship it, Alpine adds it),
 # and `otool` on macOS to see bsdlibc (on the runners with Xcode).
@@ -181,7 +183,7 @@ jobs:
 
   install:
     needs: [legs, companions]
-    name: ${{ matrix.rid }} PHP ${{ matrix.minor }}
+    name: ${{ matrix.rid }} PHP ${{ matrix.minor }} ${{ matrix.ts }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.legs.outputs.matrix) }}
@@ -193,6 +195,7 @@ jobs:
       FORGE_SCRIPTS: .hyperforge/.github/scripts
       RID: ${{ matrix.rid }}
       MINOR: ${{ matrix.minor }}
+      TS: ${{ matrix.ts }}
       PACKAGE: ${{ inputs.package }}
       EXTENSION: ${{ inputs.extension }}
       PACKAGE_VERSION: ${{ inputs.package_version }}
@@ -252,7 +255,7 @@ jobs:
           py=python3
           if [ "$RUNNER_OS" = Windows ]; then py=python; fi
           tag="v$PACKAGE_VERSION"
-          name=$("$py" "$FORGE_SCRIPTS/php_ext_package.py" asset --rid "$RID" --minor "$MINOR" --version "$tag" --extension "$EXTENSION" | tr -d '\r')
+          name=$("$py" "$FORGE_SCRIPTS/php_ext_package.py" asset --rid "$RID" --minor "$MINOR" --version "$tag" --extension "$EXTENSION" --ts "$TS" | tr -d '\r')
           if [ -n "$REPOSITORY" ]; then
             release_repo=$(printf '%s' "$REPOSITORY" | sed -E 's#^https://github\.com/##; s#\.git$##; s#/$##')
           else
@@ -280,7 +283,7 @@ jobs:
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         if: matrix.kind == 'glibc' || matrix.kind == 'windows'
         env:
-          phpts: nts
+          phpts: ${{ matrix.ts }}
         with:
           php-version: ${{ matrix.minor }}
           extensions: openssl, iconv, phar, zip
@@ -298,11 +301,14 @@ jobs:
           # Homebrew loads a third-party tap's formulae only once the tap is trusted; without
           # this, `brew info` below refuses every php@MINOR and the leg falls back to `php`.
           brew trust shivammathur/php
-          formula="shivammathur/php/php@$MINOR"
+          # A ZTS leg takes each formula's -zts twin (php@8.4-zts, php-zts).
+          suffix=''; if [ "$TS" = zts ]; then suffix=-zts; fi
+          formula="shivammathur/php/php@$MINOR$suffix"
           # The probe's stderr stays in the log: a refusal must be readable, not a silent fallback.
           if ! brew info --formula "$formula" >/dev/null; then
-            formula=shivammathur/php/php
-            # The image's Homebrew core php shares the tap formula's name.
+            formula=shivammathur/php/php$suffix
+            # The image's Homebrew core php shares the tap formula's name, and its links clash
+            # with php-zts's, which is not keg-only either.
             brew uninstall --ignore-dependencies --force php >/dev/null 2>&1 || true
           fi
           brew install "$formula"
@@ -315,6 +321,18 @@ jobs:
           "$bin/php" -v
           echo "PIE_PHP=$bin/php" >> "$GITHUB_ENV"
           echo "TARGET_PHP=$bin/php" >> "$GITHUB_ENV"
+
+      # PIE names the zip it downloads from the PHP it runs on: a leg handed the other mode would
+      # look for the other zip, and pass or fail on it. The musl containers check theirs below.
+      - name: The leg's PHP is its thread safety
+        if: matrix.kind != 'musl'
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_php=${TARGET_PHP:-php}
+          got=$("$target_php" -r 'echo PHP_ZTS ? "zts" : "nts";')
+          [ "$got" = "$TS" ] || { echo "::error::the leg's PHP is $got, the leg wants $TS"; exit 1; }
+          "$target_php" -v | head -1
 
       - name: Install with PIE, then check from a fresh PHP
         if: matrix.kind != 'musl'
@@ -329,8 +347,10 @@ jobs:
           target_php=${TARGET_PHP:-php}
           "$FORGE_SCRIPTS/pie_acceptance.sh" "$pie_php" "$target_php" "$PIE_PHAR" "$PACKAGE" "$EXTENSION" "$PACKAGE_VERSION" "$REPOSITORY" "$ENTRY_SHA256" "$COMPANIONS"
 
-      # A bare alpine image with Alpine's PHP of this minor and what PIE needs to run, nothing
-      # else: the image the build workflow's musl legs built against (php_ext_musl.sh).
+      # NTS: a bare alpine image with Alpine's PHP of this minor and what PIE needs to run,
+      # nothing else, the image the build workflow's musl legs built against. ZTS: Alpine
+      # packages no ZTS PHP, so the official php:<minor>-zts-alpine image, as built and tested
+      # against (php_ext_musl.sh), plus unzip.
       - name: Install with PIE, then check from a fresh PHP (Alpine)
         if: matrix.kind == 'musl'
         shell: bash
@@ -340,11 +360,18 @@ jobs:
           COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ github.token }}"}}'
         run: |
           set -euo pipefail
-          apk_php="php${MINOR/./}"
+          if [ "$TS" = zts ]; then
+            image="php:$MINOR-zts-alpine" php=php packages=unzip
+          else
+            image=alpine:3.24 php="php${MINOR/./}"
+            packages="$php $php-openssl $php-iconv $php-phar unzip"
+          fi
           docker run --rm \
             -v "$GITHUB_WORKSPACE/$FORGE_SCRIPTS:/forge:ro" -v "$PIE_PHAR:/pie.phar:ro" \
-            -e APK_PHP="$apk_php" -e PACKAGE -e EXTENSION -e PACKAGE_VERSION -e REPOSITORY -e ENTRY_SHA256 -e COMPANIONS -e COMPOSER_AUTH \
-            alpine:3.24 sh -euc '
-              apk add --no-cache "$APK_PHP" "$APK_PHP-openssl" "$APK_PHP-iconv" "$APK_PHP-phar" unzip >/dev/null
-              sh /forge/pie_acceptance.sh "$APK_PHP" "$APK_PHP" /pie.phar "$PACKAGE" "$EXTENSION" "$PACKAGE_VERSION" "$REPOSITORY" "$ENTRY_SHA256" "$COMPANIONS"
+            -e PHP_BIN="$php" -e PACKAGES="$packages" -e TS -e PACKAGE -e EXTENSION -e PACKAGE_VERSION -e REPOSITORY -e ENTRY_SHA256 -e COMPANIONS -e COMPOSER_AUTH \
+            "$image" sh -euc '
+              apk add --no-cache $PACKAGES >/dev/null
+              got=$("$PHP_BIN" -r "echo PHP_ZTS ? \"zts\" : \"nts\";")
+              [ "$got" = "$TS" ] || { echo "::error::the leg'"'"'s PHP is $got, the leg wants $TS"; exit 1; }
+              sh /forge/pie_acceptance.sh "$PHP_BIN" "$PHP_BIN" /pie.phar "$PACKAGE" "$EXTENSION" "$PACKAGE_VERSION" "$REPOSITORY" "$ENTRY_SHA256" "$COMPANIONS"
             '

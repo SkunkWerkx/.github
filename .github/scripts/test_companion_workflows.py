@@ -738,6 +738,7 @@ class FetchStepTests(unittest.TestCase):
                 given = fetch['with']['leg']
                 parsed = companion_map.parse_leg(given.replace('${{ matrix.rid }}', leg.rid or 'x')
                                                  .replace('${{ matrix.minor }}', '8.4')
+                                                 .replace('${{ matrix.ts }}', 'zts')
                                                  .replace('${{ matrix.abi }}', '4.0'))
                 self.assertEqual((parsed.workflow, parsed.job), (workflow, job_name))
                 if 'rid' in str((job.get('strategy') or {}).get('matrix')) or 'matrix.rid' in str(job):
@@ -750,6 +751,10 @@ class FetchStepTests(unittest.TestCase):
                 # Likewise the matrix's PHP minor, where they are named by one.
                 if any('{minor}' in name for role in companion_map._roles(leg) for name in companion_map.ROLES[role][1]):
                     self.assertIn(':minor=${{ matrix.minor }}', given)
+                # And its thread safety: without it a ZTS leg would stage the NTS build, which its
+                # PHP refuses at load.
+                if any('{ts}' in name for role in companion_map._roles(leg) for name in companion_map.ROLES[role][1]):
+                    self.assertIn(':ts=${{ matrix.ts }}', given)
                 # And the matrix's Ruby ABI where they are named by one and no rid (the ruby.wasm
                 # archive): without it the fetch would stage every minor's.
                 if any('{abi}' in name and '{rid}' not in name
@@ -1055,7 +1060,8 @@ class FetchStepTests(unittest.TestCase):
     # HEAD 666a621's commands in each Ruby and PHP leg, by step, as for npm above: without a pin,
     # every step but the fetch and the proofs gated on its `active` output (in ruby-magnus, on
     # the `companions` input it is passed) runs exactly these. The lint's Validate step came with
-    # the Ruby wiring (Task 12); the PHP build's first three steps with the gating (Task 4).
+    # the Ruby wiring (Task 12); the PHP build's first three steps with the gating (Task 4). ZTS
+    # added the PHP build's thread-safety check and moved its macOS and Alpine steps.
     RUBY_PHP_HEAD_RUNS = {
         ('workflows/hyper-test-ruby.yml', 'test'): {
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
@@ -1080,7 +1086,8 @@ class FetchStepTests(unittest.TestCase):
             'The companions built from the registry': '41daeff08859aa2c',
             'Fetch PIE, and verify its checksum and attestation': '398dfe2df8a8fa28',
             "The image's PHP is the leg's minor": '7a4946fd61efd2f0',
-            'PHP from the shivammathur/php tap (macOS)': '92cb4f7678f45776', 'Composer (macOS)': '151159ac80bde2d6',
+            'PHP from the shivammathur/php tap (macOS)': 'e018aa240b8e768c',
+            "The leg's PHP is its thread safety": '5f43d3089c1bfa72', 'Composer (macOS)': '151159ac80bde2d6',
             "Point bindgen at one system LLVM, not at Swift's clang": '6047d04ccc1a8ca6',
             'Stub generator prerequisites (cargo-php, libclang)': '0e40ac69461a81d2',
             'Build the extension': 'dd1d34742ea30b31', 'Build the companion extensions': '95f6d0e396a42d0c',
@@ -1089,7 +1096,7 @@ class FetchStepTests(unittest.TestCase):
             'Build the extension (Windows)': '8845d10eabab233b',
             'glibc floor — nothing newer than GLIBC_2.34 is referenced': '3509cbc69a7e1ae8',
             'Load-check the extension, and record the ABI it is pinned to': '005027588823a9f8',
-            'Build, load-check, test and pack on Alpine': '7219ee47a7ffb641',
+            'Build, load-check, test and pack on Alpine': '3edc96ea86fa2d64',
             "Install the suite's Composer dependencies": 'b632c22ee404ce9d',
             'Test the extension (composer test)': '6fdeb4480825562b', 'Pack the PIE zip': '02d67df990823c21'},
     }

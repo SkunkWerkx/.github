@@ -76,7 +76,7 @@ try {
     $composerPackage->setType('php-ext');
     $composerPackage->setPhpExt([
         'extension-name' => $extension,
-        'support-zts' => false,
+        'support-zts' => true,
         'support-nts' => true,
         'download-url-method' => ['pre-packaged-binary'],
         'os-families' => ['linux', 'darwin', 'windows'],

@@ -64,8 +64,9 @@ class LegTests(unittest.TestCase):
     def test_computed_php_matrix_expands_to_the_release_legs(self):
         php = [l for l in companion_map.legs() if l.workflow == 'hyper-build-php-extension.yml' and l.job == 'build']
         import php_ext_package
-        self.assertEqual(len(php), len(php_ext_package.PLATFORMS) * len(php_ext_package.MINORS))
-        self.assertTrue(all(l.rid and l.extra.get('minor') for l in php))
+        self.assertEqual(len(php), len(php_ext_package.PLATFORMS) * len(php_ext_package.MINORS)
+                         * len(php_ext_package.THREAD_SAFETY))
+        self.assertTrue(all(l.rid and l.extra.get('minor') and l.extra.get('ts') in ('nts', 'zts') for l in php))
 
     def test_unknown_leg_is_refused(self):
         with self.assertRaises(ValueError):
@@ -131,6 +132,14 @@ class ProducerTests(unittest.TestCase):
                                      'name: corelib-${{ matrix.rid }}',
                                      [f'native-{rid}' for rid in ('linux-arm64', 'linux-x64', 'osx-arm64', 'win-arm64', 'win-x64')])
 
+    def test_renaming_the_php_upload_is_caught(self):
+        # Negative control: every PIE zip artifact, NTS and ZTS, comes only from the PHP build's
+        # one upload step.
+        import php_ext_package
+        legs = php_ext_package.matrix('release', ' '.join(php_ext_package.MINORS), '')['include']
+        self.assert_rename_is_caught('workflows/hyper-build-php-extension.yml', 'name: ${{ matrix.artifact }}',
+                                     'name: php-${{ matrix.artifact }}', [leg['artifact'] for leg in legs])
+
     def test_renaming_the_magnus_upload_is_caught(self):
         # Negative control: the glibc, macOS and Windows platform gems' natives come only from
         # the ruby-magnus action (musl's from ruby-magnus-musl).
@@ -149,7 +158,8 @@ class ProducerTests(unittest.TestCase):
     def test_bogus_names_are_not_produced(self):
         produced = companion_map.producers()
         for bogus in ('native-bogus', 'jni-bogus', 'ruby-native-osx-x64-9.9', 'php-ext-osx-x64-7.0',
-                      'ruby-native-osx-x64-4.0', 'php-ext-osx-x64-8.5', 'c-packages', 'nuget-org-package'):
+                      'ruby-native-osx-x64-4.0', 'php-ext-osx-x64-8.5', 'php-ext-osx-x64-8.5-zts',
+                      'php-ext-linux-x64-8.5-nts', 'c-packages', 'nuget-org-package'):
             self.assertNotIn(bogus, produced)
 
     def test_producers_are_board_workflows_only(self):
@@ -168,7 +178,8 @@ class ProducerTests(unittest.TestCase):
         for expected in ('pypi-wheels-sdist', 'pypi-wheels-pyodide', 'node-wasm32-wasip1', 'node-osx-x64',
                          'wasm-emscripten-staticlib', 'swift-release-assets', 'c-packages-ci', 'static-libs',
                          'native-android-arm64', 'native-android-x64', 'ruby-native-win-arm64-3.4',
-                         'php-ext-win-x64-8.3', 'jni-osx-x64'):
+                         'php-ext-win-x64-8.3', 'php-ext-win-x64-8.3-zts', 'php-ext-linux-musl-arm64-8.5-zts',
+                         'jni-osx-x64'):
             self.assertIn(expected, union)
 
     def test_consumer_legs_are_the_ci_yml_jobs(self):
@@ -313,6 +324,13 @@ class MappingRowTests(unittest.TestCase):
     def test_php(self):
         self.assertEqual(ecos('hyper-build-php-extension.yml', 'build', 'win-x64', minor='8.3'), ['rust', 'php'])
         self.assertEqual(arts('hyper-build-php-extension.yml', 'build', 'win-x64', minor='8.3'), ['php-ext-win-x64-8.3'])
+        # A ZTS leg takes the companion's ZTS build: PHP refuses the NTS one at load.
+        self.assertEqual(arts('hyper-build-php-extension.yml', 'build', 'win-x64', minor='8.3', ts='nts'),
+                         ['php-ext-win-x64-8.3'])
+        self.assertEqual(arts('hyper-build-php-extension.yml', 'build', 'win-x64', minor='8.3', ts='zts'),
+                         ['php-ext-win-x64-8.3-zts'])
+        with self.assertRaisesRegex(ValueError, 'nts or zts'):
+            arts('hyper-build-php-extension.yml', 'build', 'win-x64', minor='8.3', ts='ts')
         # phpcs, and php/'s dev tools, which load no extension: the PHP lint never meets the companion.
         self.assertIn(('hyper-lint-php.yml', 'lint'), companion_map.NO_COMPANION)
         self.assertEqual(ecos('hyper-lint-php.yml', 'lint', 'linux-arm64'), [])
@@ -376,6 +394,8 @@ class LegStringTests(unittest.TestCase):
                          leg('hyper-build-php-extension.yml', 'build', 'linux-x64', minor='8.4'))
         self.assertEqual(self.parse('hyper-test-ruby.yml:test:win-x64:abi=3.4'),
                          leg('hyper-test-ruby.yml', 'test', 'win-x64', abi='3.4'))
+        self.assertEqual(self.parse('hyper-build-php-extension.yml:build:win-x64:minor=8.5:ts=zts'),
+                         leg('hyper-build-php-extension.yml', 'build', 'win-x64', minor='8.5', ts='zts'))
         self.assertEqual(self.parse('hyper-build-native.yml:build-native:win-x64:shard=ffi'),
                          leg('hyper-build-native.yml', 'build-native', 'win-x64', shard='ffi'))
         # Syntax only: whether the job reads the keys is artifacts_for's question.
@@ -410,6 +430,11 @@ class LegStringTests(unittest.TestCase):
         self.assertEqual(self.text_arts('hyper-build-php-extension.yml:build:linux-x64:minor=8.4'), ['php-ext-linux-x64-8.4'])
         with self.assertRaisesRegex(ValueError, 'minor'):
             self.text_arts('hyper-build-php-extension.yml:build:linux-x64')
+        # And its thread safety: none is NTS, the leg string every caller wrote before ZTS.
+        self.assertEqual(self.text_arts('hyper-build-php-extension.yml:build:linux-x64:minor=8.4:ts=zts'),
+                         ['php-ext-linux-x64-8.4-zts'])
+        self.assertEqual(self.text_arts('hyper-build-php-extension.yml:build:linux-x64:minor=8.4:ts=nts'),
+                         ['php-ext-linux-x64-8.4'])
         # The build-native shard: its ecosystems and its artifacts.
         ffi = self.parse('hyper-build-native.yml:build-native:win-x64:shard=ffi')
         self.assertEqual(companion_map.ecosystems_for(ffi), ['rust', 'go', 'python', 'npm', 'java', 'csharp', 'r'])
@@ -425,6 +450,7 @@ class LegStringTests(unittest.TestCase):
                              ('hyper-test-r.yml:test:abi=3.4:minor=8.4', 'abi, minor'),
                              ('hyper-test-ruby.yml:test:linux-x64:minor=8.4', 'minor'),
                              ('hyper-build-php-extension.yml:build:linux-x64:minor=8.4:abi=3.4', 'abi'),
+                             ('hyper-test-ruby.yml:test:linux-x64:abi=3.4:ts=zts', 'ts'),
                              ('hyper-test-ruby.yml:test:linux-x64:shard=ffi', 'shard')):
             with self.subTest(text=text):
                 with self.assertRaisesRegex(ValueError, f'reads no {unread}'):
