@@ -15,7 +15,7 @@ BINDING_LINTS = {'cdylib', 'lint_go', 'lint_python', 'lint_node', 'lint_java_jni
                  'lint_ruby', 'lint_swift', 'format_csharp', 'format_java', 'format_swift'}
 BINDING_WORDS = ('Go', 'Java', 'JNI', 'TypeScript', 'Node', 'Bun', 'R CMD', 'Python', 'C#', 'Swift', 'Ruby', 'PHP')
 ORDER = ['cargo fmt --check', 'cargo clippy', "declares exactly the core's C ABI", 'corpus', 'semver',
-         'rust-version', 'no_std', 'no panic path', 'big-endian', 'wasm32-wasip1 under wasmtime',
+         'rust-version', 'no_std', 'no panic path', 'the canary panics', 'big-endian', 'wasm32-wasip1 under wasmtime',
          'Validate workflow syntax', 'clang-format and shellcheck']
 
 
@@ -72,15 +72,16 @@ class CoreChecksWorkflowTests(unittest.TestCase):
                 self.assertNotIn('latest', line)
 
     def test_host_specific_checks_keep_their_hosts(self):
-        no_panic = self.step('no panic path')
-        self.assertIn('inputs.no_panic_runners', no_panic['if'])
-        self.assertIn('matrix.os', no_panic['if'])
+        for needle in ('no panic path', 'the canary panics'):
+            no_panic = self.step(needle)
+            self.assertIn('inputs.no_panic_runners', no_panic['if'], needle)
+            self.assertIn('matrix.os', no_panic['if'], needle)
         default = self.workflow['on']['workflow_call']['inputs']['no_panic_runners']['default']
         self.assertEqual(default, '["ubuntu-26.04", "windows-2025-vs2026"]')
         for needle in ("The repository's own core checks", 'cargo test with the extra feature set'):
             self.assertIn("matrix.arch != 'win'", self.step(needle)['if'])
         for needle in ORDER:
-            if needle in ('no panic path',) or needle in ("The repository's own core checks",):
+            if needle in ('no panic path', 'the canary panics') or needle in ("The repository's own core checks",):
                 continue
             step = self.step(needle)
             self.assertIn("matrix.arch == 'x64'", step['if'], needle)
@@ -100,7 +101,7 @@ class CoreChecksWorkflowTests(unittest.TestCase):
     def test_inputs_are_check_cores_minus_binding_lints_plus_c_lint(self):
         old = yaml_lite.load((WORKFLOWS / 'hyper-check-core.yml').read_text())['on']['workflow_call']['inputs']
         new = self.workflow['on']['workflow_call']['inputs']
-        self.assertEqual(set(new), (set(old) - BINDING_LINTS) | {'c_lint'})
+        self.assertEqual(set(new), (set(old) - BINDING_LINTS) | {'c_lint', 'no_panic_canary'})
         self.assertEqual(new['c_lint']['type'], 'boolean')
         self.assertIs(new['c_lint']['default'], True)
         for name in set(old) - BINDING_LINTS:
@@ -109,6 +110,22 @@ class CoreChecksWorkflowTests(unittest.TestCase):
                 if name != 'no_panic_runners':
                     self.assertEqual(new[name]['default'], old[name]['default'])
         self.assertIn('inputs.c_lint', self.step('clang-format and shellcheck')['if'])
+
+    def test_no_panic_canary_is_opt_in(self):
+        # Off unless a crate names its canary: HyperUuid runs as before, HyperCast proves its
+        # no-panic harness is linked and checked by making the canary build fail, by name.
+        canary = self.workflow['on']['workflow_call']['inputs']['no_panic_canary']
+        self.assertEqual(canary['type'], 'string')
+        self.assertEqual(canary['default'], '')
+        self.assertIn('RUSTFLAGS', canary['description'])
+        step = self.step('the canary panics')
+        for needle in ('inputs.no_panic', "inputs.no_panic_canary != ''", 'fromJSON(inputs.no_panic_runners)'):
+            self.assertIn(needle, step['if'])
+        self.assertEqual(step['working-directory'], 'rust')
+        self.assertEqual(step['env']['CANARY'], '${{ inputs.no_panic_canary }}')
+        self.assertEqual(step['env']['NO_PANIC_COMMAND'], '${{ inputs.no_panic_command }}')
+        self.assertIn('../.hyperforge/.github/scripts/no_panic_canary.py --name "$CANARY" -- bash -c "$NO_PANIC_COMMAND"',
+                      step['run'])
 
 
 if __name__ == '__main__':

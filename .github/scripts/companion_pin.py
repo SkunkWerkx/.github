@@ -30,6 +30,11 @@ BOARD_SCRIPT = '.github/scripts/pr_board.py'
 PURPOSE = re.compile(r'purpose=(board|release)\b')
 
 
+# A page of a run's jobs. GitHub answers 100 a page of a large run with a 502 every time (HyperCast
+# run 41661544217, 139 jobs over three attempts, 2026-11-03) and serves 50; the paging reads any size.
+JOBS_PER_PAGE = 50
+
+
 def read_tail(contents):
     """TAIL from a contents-API response for pr_board.py: parsed with ast, never executed."""
     if contents.get('encoding') != 'base64':
@@ -111,7 +116,7 @@ def check_run(run, jobs, companion, compare, tail):
 def jobs_of(repo, run_id, api):
     jobs, page = [], 1
     while True:
-        got = api(repo, f'actions/runs/{run_id}/jobs?per_page=100&page={page}')
+        got = api(repo, f'actions/runs/{run_id}/jobs?per_page={JOBS_PER_PAGE}&page={page}')
         jobs += [{'name': j['name'], 'conclusion': j['conclusion']} for j in got['jobs']]
         if not got['jobs'] or len(jobs) >= got['total_count']:
             return jobs

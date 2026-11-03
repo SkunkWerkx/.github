@@ -239,7 +239,7 @@ class Packages(unittest.TestCase):
                    'steps': [{'name': 'Verify every prepared file against this release source B',
                               'status': 'completed', 'conclusion': 'failure'},
                              {'name': step_name, 'status': 'completed', 'conclusion': upload}]}
-            records[prefix + '/jobs?per_page=100&page=1'] = {'total_count': 1, 'jobs': [job]}
+            records[prefix + '/jobs?per_page=50&page=1'] = {'total_count': 1, 'jobs': [job]}
         return repo, run, records
 
     def require_unused(self, registry='maven', records=None):
@@ -254,7 +254,7 @@ class Packages(unittest.TestCase):
 
     def test_missing_receipt_rejects_attempted_upload_even_if_a_later_attempt_skipped_it(self):
         repo, _, records = self.history(attempts=2)
-        first = records[f'repos/{repo}/actions/runs/66/attempts/1/jobs?per_page=100&page=1']['jobs'][0]
+        first = records[f'repos/{repo}/actions/runs/66/attempts/1/jobs?per_page=50&page=1']['jobs'][0]
         for conclusion in ('success', 'failure', 'cancelled'):
             first['steps'][-1].update({'conclusion': conclusion, 'started_at': '2026-10-21T00:00:00Z'})
             with self.assertRaisesRegex(ValueError, 'ambiguous'):
@@ -262,7 +262,7 @@ class Packages(unittest.TestCase):
 
     def test_missing_receipt_requires_complete_job_pages_and_known_publisher_identity(self):
         repo, _, records = self.history()
-        key = f'repos/{repo}/actions/runs/66/attempts/1/jobs?per_page=100&page=1'
+        key = f'repos/{repo}/actions/runs/66/attempts/1/jobs?per_page=50&page=1'
         records[key]['jobs'][0]['name'] = 'unrelated job'
         with self.assertRaisesRegex(ValueError, 'publisher'):
             self.require_unused(records=records)
@@ -280,13 +280,13 @@ class Packages(unittest.TestCase):
 
     def test_job_attempt_is_bound_by_endpoint_when_optional_job_field_is_absent(self):
         repo, _, records = self.history()
-        job = records[f'repos/{repo}/actions/runs/66/attempts/1/jobs?per_page=100&page=1']['jobs'][0]
+        job = records[f'repos/{repo}/actions/runs/66/attempts/1/jobs?per_page=50&page=1']['jobs'][0]
         job.pop('run_attempt')
         self.require_unused(records=records)
 
     def test_complete_job_pagination_finds_publisher_on_second_page(self):
         repo, _, records = self.history()
-        prefix = f'repos/{repo}/actions/runs/66/attempts/1/jobs?per_page=100&page='
+        prefix = f'repos/{repo}/actions/runs/66/attempts/1/jobs?per_page=50&page='
         publisher = records[prefix + '1']['jobs'][0]
         records[prefix + '1'] = {'total_count': 101, 'jobs': [
             {**publisher, 'id': i + 10, 'name': 'unrelated'} for i in range(100)]}
@@ -302,7 +302,7 @@ class Packages(unittest.TestCase):
                                               '.github/workflows/release.yml', 'maven',
                                               current_run_id='66', current_attempt='1', api=records.__getitem__)
         top['run_attempt'] = 2
-        first = records[f'repos/{repo}/actions/runs/66/attempts/1/jobs?per_page=100&page=1']['jobs'][0]
+        first = records[f'repos/{repo}/actions/runs/66/attempts/1/jobs?per_page=50&page=1']['jobs'][0]
         first['steps'][-1]['conclusion'] = 'failure'
         with self.assertRaisesRegex(ValueError, 'ambiguous'):
             self.p.require_unattempted_publication(repo, '66', 'b' * 40,
@@ -311,7 +311,7 @@ class Packages(unittest.TestCase):
 
     def test_skipped_known_publisher_with_empty_steps_is_proven_never_attempted(self):
         repo, _, records = self.history()
-        job = records[f'repos/{repo}/actions/runs/66/attempts/1/jobs?per_page=100&page=1']['jobs'][0]
+        job = records[f'repos/{repo}/actions/runs/66/attempts/1/jobs?per_page=50&page=1']['jobs'][0]
         job.update({'conclusion': 'skipped', 'steps': []})
         self.require_unused(records=records)
 

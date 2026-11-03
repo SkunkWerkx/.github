@@ -151,6 +151,24 @@ class CheckRun(unittest.TestCase):
         self.fails('tail job forge must be skipped', jobs=jobs)
 
 
+class JobsOf(unittest.TestCase):
+    """The pinned run's jobs, paged at 50: GitHub answers a 100-job page of a large run with a 502
+    every time (HyperCast run 41661544217, 139 jobs, 2026-11-03), and 50 a page is served."""
+
+    def test_pages_a_large_run_at_fifty(self):
+        jobs = [{'name': f'job {i}', 'conclusion': 'success'} for i in range(139)]
+        asked = []
+
+        def api(repo, endpoint):
+            asked.append(endpoint)
+            self.assertIn('per_page=50&', endpoint, 'a 100-job page of a large run is a 502')
+            page = int(endpoint.rsplit('page=', 1)[1])
+            return {'total_count': len(jobs), 'jobs': jobs[(page - 1) * 50:page * 50]}
+
+        self.assertEqual(pin.jobs_of('SkunkWerkx/HyperCast', 41661544217, api), jobs)
+        self.assertEqual(asked, [f'actions/runs/41661544217/jobs?per_page=50&page={n}' for n in (1, 2, 3)])
+
+
 class Fetch(unittest.TestCase):
     def test_fetch_reads_run_jobs_compare_and_tail(self):
         jobs = load('run_green_dispatch_board_jobs.json')
