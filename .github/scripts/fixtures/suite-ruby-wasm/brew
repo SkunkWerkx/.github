@@ -1,0 +1,3 @@
+#!/bin/sh
+# `brew --prefix openssl@3` on macOS: a prefix holding the openssl.pc suite-ruby-wasm.sh checks for.
+echo "$STUB_OPENSSL"

@@ -32,11 +32,18 @@ each by its path under corpus/: a JSON file or a fixture it reads, such as
 `workbook/basic.xlsx`; default HyperUuid's five), `big_endian_control` (the negative control
 that proves the big-endian target reads the corpus: `file`, a path under corpus/; `find`, text
 that occurs in it, whose first occurrence becomes `replace`; `test`, the cargo test target that
-replays it; `fails`, the test in it that must then fail; default HyperUuid's SQL order vector).
+replays it; `fails`, the test in it that must then fail; default HyperUuid's SQL order vector),
+and `companions` (the pins on the repositories whose builds this one loads in a pull request:
+`{"<crate>": {"repo": "owner/name", "commit": <40 lowercase hex>, "run": <positive run id>}}`;
+absent means none; the PHP build and the PIE acceptance run from the lists derived here).
 """
+from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import re
+import sys
+import types
 
 RIDS = ('linux-x64', 'linux-arm64', 'linux-musl-x64', 'linux-musl-arm64',
         'osx-x64', 'osx-arm64', 'win-x64', 'win-arm64')
@@ -76,7 +83,43 @@ BIG_ENDIAN_CONTROL = {'file': 'sql_order.json', 'find': '"sql": "000000000000008
                       'replace': '"sql": "01000000000000808000000000000000"',
                       'test': 'conformance', 'fails': 'sql_order'}
 WHEELS = 17
+COMPANION_KEYS = {'repo', 'commit', 'run'}
 CONFIG_PATH = '.github/hyper.json'
+
+
+@dataclass(frozen=True)
+class Companion:
+    name: str
+    repo: str
+    commit: str
+    run: int
+
+    @property
+    def package(self):
+        """The Packagist package PIE installs: the repo, lowercased."""
+        return self.repo.lower()
+
+
+def parse_companions(block):
+    where = f'{CONFIG_PATH} companions'
+    if not isinstance(block, dict):
+        raise ValueError(f'{where} must be an object of crate name -> pin')
+    companions = {}
+    for name, pin in block.items():
+        here = f'{where}.{name}'
+        if not isinstance(name, str) or not re.fullmatch('[a-z][a-z0-9_]*', name):
+            raise ValueError(f'{where}: key {name!r} must be a lowercase crate name')
+        if not isinstance(pin, dict) or set(pin) != COMPANION_KEYS:
+            raise ValueError(f'{here} needs exactly repo, commit and run (got {sorted(pin) if isinstance(pin, dict) else pin!r})')
+        if not isinstance(pin['repo'], str) or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', pin['repo']):
+            raise ValueError(f'{here}.repo must be owner/name')
+        if not isinstance(pin['commit'], str) or not re.fullmatch('[0-9a-f]{40}', pin['commit']):
+            raise ValueError(f'{here}.commit must be 40 lowercase hex characters')
+        run = pin['run']
+        if isinstance(run, bool) or not isinstance(run, int) or run < 1:
+            raise ValueError(f'{here}.run must be a positive integer')
+        companions[name] = Companion(name, pin['repo'], pin['commit'], run)
+    return companions
 
 
 class HyperConfig:
@@ -132,6 +175,7 @@ class HyperConfig:
         self.swift_targets = tuple(data.get('swift_targets', SWIFT_TARGETS))
         self.xcframework_slices = tuple(data.get('xcframework_slices', XCFRAMEWORK_SLICES))
         self.version_files = data.get('version_files') or self.default_version_files()
+        self.companions = parse_companions(data['companions']) if 'companions' in data else {}
 
     @classmethod
     def load(cls, root):
@@ -307,6 +351,49 @@ def shell(cfg):
     return '\n'.join(lines) + '\n'
 
 
+def load_companions(root):
+    """Only the `companions` block of root's .github/hyper.json, validated as HyperConfig does.
+    The rest of the file is not read for validity: a tagged hyper.json that predates a newer
+    Forge rule must still yield its pins."""
+    path = Path(root) / CONFIG_PATH
+    if not path.is_file():
+        raise ValueError(f'{path} is missing: every Hyper* repository describes itself there')
+    data = json.loads(path.read_text(encoding='utf-8'))
+    return parse_companions(data['companions']) if 'companions' in data else {}
+
+
+def check_php_companions(cfg, names):
+    """The PHP build's `php_companions` input: every name must be in the block. No-op without
+    a block; an empty input is accepted with one, since the block then supplies the list."""
+    if not cfg.companions:
+        return
+    missing = [n for n in names.split() if n not in cfg.companions]
+    if missing:
+        raise ValueError(f'{CONFIG_PATH} companions has no {", ".join(missing)}, which php_companions '
+                         f'names (the block has: {" ".join(cfg.companions)})')
+
+
+def check_pie_companions(cfg, packages):
+    """The PIE acceptance's `companions` input: a non-empty list must equal the block's names
+    (owner/ dropped, lowercased). No-op without a block or with an empty list."""
+    if not cfg.companions or not packages.split():
+        return
+    got = sorted(p.rsplit('/', 1)[-1].lower() for p in packages.split())
+    if got != sorted(cfg.companions):
+        raise ValueError(f'the companions input {packages!r} differs from {CONFIG_PATH} companions '
+                         f'({" ".join(sorted(cfg.companions))})')
+
+
+def effective_php_companions(cfg, names):
+    """What the PHP build executes: the block's names when there is a block, else the input."""
+    return ' '.join(cfg.companions) if cfg.companions else names
+
+
+def effective_pie_companions(cfg, packages):
+    """What the PIE acceptance installs first: the block's Packagist packages, else the input."""
+    return ' '.join(c.package for c in cfg.companions.values()) if cfg.companions else packages
+
+
 def corrupt_corpus(cfg, root):
     """Apply big_endian_control's corruption to the checkout's corpus; return its test and
     the test that must fail. Refuses when `find` is not in the file, so a moved vector fails
@@ -341,10 +428,28 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('mode', choices=('shell', 'json', 'version-files', 'bump', 'corrupt-corpus'))
+    parser.add_argument('mode', choices=('shell', 'json', 'version-files', 'bump', 'corrupt-corpus',
+                                         'check-php-companions', 'check-pie-companions',
+                                         'effective-php-companions', 'effective-pie-companions'))
     parser.add_argument('--root', type=Path, default=Path('.'))
     parser.add_argument('--version', help='bump: the bare X.Y.Z every version file is set to')
+    parser.add_argument('--names', default='', help='the php_companions input (crate names)')
+    parser.add_argument('--packages', default='', help="the PIE acceptance's companions input (packages)")
     args = parser.parse_args()
+    if args.mode.endswith('-companions'):
+        cfg = types.SimpleNamespace(companions=load_companions(args.root))
+        php = args.mode.endswith('php-companions')
+        given = args.names if php else args.packages
+        if args.mode.startswith('check'):
+            (check_php_companions if php else check_pie_companions)(cfg, given)
+        else:
+            value = (effective_php_companions if php else effective_pie_companions)(cfg, given)
+            line = f'companions={value}\nhas_block={"true" if cfg.companions else "false"}\n'
+            if os.environ.get('GITHUB_OUTPUT'):
+                with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+                    output.write(line)
+            print(line, end='')
+        return
     cfg = HyperConfig.load(args.root)
     if args.mode == 'shell':
         print(shell(cfg), end='')
@@ -370,4 +475,8 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except ValueError as error:
+        print(f'::error::{error}', file=sys.stderr)
+        sys.exit(1)

@@ -1,0 +1,78 @@
+{
+  "version": "1",
+  "pip_version": "26.2.2",
+  "install": [
+    {
+      "download_info": {
+        "url": "file://@ROOT@/.companions/hypercast-artifacts/pypi-wheels-osx-arm64/hypercast-1.0.0-cp311-abi3-macosx_11_0_arm64.whl",
+        "archive_info": {
+          "hashes": {
+            "sha256": "6760396926cb6ca03058153982f124b420d7876a8215cc54031be403d0418b33"
+          },
+          "hash": "sha256=6760396926cb6ca03058153982f124b420d7876a8215cc54031be403d0418b33"
+        }
+      },
+      "is_direct": false,
+      "is_yanked": false,
+      "requested": true,
+      "metadata": {
+        "metadata_version": "2.4",
+        "name": "hypercast",
+        "version": "1.0.0",
+        "summary": "Allocation-free scalar parsing \u2014 booleans, numerics, UUIDs, temporals \u2014 as a Success/Fault verdict union (value or reason + offending span, never an exception). A PyO3 native extension linking a Rust core directly into CPython \u2014 no runtime bridge, no compiler needed to install on supported platforms, no dependencies.",
+        "description_content_type": "text/markdown; charset=UTF-8; variant=GFM",
+        "keywords": [
+          "parsing",
+          "ffi",
+          "verdict",
+          "rfc3339",
+          "pyo3"
+        ],
+        "author": "Brian Buvinghausen",
+        "license_expression": "MIT",
+        "license_file": [
+          "LICENSE"
+        ],
+        "classifier": [
+          "Development Status :: 3 - Alpha",
+          "Environment :: WebAssembly :: Emscripten",
+          "Intended Audience :: Developers",
+          "Programming Language :: Python :: 3",
+          "Programming Language :: Python :: Free Threading :: 3 - Stable",
+          "Programming Language :: Python :: Implementation :: CPython",
+          "Programming Language :: Rust",
+          "Topic :: Software Development :: Libraries :: Python Modules",
+          "Typing :: Typed"
+        ],
+        "requires_dist": [
+          "pyperf>=2.10.0 ; extra == 'bench'",
+          "pytest>=9.1.1 ; extra == 'test'",
+          "mypy>=2.4.0 ; extra == 'test'"
+        ],
+        "requires_python": ">=3.11",
+        "project_url": [
+          "Homepage, https://github.com/SkunkWerkx/HyperCast",
+          "Issues, https://github.com/SkunkWerkx/HyperCast/issues",
+          "Repository, https://github.com/SkunkWerkx/HyperCast"
+        ],
+        "provides_extra": [
+          "bench",
+          "test"
+        ]
+      }
+    }
+  ],
+  "environment": {
+    "implementation_name": "cpython",
+    "implementation_version": "3.14.10",
+    "os_name": "posix",
+    "platform_machine": "arm64",
+    "platform_release": "27.2.0",
+    "platform_system": "Darwin",
+    "platform_version": "Darwin Kernel Version 27.2.0: Wed Oct 14 23:45:26 PDT 2026; root:xnu-13432.41.4~25/RELEASE_ARM64_T8152",
+    "python_full_version": "3.14.10",
+    "platform_python_implementation": "CPython",
+    "python_version": "3.14",
+    "sys_platform": "darwin"
+  }
+}

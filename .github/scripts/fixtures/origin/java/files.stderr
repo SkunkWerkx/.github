@@ -1,0 +1,17 @@
+
+FAILURE: Build failed with an exception.
+
+* Where:
+Initialization script '@HOME@/.gradle/init.d/companions.gradle' line: 107
+
+* What went wrong:
+Execution failed for task ':companionOrigin' (registered in initialization script '@HOME@/.gradle/init.d/companions.gradle').
+> Java (:): found io.github.skunkwerkx:hypercast:1.0.0 from @HOME@/central/hypercast-1.0.0.jar (sha256 2acd78c17c1f2793b89c2c80c2502b3fcb916f790d7b01633de7e96bef869805), io.github.skunkwerkx:hypercast:1.0.0 from @HOME@/central/hypercast-1.0.0.jar (sha256 2acd78c17c1f2793b89c2c80c2502b3fcb916f790d7b01633de7e96bef869805), expected io.github.skunkwerkx:hypercast:1.0.0 from @ROOT@/.companions/m2 (the pin, sha256 @SHA256@)
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 1s

@@ -121,6 +121,26 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      # A pinned companion: its c-packages-ci archives, unpacked into .companions/, and
+      # <NAME>_PACKAGES pointing c/smoke/<name>.sh at them in place of its GitHub Release.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-c.yml:smoke:${{ matrix.rid }}
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -168,6 +188,15 @@ jobs:
           fi
           arch -x86_64 /usr/bin/true
 
+      # The pin's archives are the ones c/smoke/<name>.sh reports for every platform, on the
+      # runner (Alpine's smoke proves its own again in the container).
+      - name: The smoke takes the pinned companion
+        if: ${{ steps.unpack.outputs.skip != 'true' && steps.companions.outputs.active == 'true' }}
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+          RID: ${{ matrix.rid }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py c --root . --installed --rid "$RID"'
+
       # SMOKE_CXX: every runner's compiler has C++23's <expected>, so the C++ header's build
       # is required, never skipped.
       - name: Smoke-test the ${{ matrix.rid }} archive
@@ -179,9 +208,11 @@ jobs:
           VERSION: ${{ steps.unpack.outputs.version }}
         run: c/smoke/run.sh "$PACKAGE" "$VERSION"
 
-      # musl: in Alpine, where the archive's libraries are the platform's own.
+      # musl: in Alpine, where the archive's libraries are the platform's own. With a pinned
+      # companion, its twin below: the host's <NAME>_PACKAGES names a runner path, so
+      # companion_c sets the container's and proves it there first.
       - name: Smoke-test the ${{ matrix.rid }} archive on Alpine
-        if: matrix.alpine
+        if: ${{ matrix.alpine && steps.companions.outputs.active != 'true' }}
         env:
           PACKAGE: ${{ steps.unpack.outputs.dir }}
           VERSION: ${{ steps.unpack.outputs.version }}
@@ -189,12 +220,42 @@ jobs:
           docker run --rm -v "$PWD:/work" -w /work -e PACKAGE -e VERSION -e SMOKE_CXX=1 alpine:3.22 sh -c \
             'apk add -q bash build-base cmake pkgconf && bash c/smoke/run.sh "$PACKAGE" "$VERSION"'
 
+      - name: Smoke-test the ${{ matrix.rid }} archive on Alpine, the companion pinned
+        if: ${{ matrix.alpine && steps.companions.outputs.active == 'true' }}
+        env:
+          PACKAGE: ${{ steps.unpack.outputs.dir }}
+          VERSION: ${{ steps.unpack.outputs.version }}
+          RID: ${{ matrix.rid }}
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work -e PACKAGE -e VERSION -e RID -e SMOKE_CXX=1 alpine:3.22 sh -c \
+            'apk add -q bash build-base cmake pkgconf && . /work/.hyperforge/.github/scripts/companion_container.sh && companion_c /work "$RID" && bash c/smoke/run.sh "$PACKAGE" "$VERSION"'
+
   smoke-apple-mobile:
     needs: pack
     if: inputs.smokes
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      # A pinned companion: its c-packages-ci archives, unpacked into .companions/, and
+      # <NAME>_PACKAGES pointing c/smoke/<name>.sh at them in place of its GitHub Release.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-c.yml:smoke-apple-mobile
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -239,6 +300,14 @@ jobs:
           sys.exit("no available iPhone simulator on this image")')
           xcrun simctl boot "$udid"
           xcrun simctl bootstatus "$udid" -b
+
+      - name: The smoke takes the pinned companion
+        if: steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: >-
+          "$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py c --root . --installed --rid ios-arm64
+          --rid iossimulator-arm64 --rid maccatalyst-arm64 --rid maccatalyst-x64
 
       - name: Smoke-test the Apple mobile archives
         env:

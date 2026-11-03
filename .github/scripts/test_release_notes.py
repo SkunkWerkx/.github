@@ -77,7 +77,8 @@ class ReleaseNotesTests(unittest.TestCase):
                                       dict(path='cran/hyperuuid_1.0.0.tar.gz', location='packages')]
         body = ' '.join(notes.notes(CHANGELOG, {**INVENTORY, 'files': files}).split())
         self.assertIn('every registry package (NuGet, RubyGems, PyPI, crates.io, Maven Central and npm), '
-                      'a CRAN source tarball the maintainer submits by hand, the 1 native', body)
+                      'a CRAN source tarball, attached below for `url::` installs while CRAN reviews it '
+                      'and submitted to CRAN by hand, the 1 native', body)
         self.assertIn('all 6 of them', body)
 
     def test_sibling_text_is_unchanged_without_npm(self):

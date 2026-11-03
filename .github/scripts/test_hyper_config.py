@@ -286,6 +286,120 @@ class HyperConfigTests(unittest.TestCase):
             text=True).strip()
         self.assertEqual(out, f'{crate}_jni.dll lib{crate}_jni.dylib 8')
 
+    # The companions block: the pins HyperTabular-style consumers hold on their companions.
+    PIN = {'repo': 'SkunkWerkx/HyperCast', 'commit': 'a' * 40, 'run': 123}
+
+    def with_block(self, **overrides):
+        return {**MINIMAL, 'companions': {'hypercast': {**self.PIN, **overrides}}}
+
+    def test_companions_absent_is_empty(self):
+        self.assertEqual(hyper_config.HyperConfig(MINIMAL).companions, {})
+
+    def test_companions_valid(self):
+        cfg = hyper_config.HyperConfig(self.with_block())
+        self.assertEqual(cfg.companions, {'hypercast': hyper_config.Companion(
+            'hypercast', 'SkunkWerkx/HyperCast', 'a' * 40, 123)})
+        # No shell variable: every reader takes the block through an effective-* mode, and the
+        # scripts that eval `shell` never read one (a lowercase name would shadow their own).
+        self.assertNotIn('companions', hyper_config.shell(cfg))
+
+    def assert_rejected(self, data):
+        with self.assertRaisesRegex(ValueError, r'\.github/hyper\.json.*companions'):
+            hyper_config.HyperConfig(data)
+
+    def test_companions_rejects_a_repo_without_a_slash(self):
+        self.assert_rejected(self.with_block(repo='HyperCast'))
+
+    def test_companions_rejects_a_short_commit(self):
+        self.assert_rejected(self.with_block(commit='a' * 39))
+
+    def test_companions_rejects_an_uppercase_commit(self):
+        self.assert_rejected(self.with_block(commit='A' * 40))
+
+    def test_companions_rejects_run_zero(self):
+        self.assert_rejected(self.with_block(run=0))
+
+    def test_companions_rejects_a_string_run(self):
+        self.assert_rejected(self.with_block(run='1'))
+
+    def test_companions_rejects_an_extra_key(self):
+        self.assert_rejected(self.with_block(branch='main'))
+
+    def test_php_companion_not_in_block(self):
+        cfg = hyper_config.HyperConfig(self.with_block())
+        hyper_config.check_php_companions(cfg, 'hypercast')
+        with self.assertRaisesRegex(ValueError, r'\.github/hyper\.json.*companions.*hyperuuid'):
+            hyper_config.check_php_companions(cfg, 'hypercast hyperuuid')
+        # No block: no-op, whatever the input.
+        hyper_config.check_php_companions(hyper_config.HyperConfig(MINIMAL), 'anything')
+
+    def test_pie_list_must_equal_block(self):
+        cfg = hyper_config.HyperConfig(self.with_block())
+        hyper_config.check_pie_companions(cfg, 'skunkwerkx/hypercast')
+        hyper_config.check_pie_companions(cfg, 'SkunkWerkx/HyperCast')
+        for bad in ('skunkwerkx/hyperuuid', 'skunkwerkx/hypercast skunkwerkx/hyperuuid'):
+            with self.subTest(bad):
+                with self.assertRaisesRegex(ValueError, r'\.github/hyper\.json.*companions'):
+                    hyper_config.check_pie_companions(cfg, bad)
+        hyper_config.check_pie_companions(hyper_config.HyperConfig(MINIMAL), 'anything/else')
+
+    def test_php_check_ignores_absent_pie_list(self):
+        cfg = hyper_config.HyperConfig(self.with_block())
+        hyper_config.check_php_companions(cfg, 'hypercast')
+
+    def test_empty_inputs_with_block_pass(self):
+        cfg = hyper_config.HyperConfig(self.with_block())
+        hyper_config.check_php_companions(cfg, '')
+        hyper_config.check_pie_companions(cfg, '')
+
+    def test_effective_lists_come_from_the_block(self):
+        cfg = hyper_config.HyperConfig(self.with_block())
+        self.assertEqual(hyper_config.effective_php_companions(cfg, ''), 'hypercast')
+        self.assertEqual(hyper_config.effective_php_companions(cfg, 'hypercast'), 'hypercast')
+        self.assertEqual(hyper_config.effective_pie_companions(cfg, ''), 'skunkwerkx/hypercast')
+        self.assertEqual(hyper_config.effective_pie_companions(cfg, 'skunkwerkx/hypercast'), 'skunkwerkx/hypercast')
+
+    def test_effective_lists_fall_back_to_inputs_without_block(self):
+        cfg = hyper_config.HyperConfig(MINIMAL)
+        self.assertEqual(hyper_config.effective_php_companions(cfg, 'hypercast'), 'hypercast')
+        self.assertEqual(hyper_config.effective_pie_companions(cfg, 'skunkwerkx/hypercast'), 'skunkwerkx/hypercast')
+        self.assertEqual(hyper_config.effective_php_companions(cfg, ''), '')
+
+    def test_load_companions_reads_only_the_block(self):
+        # A hyper.json invalid elsewhere (a rule newer than the tag) still yields its block.
+        write_config(self.root, {'crate': 'Not Valid', 'companions': self.with_block()['companions']})
+        with self.assertRaises(ValueError):
+            hyper_config.HyperConfig.load(self.root)
+        self.assertEqual(hyper_config.load_companions(self.root), hyper_config.HyperConfig(self.with_block()).companions)
+        write_config(self.root, {'crate': 'Not Valid'})
+        self.assertEqual(hyper_config.load_companions(self.root), {})
+        write_config(self.root, {'companions': {'hypercast': {**self.PIN, 'run': 0}}})
+        with self.assertRaisesRegex(ValueError, r'\.github/hyper\.json.*companions'):
+            hyper_config.load_companions(self.root)
+        out = self.root / 'out'
+        write_config(self.root, {'crate': 'Not Valid', 'companions': self.with_block()['companions']})
+        subprocess.run([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'effective-php-companions',
+                        '--root', str(self.root), '--names='], check=True, env={'GITHUB_OUTPUT': str(out)})
+        self.assertEqual(out.read_text(), 'companions=hypercast\nhas_block=true\n')
+
+    def test_subcommands_write_companions_and_has_block_to_github_output(self):
+        write_config(self.root, self.with_block())
+        out = self.root / 'out'
+        for sub, flag, given, want in (('effective-php-companions', '--names', '', 'hypercast'),
+                                       ('effective-pie-companions', '--packages', '', 'skunkwerkx/hypercast'),
+                                       ('check-php-companions', '--names', 'hypercast', None)):
+            with self.subTest(sub):
+                out.write_text('')
+                subprocess.run([sys.executable, str(SCRIPTS / 'hyper_config.py'), sub, '--root', str(self.root), flag, given],
+                               check=True, env={'GITHUB_OUTPUT': str(out), 'PATH': '/usr/bin:/bin'})
+                if want is not None:
+                    self.assertEqual(out.read_text(), f'companions={want}\nhas_block=true\n')
+        bad = subprocess.run([sys.executable, str(SCRIPTS / 'hyper_config.py'), 'check-pie-companions',
+                              '--root', str(self.root), '--packages', 'skunkwerkx/other'],
+                             capture_output=True, text=True)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn('hyper.json', bad.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

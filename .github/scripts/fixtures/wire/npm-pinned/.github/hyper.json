@@ -1,0 +1,15 @@
+{
+  "crate": "hypercast",
+  "project": "HyperCast",
+  "exports": {
+    "sources": ["rust/src/ffi.rs"],
+    "patterns": ["pub extern \"C\" fn (\\w+)"],
+    "prefixes": ["cast_", "hypercast_"]
+  },
+  "cdylib_smoke": ".github/scripts/cdylib_smoke.py",
+  "sdist": true,
+  "swift_remote": true,
+  "c_assets": true,
+  "big_endian_control": {"file": "uuid.json", "find": "\"value\": \"0102030405060708090a0b0c0d0e0f10\"", "replace": "\"value\": \"0102030405060708090a0b0c0d0e0f11\"", "test": "conformance", "fails": "uuid_corpus"},
+  "r_corpus": ["boolean.json", "char.json", "date.json", "date_order.json", "datetime.json", "decimal.json", "duration.json", "excel_serial.json", "integer.json", "real.json", "time.json", "timestamp.json", "typed.json", "unix.json", "uuid.json"]
+}

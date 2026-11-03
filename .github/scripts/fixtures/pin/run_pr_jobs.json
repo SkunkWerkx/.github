@@ -1,0 +1,462 @@
+[
+ {
+  "name": "changes",
+  "conclusion": "success"
+ },
+ {
+  "name": "build-static / build-static-libs",
+  "conclusion": "success"
+ },
+ {
+  "name": "lint-ruby / lint",
+  "conclusion": "success"
+ },
+ {
+  "name": "build-android / build-native-android (android-x64, x86_64-linux-android, CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER...",
+  "conclusion": "success"
+ },
+ {
+  "name": "core / core-musl (ubuntu-26.04, linux-musl-x64, x86_64-unknown-linux-musl)",
+  "conclusion": "success"
+ },
+ {
+  "name": "core / core-musl (ubuntu-26.04-arm, linux-musl-arm64, aarch64-unknown-linux-musl)",
+  "conclusion": "success"
+ },
+ {
+  "name": "core / core (ubuntu-26.04, linux-x64, libhypercast.so, x86_64-unknown-linux-gnu, 2_28, x86_64-unknown-li...",
+  "conclusion": "success"
+ },
+ {
+  "name": "build-android / build-native-android (android-arm64, aarch64-linux-android, CARGO_TARGET_AARCH64_LINUX_ANDROID_LI...",
+  "conclusion": "success"
+ },
+ {
+  "name": "lint-java / lint",
+  "conclusion": "success"
+ },
+ {
+  "name": "core / core (windows-11-vs2026-arm, win-arm64, hypercast.dll, aarch64-pc-windows-msvc, aarch64-pc-window...",
+  "conclusion": "success"
+ },
+ {
+  "name": "lint-swift / lint",
+  "conclusion": "success"
+ },
+ {
+  "name": "core / core (ubuntu-26.04-arm, linux-arm64, libhypercast.so, aarch64-unknown-linux-gnu, 2_28, aarch64-un...",
+  "conclusion": "success"
+ },
+ {
+  "name": "build-wheels / build-pyodide-wheel",
+  "conclusion": "success"
+ },
+ {
+  "name": "core / core (xcode-27, osx-arm64, libhypercast.dylib, aarch64-apple-darwin, aarch64-apple-darwin)",
+  "conclusion": "success"
+ },
+ {
+  "name": "lint-csharp / lint",
+  "conclusion": "success"
+ },
+ {
+  "name": "lint-python / lint",
+  "conclusion": "success"
+ },
+ {
+  "name": "core / core (windows-2025-vs2026, win-x64, hypercast.dll, x86_64-pc-windows-msvc, x86_64-pc-windows-msvc)",
+  "conclusion": "success"
+ },
+ {
+  "name": "core-checks / checks (windows-2025-vs2026, win)",
+  "conclusion": "success"
+ },
+ {
+  "name": "build-wasm / test-go-wasm",
+  "conclusion": "success"
+ },
+ {
+  "name": "build-wasm / build-wasm",
+  "conclusion": "success"
+ },
+ {
+  "name": "build-wasm / test-rust-browser",
+  "conclusion": "success"
+ },
+ {
+  "name": "core-checks / checks (ubuntu-26.04, x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "core-checks / checks (ubuntu-26.04-arm, arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "build-wheels / sdist-config",
+  "conclusion": "success"
+ },
+ {
+  "name": "lint-go-full / lint",
+  "conclusion": "success"
+ },
+ {
+  "name": "lint-r / lint",
+  "conclusion": "success"
+ },
+ {
+  "name": "lint-go / lint",
+  "conclusion": "success"
+ },
+ {
+  "name": "build-wasm / build-node-wasi",
+  "conclusion": "success"
+ },
+ {
+  "name": "lint-php / lint",
+  "conclusion": "success"
+ },
+ {
+  "name": "lint-typescript / lint",
+  "conclusion": "success"
+ },
+ {
+  "name": "build-wheels / build-wheels",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "core / core-osx-x64",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "build-wasm / build-ruby-wasm",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "build-wheels / build-sdist",
+  "conclusion": "success"
+ },
+ {
+  "name": "build-wasm / test-blazor",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-android",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "test-go / test (windows-11-vs2026-arm, win-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-go / test (ubuntu-26.04, linux-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-go / test (xcode-27, osx-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-go / test-musl (ubuntu-26.04, linux-musl-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-go / test-musl (ubuntu-26.04-arm, linux-musl-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-go / test (ubuntu-26.04-arm, linux-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-go / test (windows-2025-vs2026, win-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "build-wheels / sdist-fallthrough (3.14t)",
+  "conclusion": "success"
+ },
+ {
+  "name": "build-wheels / sdist-fallthrough (pypy3.11)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-nuget-package",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-csharp / test-musl (ubuntu-26.04, linux-musl-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-csharp / test-musl (ubuntu-26.04-arm, linux-musl-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-csharp / test (ubuntu-26.04, linux-x64, libhypercast.so)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-csharp / test (xcode-27, osx-arm64, libhypercast.dylib)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-python / test-musl (ubuntu-26.04, linux-musl-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-csharp / test (windows-2025-vs2026, win-x64, hypercast.dll)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-swift / test (xcode-27, osx-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-swift / test (ubuntu-26.04, linux-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-csharp / test (windows-11-vs2026-arm, win-arm64, hypercast.dll)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-swift / test (windows-2025-vs2026, win-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-swift / test (ubuntu-26.04-arm, linux-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-python / test-musl (ubuntu-26.04-arm, linux-musl-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-csharp / test (ubuntu-26.04-arm, linux-arm64, libhypercast.so)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-swift / test (windows-11-vs2026-arm, win-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-python / test (ubuntu-26.04, linux-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-python / test (ubuntu-26.04-arm, linux-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-python / test (xcode-27, osx-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-ruby / test-musl (ubuntu-26.04-arm, linux-musl-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-python / test (windows-11-vs2026-arm, win-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-php / version",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-java / test-musl (ubuntu-26.04, linux-musl-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-ruby / test (ubuntu-26.04, linux-x64, libhypercast.so)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-python / test (windows-2025-vs2026, win-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-ruby / test (xcode-27, osx-arm64, libhypercast.dylib)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-ruby / test-musl (ubuntu-26.04, linux-musl-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-typescript / test-musl (ubuntu-26.04, linux-musl-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "pack-c / pack",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-ruby / test (windows-2025-vs2026, win-x64, hypercast.dll)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-ruby / test (ubuntu-26.04-arm, linux-arm64, libhypercast.so)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-java / test-musl (ubuntu-26.04-arm, linux-musl-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-java / test (ubuntu-26.04, linux-x64, libhypercast.so, libhypercast_jni.so, temurin)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-typescript / test (ubuntu-26.04, linux-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-typescript / test-musl (ubuntu-26.04-arm, linux-musl-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-typescript / test (ubuntu-26.04-arm, linux-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-typescript / test (windows-11-vs2026-arm, win-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-java / test (windows-11-vs2026-arm, win-arm64, hypercast.dll, hypercast_jni.dll, microsoft)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-typescript / test (xcode-27, osx-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-ruby / test (windows-11-vs2026-arm, win-arm64, hypercast.dll)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-typescript / test (windows-2025-vs2026, win-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-java / test (xcode-27, osx-arm64, libhypercast.dylib, libhypercast_jni.dylib, temurin)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-java / test (windows-2025-vs2026, win-x64, hypercast.dll, hypercast_jni.dll, temurin)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-r / test (xcode-27, osx-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-r / test (ubuntu-26.04-arm, linux-arm64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-r / test (ubuntu-26.04, linux-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-r / test (windows-2025-vs2026, win-x64)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-java / test (ubuntu-26.04-arm, linux-arm64, libhypercast.so, libhypercast_jni.so, temurin)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-java / test-osx-x64",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "test-typescript / test-osx-x64",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "test-php / linux-x64 PHP 8.5",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-php / win-x64 PHP 8.3",
+  "conclusion": "success"
+ },
+ {
+  "name": "pack-c / smoke",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "pack-c / smoke-apple-mobile",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "test-apple-mobile",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "test-npm-package (windows-2025-vs2026)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-npm-package (xcode-27)",
+  "conclusion": "success"
+ },
+ {
+  "name": "test-npm-package (ubuntu-26.04)",
+  "conclusion": "success"
+ },
+ {
+  "name": "crate-pack",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "forge",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "c-pack",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "pr-board",
+  "conclusion": "success"
+ },
+ {
+  "name": "maven-pack",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "ruby-pack",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "pypi-pack",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "nuget-org-pack",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "npm-pack",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "codeql",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "release-prepare",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "r-pack",
+  "conclusion": "skipped"
+ },
+ {
+  "name": "stage-release",
+  "conclusion": "skipped"
+ }
+]

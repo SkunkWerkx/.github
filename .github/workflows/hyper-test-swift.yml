@@ -154,11 +154,32 @@ jobs:
           path: ${{ runner.tool_cache }}/swift-*
           key: ${{ steps.swift_toolcache_key.outputs.key }}
 
+      # After every leg's Swift (the fetch's own proof runs `swift package show-dependencies`).
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-swift.yml:test:${{ matrix.rid }}
+
+      # A pinned companion: the package graph takes the pin by path, and a fresh verbose build
+      # links the archives extracted from its swift-release-assets, before each build below.
+      - name: The suite takes the pinned companion
+        if: steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py swift --root . --dir swift --installed'
+
       # The Swift binding links the core in on every platform, from its artifact bundle, which
       # the static-libs download above filled with this commit's archives.
       - name: Test Swift bindings, the core linked in
         working-directory: swift
         run: swift test
+
+      - name: The pre-6.4 build system's link takes the pinned companion
+        if: matrix.rid == 'win-x64' && steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py swift --root . --dir swift --installed --build-system native'
 
       # Swift 6.4 made Swift Build SwiftPM's default build system; consumers on 6.2 and 6.3
       # still get the one before it, which links a binary target's archive differently: it
@@ -171,6 +192,12 @@ jobs:
         if: matrix.rid == 'win-x64'
         working-directory: swift
         run: swift test --build-system native
+
+      - name: The root manifest takes the pinned companion
+        if: steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py swift --root . --dir . --installed'
 
       # The manifest a consumer's `.package(url:)` actually resolves is the one at the repo
       # root, and `swift test` above runs swift/Package.swift, a different file that merely

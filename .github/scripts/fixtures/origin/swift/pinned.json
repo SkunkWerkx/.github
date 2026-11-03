@@ -1,0 +1,26 @@
+{
+  "identity": "swift",
+  "name": "HyperTabular",
+  "url": "@ROOT@/swift",
+  "version": "unspecified",
+  "path": "@ROOT@/swift",
+  "traits": [
+    "default"
+  ],
+  "dependencies": [
+    {
+      "identity": "hypercast",
+      "name": "HyperCast",
+      "url": "@ROOT@/.companions/hypercast",
+      "version": "unspecified",
+      "path": "@ROOT@/.companions/hypercast",
+      "traits": [
+        "default"
+      ],
+      "dependencies": [
+
+      ]
+    }
+  ]
+}
+

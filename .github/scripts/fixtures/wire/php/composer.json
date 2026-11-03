@@ -1,0 +1,28 @@
+{
+    "name": "skunkwerkx/hypertabular",
+    "description": "Delimited text (CSV, TSV) and workbooks (XLSX, ODS, Numbers) read a batch at a time into typed columns, every cell a HyperCast Success/Fault verdict — a PHP extension over a Rust core, installed with PIE.",
+    "type": "php-ext",
+    "keywords": ["csv", "tsv", "xlsx", "ods", "parser", "tabular", "validation", "extension", "rust"],
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Brian Buvinghausen"
+        }
+    ],
+    "homepage": "https://github.com/SkunkWerkx/HyperTabular",
+    "support": {
+        "issues": "https://github.com/SkunkWerkx/HyperTabular/issues",
+        "source": "https://github.com/SkunkWerkx/HyperTabular"
+    },
+    "require": {
+        "php": ">=8.3",
+        "ext-hypercast": "^1.1"
+    },
+    "php-ext": {
+        "extension-name": "hypertabular",
+        "support-nts": true,
+        "support-zts": false,
+        "download-url-method": ["pre-packaged-binary"],
+        "os-families": ["linux", "darwin", "windows"]
+    }
+}

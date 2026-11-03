@@ -1,0 +1,17 @@
+<Project>
+
+	<PropertyGroup>
+		<!-- .NET 10 and 11, from one source, as for HyperCast. Every cell comes back as
+		     HyperCast's Verdict, a native discriminated union: C# 15 (LangVersion preview, on
+		     either SDK) consumes it on net10.0 too, through the polyfill HyperCast's net10.0
+		     assembly carries. CS8509 (non-exhaustive switch expression) is elevated to an error
+		     so an unhandled disposition is a build failure rather than a review nit. The mobile
+		     smoke tests, the gate probe and the benchmarks set their own frameworks. -->
+		<TargetFrameworks>net10.0;net11.0</TargetFrameworks>
+		<LangVersion>preview</LangVersion>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<WarningsAsErrors>$(WarningsAsErrors);CS8509</WarningsAsErrors>
+	</PropertyGroup>
+
+</Project>

@@ -48,7 +48,8 @@ REGISTRIES = ('nuget', 'ruby', 'pypi', 'crate', 'maven', 'npm')
 # inventory: with swift_remote, the two Swift zips the root Package.swift names (built at A);
 # with c_assets, one C archive per platform (packed at B); and the PHP extension's PIE zips, one
 # per platform and PHP minor (built and attested at A, in the ci.yml run), which PIE downloads
-# from the Release.
+# from the Release. The `cran` tarball is attached too (cran_assets), between the C archives and
+# the PIE zips: a consumer's release installs the companion's R package from it by url::.
 RELEASE_ASSET_GROUPS = ('github', 'c', 'php')
 INVENTORY_GROUPS = REGISTRIES + ('cran',) + RELEASE_ASSET_GROUPS
 # Built and attested by the Forge at A, in the ci.yml run, rather than packed at B.
@@ -475,14 +476,39 @@ def nuget_finalized(root):
     confirm_registry(check,attempts=60,pause=lambda:time.sleep(20))
 
 
+def cran_assets(inventory, version):
+    """The CRAN source tarball the inventory lists, as the preserved file the Release attaches:
+    exactly `cran/<crate>_<version>.tar.gz`, present, and nothing else in cran/. A listed tarball
+    that is missing, or a file there the inventory doesn't list (never verified), is an error."""
+    data = json.loads(inventory.read_text())
+    listed = sorted(e['path'] for e in data.get('files') or [] if str(e.get('path', '')).startswith('cran/'))
+    held = sorted(f'cran/{p.name}' for p in (inventory.parent / 'cran').glob('*'))
+    if listed and listed != [f'cran/{data.get("crate")}_{version}.tar.gz']:
+        raise ValueError(f'the inventory lists {", ".join(listed)}, not cran/{data.get("crate")}_{version}.tar.gz: '
+                         'the R source tarball the GitHub Release attaches')
+    missing = sorted(set(listed) - set(held))
+    if missing:
+        raise ValueError(f'the inventory lists {", ".join(missing)}, but the preserved packages have no such file: the '
+                         'GitHub Release cannot attach the R tarball consumers install by url::')
+    unlisted = sorted(set(held) - set(listed))
+    if unlisted:
+        raise ValueError(f'{", ".join(unlisted)} is in the preserved packages but not the inventory: an unverified file '
+                         'is never attached')
+    return [inventory.parent / path for path in listed]
+
+
 def finalize(repo, version, subject, inventory, notes=None):
     """Create only missing Go tag/Release; reject an existing different subject.
 
     `notes` is the release body release_notes.py wrote from the CHANGELOG; without it the
-    Release gets GitHub's generated notes. The Release carries the inventory and every file
-    under the packages' `github/`, `c/` and `php/` groups, each byte-identical to a copy already there."""
-    assets = [inventory, *(path for group in RELEASE_ASSET_GROUPS
-                           for path in sorted((inventory.parent / group).glob('*')))]
+    Release gets GitHub's generated notes. The Release carries the inventory, every file under
+    the packages' `github/` and `c/` groups, the CRAN source tarball the inventory lists (the R
+    jobs of a consumer's release install it by url::, the spec's "R in release mode") and the
+    `php/` group, each byte-identical to a copy already there."""
+    assets = [inventory, *(path for group in RELEASE_ASSET_GROUPS[:2]
+                           for path in sorted((inventory.parent / group).glob('*'))),
+              *cran_assets(inventory, version),
+              *sorted((inventory.parent / RELEASE_ASSET_GROUPS[2]).glob('*'))]
     def remote_ref(tag):
         output = subprocess.check_output(['git','ls-remote','origin',f'refs/tags/{tag}',f'refs/tags/{tag}^{{}}'],text=True)
         records = dict(line.split()[::-1] for line in output.splitlines())

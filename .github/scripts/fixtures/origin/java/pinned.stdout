@@ -1,0 +1,9 @@
+companion-origin	:	io.github.skunkwerkx:hypercast:1.0.0	@ROOT@/.companions/m2/io/github/skunkwerkx/hypercast/1.0.0/hypercast-1.0.0.jar	@SHA256@
+companion-origin	:test	io.github.skunkwerkx:hypercast:1.0.0	@ROOT@/.companions/m2/io/github/skunkwerkx/hypercast/1.0.0/hypercast-1.0.0.jar	@SHA256@
+companion-origin	:testFloor	io.github.skunkwerkx:hypercast:1.0.0	@ROOT@/.companions/m2/io/github/skunkwerkx/hypercast/1.0.0/hypercast-1.0.0.jar	@SHA256@
+companion-origin	:aot-smoke-test	io.github.skunkwerkx:hypercast:1.0.0	@ROOT@/.companions/m2/io/github/skunkwerkx/hypercast/1.0.0/hypercast-1.0.0.jar	@SHA256@
+companion-origin	:aot-smoke-test:test	io.github.skunkwerkx:hypercast:1.0.0	@ROOT@/.companions/m2/io/github/skunkwerkx/hypercast/1.0.0/hypercast-1.0.0.jar	@SHA256@
+companion-origin	:aot-smoke-test:run	io.github.skunkwerkx:hypercast:1.0.0	@ROOT@/.companions/m2/io/github/skunkwerkx/hypercast/1.0.0/hypercast-1.0.0.jar	@SHA256@
+companion-origin	:aot-smoke-test:runFloor	io.github.skunkwerkx:hypercast:1.0.0	@ROOT@/.companions/m2/io/github/skunkwerkx/hypercast/1.0.0/hypercast-1.0.0.jar	@SHA256@
+companion-origin	:benchmarks	io.github.skunkwerkx:hypercast:1.0.0	@ROOT@/.companions/m2/io/github/skunkwerkx/hypercast/1.0.0/hypercast-1.0.0.jar	@SHA256@
+companion-origin	:benchmarks:test	io.github.skunkwerkx:hypercast:1.0.0	@ROOT@/.companions/m2/io/github/skunkwerkx/hypercast/1.0.0/hypercast-1.0.0.jar	@SHA256@

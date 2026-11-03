@@ -31,7 +31,9 @@
 #    published signature, and the packer needs python3; the image is otherwise as pulled.
 #
 # The source is copied into each container, never built or tested in place: Docker runs as
-# root, and a read-write mount leaves root-owned files in the caller's checkout.
+# root, and a read-write mount leaves root-owned files in the caller's checkout. A pinned
+# companion (.companions/env from fetch-companions) is patched into the build container with
+# /work paths and its origin proven there (companion_container.sh).
 set -euo pipefail
 
 usage='usage: php_ext_musl.sh <crate> <rid> <minor> <repo-root> <forge-root> <pie-phar> <out-dir>'
@@ -58,6 +60,23 @@ companion_env=()
 for companion in ${COMPANIONS:-}; do
   companion_env+=(-e "$(printf '%s' "$companion" | tr '[:lower:]-' '[:upper:]_')_PHP_EXTENSION=/ext/$companion.so")
 done
+# A pinned companion (.companions/env from fetch-companions): the extension the host wiring
+# extracted from the pinned run's PIE zip (companion_wire.py php), named to the suite at its
+# /src path, with Composer told to ignore ext-<name>'s version as on the host, and proven after
+# the suite's install (companion_origin.py php --installed). Never beside a registry build.
+pinned=()
+if [ -f "$repo_root/.companions/env" ]; then
+  while IFS='=' read -r key _; do
+    case $key in
+      *_PHP_REQ)
+        name=$(printf '%s' "${key%_PHP_REQ}" | tr '[:upper:]' '[:lower:]')
+        [ -z "${COMPANIONS:-}" ] || { echo "::error::COMPANIONS=$COMPANIONS beside the pinned $name: one of them would be the extension the suite loads"; exit 1; }
+        [ -f "$repo_root/.companions/$name-php/$name.so" ] || { echo "::error::no .companions/$name-php/$name.so: the host never wired PHP (companion_wire.py php)"; exit 1; }
+        pinned+=(-e "${key%_PHP_REQ}_PHP_EXTENSION=/src/.companions/$name-php/$name.so" -e "COMPOSER_IGNORE_PLATFORM_REQ=ext-$name")
+        ;;
+    esac
+  done < "$repo_root/.companions/env"
+fi
 
 platform_args=()
 [ -n "${DOCKER_PLATFORM:-}" ] && platform_args=(--platform "$DOCKER_PLATFORM")
@@ -81,6 +100,8 @@ docker run --rm "${platform_args[@]}" \
     mkdir /work
     (cd /src && tar cf - --exclude=./rust/target ./rust) | tar xf - -C /work
     cd /work/rust
+    . /forge/.github/scripts/companion_container.sh
+    companion_cargo /src /work /work/rust
 
     mkdir /unwind
     echo "GROUP ( $(gcc -print-file-name=libgcc_eh.a) $(gcc -print-file-name=libgcc.a) )" > /unwind/libgcc_s.so
@@ -115,7 +136,8 @@ docker run --rm "${platform_args[@]}" \
   -v "$repo_root:/src:ro" -v "$build_dir:/ext:ro" -v "$forge_root:/forge:ro" -v "$pie:/pie.phar:ro" \
   -v "$out_dir:/dist" \
   -e CRATE="$crate" -e PACKAGE_VERSION="$PACKAGE_VERSION" -e RELEASE_TAG="$RELEASE_TAG" \
-  -e "${env_prefix}_PHP_EXTENSION=/ext/$crate.so" "${companion_env[@]}" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+  -e "${env_prefix}_PHP_EXTENSION=/ext/$crate.so" "${companion_env[@]}" "${pinned[@]}" -e PINNED="${#pinned[@]}" \
+  -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   "php:$minor-cli-alpine" sh -euc '
     echo "== $(php -v | head -1), Alpine $(cat /etc/alpine-release)"
     EXTENSION="/ext/$CRATE.so"
@@ -135,6 +157,7 @@ docker run --rm "${platform_args[@]}" \
     rm -rf /work/php/vendor /work/php/composer.lock
     cd /work/php
     composer install --no-interaction --prefer-dist --no-progress
+    if [ "$PINNED" != 0 ]; then python3 /forge/.github/scripts/companion_origin.py php --root /src --installed; fi
     php tools/run-tests.php
 
     python3 /forge/.github/scripts/php_ext_package.py pack --library "$EXTENSION" --php php \

@@ -1,0 +1,77 @@
+{
+  "version": 4,
+  "targets": {
+    "net10.0": {
+      "HyperCast/1.0.0": {
+        "type": "package",
+        "compile": {
+          "lib/net10.0/HyperCast.Managed.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/net10.0/HyperCast.Managed.dll": {
+            "related": ".xml"
+          }
+        },
+        "build": {
+          "buildTransitive/net10.0/HyperCast.targets": {}
+        },
+        "runtimeTargets": {
+          "runtimes/osx-arm64/native/libhypercast.dylib": {
+            "assetType": "native",
+            "rid": "osx-arm64"
+          }
+        }
+      }
+    },
+    "net11.0": {
+      "HyperCast/1.0.0": {
+        "type": "package",
+        "compile": {
+          "lib/net11.0/HyperCast.Managed.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/net11.0/HyperCast.Managed.dll": {
+            "related": ".xml"
+          }
+        },
+        "build": {
+          "buildTransitive/net10.0/HyperCast.targets": {}
+        },
+        "runtimeTargets": {
+          "runtimes/osx-arm64/native/libhypercast.dylib": {
+            "assetType": "native",
+            "rid": "osx-arm64"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "HyperCast/1.0.0": {
+      "sha512": "@CONTENT_HASH@",
+      "type": "package",
+      "path": "hypercast/1.0.0",
+      "files": [
+        ".nupkg.metadata",
+        "LICENSE",
+        "README.md",
+        "build/net10.0/HyperCast.targets",
+        "buildTransitive/net10.0/HyperCast.targets",
+        "hypercast.1.0.0.nupkg.sha512",
+        "hypercast.nuspec",
+        "lib/net10.0/HyperCast.Managed.dll",
+        "lib/net10.0/HyperCast.Managed.xml",
+        "lib/net11.0/HyperCast.Managed.dll",
+        "lib/net11.0/HyperCast.Managed.xml",
+        "runtimes/osx-arm64/native/libhypercast.dylib"
+      ]
+    }
+  },
+  "packageFolders": {
+    "@NUGET_PACKAGES@": {}
+  }
+}

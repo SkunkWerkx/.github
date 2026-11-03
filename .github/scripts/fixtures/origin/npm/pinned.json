@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "resolved": "file:../.companions/hypercast-npm/skunkwerkx-hypercast-1.0.0.tgz",
+  "integrity": "sha512-R6QVGwQQ99qoZB0Btn6MUL2bu6CsVhWH/WigUxGO+MFeO+sVhjBpfWdVs2nbsbSU92e4fQWx8Adv9FO7XHIpEw==",
+  "dev": true,
+  "license": "MIT",
+  "engines": {
+    "node": "^22.13.0 || >=23.5.0"
+  }
+}

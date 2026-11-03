@@ -97,10 +97,10 @@ it (the Blazor check skips with it); the WASI, Rust browser and Go wasm jobs run
 `hyper-build-native.yml` runs every binding in one job per leg. A consumer that wants to
 run only what a pull request touched calls the family below instead, one reusable workflow
 per concern, and gates each call on its own change detection; the Forge has no opinion on
-the gating, only on what each workflow does. The old workflows stay for HyperCast and
-HyperTabular until they move; the two families share the composites and the artifact names,
-so a consumer can run one or the other, never both at once (two producers of `native-<rid>`
-fail the upload).
+the gating, only on what each workflow does. HyperUuid and HyperCast run it; the old
+workflows stay for HyperTabular until it moves; the two families share the composites and the
+artifact names, so a consumer can run one or the other, never both at once (two producers of
+`native-<rid>` fail the upload).
 
 - `hyper-core.yml` (inputs `mode`, `crate`, `project`, `osx_x64`, `musl`, `static_libs`,
   `attest_native`, `c_smoke`): the core on the seven RIDs, `cargo cdylib`, the crate's suite,
@@ -139,6 +139,33 @@ fail the upload).
   The toolchains those images ship are used where they are the current release (Rust,
   Python, Node, Go, .NET, the JDKs, Swift on Linux, PHP on linux-x64 under `two-paths`), and
   a step asserts the version where the leg depends on it.
+
+## Companions
+
+A consumer with a `companions` block (HyperTabular, on HyperCast) tests every board but a
+`purpose=release` dispatch against a pinned companion commit and run (the spec,
+`docs/superpowers/specs/2026-11-01-companion-pins-design.md`; the runbook's "Moving a
+companion pin" and "Release order"). What that asks of a change here:
+
+- The mode comes from the event (`hyper_mode.py`, `MODE_RELEASE` in `if:`s), never from
+  `inputs.purpose`, which is empty inside a reusable workflow; a test greps for it.
+- Every board job that resolves the companion runs `fetch-companions` first, with its `leg`;
+  a new leg, matrix value or artifact name goes into `companion_map.py`, and a job that
+  resolves without fetching goes into `NO_FETCH` (`test_companion_workflows.py`) with its
+  reason. A renamed upload fails `test_companion_map`, not a consumer's run.
+- A container or interpreter that installs afresh reads `.companions/env` (through
+  `companion_container.sh` or its own guard) and proves its origin inside; a new one joins
+  `ISOLATED_ENVIRONMENTS` or `INLINE_CONTAINERS_EXEMPT`.
+- A cache that could hold the companion is keyed with `fetch-companions`' `commit` output
+  when `active` is `'true'`, job-local or off; Go's and npm's are content-addressed. The test
+  fails on a cache step it doesn't know.
+- A leg runs the Forge's companion scripts with `fetch-companions`' `python` output
+  (`"$FETCH_PYTHON"`), or a Python leg's own setup-python interpreter, never `python3`: on a
+  Windows runner without setup-python that may be missing or the WindowsApps alias (`plan.sh`
+  resolves a real 3.11+, and without one a leg with no block still passes). Any other `python3`
+  in a Windows-capable job joins `WINDOWS_PYTHON3` (`test_companion_workflows.py`) with why it
+  never runs there bare.
+- Only `hyper-companions.yml` declares `HYPER_COMPANION_APP_KEY`.
 
 ## Fail fast: the newest binding runs first
 

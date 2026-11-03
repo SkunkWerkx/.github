@@ -67,6 +67,14 @@ jobs:
           name: static-libs
           path: .
 
+      # A pinned companion (a `companions` block): its swift-release-assets extracted into the pin
+      # and every manifest pointed at it, which the suite's containers then prove (the image's
+      # Swift on the runner runs the fetch's own proof).
+      - name: Fetch the companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-swift-static.yml:test-swift-static
+
       # The two SDKs are 380 MB per Swift version. They are immutable once published, so the
       # key is the versions and nothing else.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

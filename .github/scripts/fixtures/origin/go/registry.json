@@ -1,0 +1,10 @@
+{
+	"Path": "github.com/SkunkWerkx/HyperCast/go",
+	"Version": "v1.0.0",
+	"Time": "2026-10-25T21:18:15Z",
+	"Dir": "@HOME@/go/pkg/mod/github.com/!skunk!werkx/!hyper!cast/go@v1.0.0",
+	"GoMod": "@HOME@/go/pkg/mod/cache/download/github.com/!skunk!werkx/!hyper!cast/go/@v/v1.0.0.mod",
+	"GoVersion": "1.26",
+	"Sum": "h1:Xws45VZpUbG8mEQU1eaU3f9mkDNxX++WsCfzUJP8r1I=",
+	"GoModSum": "h1:meNmbPjZMz+aEzdlVWi5QR83ovpKHjiUv0N39qHUfjU="
+}

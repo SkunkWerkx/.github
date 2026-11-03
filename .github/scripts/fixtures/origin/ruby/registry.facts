@@ -1,0 +1,15 @@
+name=hypercast
+version=1.0.0
+ruby=4.0.9
+abi=4.0
+rid=osx-arm64
+backend=native
+pure=
+source=@HOME@/vendor/bundle/ruby/4.0.0/gems/hypercast-1.0.0-arm64-darwin/lib/hypercast.rb
+extension=@HOME@/vendor/bundle/ruby/4.0.0/gems/hypercast-1.0.0-arm64-darwin/lib/hypercast/4.0/hypercast_native.bundle
+extension_sha256=0de39810c85067b376aa7d83c9fc77934bd38aa994a4d3224cfdaa35846f836c
+library=
+library_sha256=
+observed=
+mapped=
+gem=@HOME@/vendor/bundle/ruby/4.0.0/gems/hypercast-1.0.0-arm64-darwin

@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Bundler as suite-ruby-wasm.sh meets it, for test_companion_workflows' SuiteRubyWasmTests:
+`install` does nothing; `exec rake wasm:gem[<abi>]` packs lib/ and the ABI's archive, gzipped,
+into pkg/<name>-wasm-1.0.0.gem (a tar, which the gem stub unpacks), as the Hyper* Rakefiles do;
+`exec rbwasm build ... -o <file>` writes the file; `info <gem> --path` answers the path the
+Gemfile gives the gem, else RubyGems' copy under $HOME. Each call is logged to $STUB_LOG."""
+import gzip
+import io
+import os
+from pathlib import Path
+import re
+import sys
+import tarfile
+
+args = sys.argv[1:]
+with open(os.environ['STUB_LOG'], 'a') as log:
+    log.write(f'{os.getcwd()}: bundle {" ".join(args)}\n')
+cwd = Path.cwd()
+if args[:1] == ['install']:
+    sys.exit(0)
+if args[:2] == ['exec', 'rake']:
+    abi = re.fullmatch(r'wasm:gem\[(.*)\]', args[2])[1]
+    name = 'hypercast' if '.companions' in cwd.parts else 'hypertabular'
+    (cwd / 'pkg').mkdir(exist_ok=True)
+    with tarfile.open(cwd / 'pkg' / f'{name}-wasm-1.0.0.gem', 'w') as tar:
+        for path in sorted((cwd / 'lib').rglob('*')) if (cwd / 'lib').is_dir() else []:
+            if path.is_file():
+                tar.add(path, arcname=path.relative_to(cwd).as_posix())
+        if abi != 'source':
+            data = gzip.compress((cwd / 'ext' / f'{name}_native' / abi / f'{name}_native.a').read_bytes(), mtime=0)
+            info = tarfile.TarInfo(f'ext/{name}_native/{abi}/{name}_native.a.gz')
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    sys.exit(0)
+if args[:2] == ['exec', 'rbwasm']:
+    Path(args[args.index('-o') + 1]).write_bytes(b'\0asm')
+    sys.exit(0)
+if args[:1] == ['info']:
+    text = Path(os.environ['BUNDLE_GEMFILE']).read_text()
+    found = re.search(r"gem '" + re.escape(args[1]) + r"', path: '([^']*)'", text)
+    print(found[1] if found else f'{os.environ["HOME"]}/.gem/ruby/4.0.0/gems/{args[1]}-1.0.0')
+    sys.exit(0)
+sys.exit(3)

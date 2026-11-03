@@ -155,7 +155,6 @@ jobs:
       PACKAGE_VERSION: ${{ needs.version.outputs.package_version }}
       RELEASE_TAG: ${{ needs.version.outputs.release_tag }}
       ENV_PREFIX: ${{ needs.version.outputs.env_prefix }}
-      COMPANIONS: ${{ inputs.php_companions }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -174,11 +173,66 @@ jobs:
           path: .hyperforge
           persist-credentials: false
 
-      # The musl legs build inside Alpine with a toolchain of their own. The stub leg adds clippy.
+      # The companions this run builds. A consumer's `companions` block (hyper_config.py) wins
+      # over the php_companions input: companion mode then loads the pinned run's extension,
+      # and a release run builds from the registry as the input always did. A name the block
+      # lacks is an error. Without a block the input is the list, in both modes. The mode is
+      # the event's (hyper_mode.py), never an input: a caller's inputs are not this workflow's.
+      - name: The companions this run builds
+        id: companions
+        shell: bash
+        env:
+          PHP_COMPANIONS: ${{ inputs.php_companions }}
+        run: |
+          set -euo pipefail
+          py=python3
+          if [ "$RUNNER_OS" = Windows ]; then py=python; fi
+          "$py" "$FORGE_SCRIPTS/hyper_config.py" check-php-companions --root . --names="$PHP_COMPANIONS"
+          "$py" "$FORGE_SCRIPTS/hyper_config.py" effective-php-companions --root . --names="$PHP_COMPANIONS"
+
+      # Only with a block: without one the mode is moot, and a block-less caller's dispatch may carry
+      # no purpose, which hyper_mode.py refuses. An empty companion_mode builds from the registry.
+      - name: The mode this run is in
+        id: mode
+        if: steps.companions.outputs.has_block == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python3
+          if [ "$RUNNER_OS" = Windows ]; then py=python; fi
+          "$py" "$FORGE_SCRIPTS/hyper_mode.py"
+
+      # COMPANIONS is what the registry build below, Windows's build step and php_ext_musl.sh
+      # build: the effective list, except none when a block pins the companions and this run
+      # is in companion mode (the pinned run's extension is supplied instead).
+      - name: The companions built from the registry
+        shell: bash
+        env:
+          LIST: ${{ steps.companions.outputs.companions }}
+          HAS_BLOCK: ${{ steps.companions.outputs.has_block }}
+          COMPANION_MODE: ${{ steps.mode.outputs.companion_mode }}
+        run: |
+          set -euo pipefail
+          if [ "$HAS_BLOCK" = true ] && [ "$COMPANION_MODE" = companion ]; then LIST=''; fi
+          echo "COMPANIONS=$LIST" >> "$GITHUB_ENV"
+
+      # Every leg's, the musl ones' too: they build inside Alpine with a toolchain of their own,
+      # but the fetch below wires the runner's tree with cargo. The stub leg adds clippy.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        if: matrix.kind != 'musl'
         with:
           components: ${{ matrix.stubs && 'clippy' || '' }}
+
+      # The pinned companion (companion-pins): nothing without a `companions` block in
+      # hyper.json, the release guard alone in a release dispatch, and otherwise the Cargo
+      # patch, proven, which the musl legs' Alpine build writes and proves again inside
+      # (php_ext_musl.sh), and the PHP wiring: the pinned run's PIE zip for this rid and minor,
+      # its extension extracted and named to every later step as <COMPANION>_PHP_EXTENSION (no
+      # registry build in this mode), proven right before the suite.
+      - name: Fetch the companions
+        id: fetch
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-build-php-extension.yml:build:${{ matrix.rid }}:minor=${{ matrix.minor }}
 
       # The phar the packer runs PIE's own naming code from: the version and sha256 are
       # php_ext_package.py's, and the attestation is PIE's release workflow's, so the bytes are
@@ -349,7 +403,10 @@ jobs:
       # <COMPANION>_PHP_EXTENSION. Not this crate's build: that stays the alias above. Windows
       # runs the script inside its build step, which holds the toolset and RUSTC_BOOTSTRAP.
       - name: Build the companion extensions
-        if: inputs.php_companions != '' && (matrix.kind == 'glibc' || matrix.kind == 'macos')
+        # Skipped only when a block pins the companion and this run is in companion mode: the
+        # pinned run's extension is then supplied instead. Every other case builds from the
+        # registry: no block in either mode, or a block in a release run.
+        if: steps.companions.outputs.companions != '' && !(steps.companions.outputs.has_block == 'true' && steps.mode.outputs.companion_mode == 'companion') && (matrix.kind == 'glibc' || matrix.kind == 'macos')
         working-directory: rust
         shell: bash
         run: python3 "../$FORGE_SCRIPTS/php_ext_companions.py" --companions "$COMPANIONS" --out ../php-ext --target-root "$RUNNER_TEMP" --env-file "$GITHUB_ENV"
@@ -471,6 +528,16 @@ jobs:
         working-directory: php
         shell: bash
         run: composer install --no-interaction --prefer-dist --no-progress
+
+      # After the suite's install, in the PHP the suite runs on: <COMPANION>_PHP_EXTENSION names
+      # the pin's extension, this PHP loads no other copy, and with it the pin's version loads.
+      # The musl legs prove it inside their suite container (php_ext_musl.sh).
+      - name: The suite takes the pinned companion
+        if: matrix.kind != 'musl' && steps.fetch.outputs.active == 'true'
+        shell: bash
+        env:
+          FETCH_PYTHON: ${{ steps.fetch.outputs.python }}
+        run: '"$FETCH_PYTHON" "$FORGE_SCRIPTS/companion_origin.py" php --root . --installed'
 
       # `composer test`, run through `php` rather than the Composer proxy, which is a shebang
       # script Windows' pwsh cannot execute. tools/run-tests.php loads the extension named by

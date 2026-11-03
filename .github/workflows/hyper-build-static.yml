@@ -79,6 +79,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
+      # The pinned companion (companion-pins): nothing without a `companions` block in
+      # hyper.json, the release guard alone in a release dispatch, and otherwise the Cargo
+      # patch, proven, before anything resolves the companion.
+      - name: Fetch the companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-build-static.yml:build-static-libs
+
       - name: Build, upload and attest the static libraries
         uses: ./.hyperforge/.github/actions/static-libs
         with:

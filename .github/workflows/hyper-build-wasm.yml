@@ -201,6 +201,17 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
 
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the Cargo patch and the npm
+      # wiring, each proven, before the WASI module builds: HyperCast packed with its WASI module
+      # and loaders for typescript/, and its WASI package, packed as the release packs it, for
+      # browser-smoke/.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-build-wasm.yml:build-node-wasi
+
       - name: Build the WASI module and its loaders
         working-directory: typescript
         run: |
@@ -210,6 +221,13 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           ls -l "typescript/$CRATE.wasm32-wasip1.wasm" typescript/"$CRATE".wasip1*
           git diff --exit-code -- typescript/index.js typescript/index.d.ts typescript/binding.js typescript/binding.d.ts
+
+      # After the install, in the directory the suite runs in.
+      - name: The suite takes the pinned companion
+        if: steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py npm --root . --dir typescript --installed'
 
       - name: The conformance suite against the WASI module, native refused
         working-directory: typescript
@@ -247,6 +265,14 @@ jobs:
             --dump-dom http://127.0.0.1:8092/index.html 2>/dev/null > dom.html
           kill "$server"
           node typescript/browser-smoke/check-dom.mjs dom.html
+
+      # browser-smoke installs and bundles in one step, and nothing installs there after it: the
+      # node_modules the bundle was built from holds the pinned WASI package.
+      - name: The page took the pinned companion
+        if: steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py npm --root . --dir typescript/browser-smoke --installed'
 
       # The same condition as the archive's and the natives' attestations: pr mode, which no
       # release packs from, and a fork's pull request, whose token cannot sign, attest nothing.
@@ -295,6 +321,14 @@ jobs:
         with:
           components: rust-src
           targets: wasm32-unknown-emscripten
+
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the Cargo patch, proven, before
+      # anything resolves the companion.
+      - name: Fetch the companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-build-wasm.yml:build-wasm
 
       # Official emsdk install method (git clone + install/activate latest) — same as
       # wasm-spike.yml and this repo's contributor-machine TOOLCHAIN.md, not a distro
@@ -382,6 +416,19 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.artifact_name }}
@@ -392,10 +439,32 @@ jobs:
           global-json-file: global.json
           # .NET 10 beside the pinned SDK, for the net10.0 Blazor legs.
           dotnet-version: 10.0.x
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the pin packed (dotnet pack,
+      # with its browser-wasm archive) into the job-local feed, every requirement on it set to the
+      # pin's exact version, and nuget.config mapping it to that feed alone. After the SDKs: the
+      # wiring packs with them.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-build-wasm.yml:test-blazor
       - name: wasm-tools workload
         run: dotnet workload install wasm-tools
       - name: wasm-tools-net10 workload
         run: dotnet workload install wasm-tools-net10
+      # The check's project restored, then the global packages folder's copy proven to be the
+      # feed's, right before the check (whose publishes restore the same package again).
+      - name: The Blazor app takes the pinned companion
+        if: steps.companions.outputs.active == 'true'
+        shell: bash
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+          BLAZOR_CHECK: ${{ inputs.blazor_check }}
+        run: |
+          set -euo pipefail
+          dotnet restore "$(dirname "$BLAZOR_CHECK")"
+          "$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py csharp --root . --dir "$(dirname "$BLAZOR_CHECK")" --installed
       - name: Blazor WebAssembly app in headless Chrome
         env:
           STATICLIB: ${{ runner.temp }}/staticlib/lib${{ inputs.crate }}.a
@@ -410,9 +479,30 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the Cargo patch, proven, before
+      # anything resolves the companion.
+      - name: Fetch the companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-build-wasm.yml:test-rust-browser
+
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: wasm-pack
@@ -442,11 +532,32 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
+
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the Go replace, proven, before
+      # anything resolves the companion.
+      - name: Fetch the companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-build-wasm.yml:test-go-wasm
 
       # go_js_wasm_exec runs the js/wasm test binary under node.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -658,12 +769,29 @@ jobs:
         with:
           targets: wasm32-wasip1
 
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the Cargo patch, proven, before
+      # rbwasm builds the extension; the Ruby wiring (the gemspec's requirement made the pin's
+      # version, the Gemfile's path gem) for the host's Bundler; and the companion's own
+      # ruby-wasm-<abi> archive for this minor, checked against SHA256SUMS and placed in the pin,
+      # with the smoke Gemfile taking <companion>-wasm by path. suite-ruby-wasm.sh packs that gem
+      # from the pin as the companion's release does, and proves Bundler took it, carrying the
+      # staged archive, between the smoke Gemfile's install and rbwasm. With a pin, the Bundler
+      # cache and the build/ cache below are keyed with its commit (its `commit` output), so a
+      # pinned build never shares a registry build's cache; without one each key is as before.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-build-wasm.yml:build-ruby-wasm:abi=${{ matrix.abi }}
+
       # The host Ruby only runs Bundler, rake and rbwasm; the interpreter rbwasm builds is
       # matrix.abi whatever this is.
       - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         with:
           ruby-version: "4.0"
           bundler-cache: true
+          cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '0' }}
           working-directory: ruby
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -673,7 +801,7 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ inputs.ruby_wasm_smoke }}/build
-          key: ruby-wasm-${{ inputs.crate }}-${{ matrix.abi }}-${{ hashFiles(format('{0}/Gemfile', inputs.ruby_wasm_smoke)) }}
+          key: ruby-wasm-${{ inputs.crate }}-${{ matrix.abi }}-${{ hashFiles(format('{0}/Gemfile', inputs.ruby_wasm_smoke)) }}${{ steps.companions.outputs.active == 'true' && format('-companion-{0}', steps.companions.outputs.commit) || '' }}
 
       - name: Build the extension from source for Ruby ${{ matrix.abi }}
         uses: ./.hyperforge/.github/actions/ruby-wasm-suite

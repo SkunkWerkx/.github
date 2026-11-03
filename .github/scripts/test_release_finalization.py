@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -142,6 +143,86 @@ if args[:2]==['release','download']:
         calls=[json.loads(line) for line in (self.root/'calls').read_text().splitlines()]
         create=next(call for call in calls if call[:2]==['release','create'])
         self.assertEqual(create[-6:],[str(self.inventory),*map(str,assets),*map(str,sorted(c.iterdir())),*map(str,sorted(php.iterdir()))])
+
+    def r_inventory(self, listed=('cran/hypercast_0.10.0.tar.gz',), present=('hypercast_0.10.0.tar.gz',)):
+        """The inventory naming the CRAN tarball (crate and files as release_inventory writes
+        them), and the preserved cran/ folder holding `present`."""
+        self.inventory.write_text(json.dumps({'crate': 'hypercast', 'version': '0.10.0',
+                                              'files': [{'path': path, 'sha256': '0' * 64} for path in listed]}))
+        cran = self.repo/'cran'
+        cran.mkdir()
+        for name in present:
+            (cran/name).write_text(name)
+        return cran
+
+    def test_a_new_release_carries_the_r_tarball_beside_the_c_archives_and_php_zips(self):
+        # The spec's "R in release mode": a consumer's R jobs install the companion from this
+        # asset (url::) while CRAN reviews it, and the companion gate requires it.
+        assets=self.github_assets()
+        c=self.repo/'c'
+        c.mkdir()
+        (c/'hypercast-0.10.0-linux-x64.tar.gz').write_text('c')
+        php=self.repo/'php'
+        php.mkdir()
+        (php/'php_hypercast-v0.10.0-8.3-nts-vs16-x86_64.zip').write_text('php')
+        cran=self.r_inventory()
+        self.finalize()
+        calls=[json.loads(line) for line in (self.root/'calls').read_text().splitlines()]
+        create=next(call for call in calls if call[:2]==['release','create'])
+        self.assertEqual(create[-6:],[str(self.inventory),*map(str,assets),*map(str,sorted(c.iterdir())),
+                                      str(cran/'hypercast_0.10.0.tar.gz'),*map(str,sorted(php.iterdir()))])
+
+    def test_an_existing_release_gets_the_r_tarball_it_lacks(self):
+        cran=self.r_inventory()
+        os.environ['RELEASE_EXISTS']='1'
+        os.environ['REMOTE_INVENTORY']=self.inventory.read_text()
+        for key in ('RELEASE_EXISTS','REMOTE_INVENTORY'):
+            self.addCleanup(os.environ.pop,key,None)
+        self.finalize()
+        calls=[json.loads(line) for line in (self.root/'calls').read_text().splitlines()]
+        self.assertEqual([call for call in calls if call[:2]==['release','upload']],
+                         [['release','upload','v0.10.0',str(cran/'hypercast_0.10.0.tar.gz'),'--repo','SkunkWerkx/HyperCast']])
+
+    def test_a_replay_with_the_r_tarball_attached_uploads_nothing(self):
+        # The recovery replay: the Release already carries the tarball with the preserved bytes, so
+        # finalize downloads and compares it, uploads nothing and succeeds; other bytes there fail.
+        cran=self.r_inventory()
+        tarball='hypercast_0.10.0.tar.gz'
+        os.environ['RELEASE_EXISTS']='1'
+        os.environ['REMOTE_INVENTORY']=self.inventory.read_text()
+        os.environ['RELEASE_ASSETS']=json.dumps(['inventory.json',tarball])
+        os.environ['REMOTE_ASSETS']=json.dumps({tarball:(cran/tarball).read_text()})
+        for key in ('RELEASE_EXISTS','REMOTE_INVENTORY','RELEASE_ASSETS','REMOTE_ASSETS'):
+            self.addCleanup(os.environ.pop,key,None)
+        self.finalize()
+        calls=[json.loads(line) for line in (self.root/'calls').read_text().splitlines()]
+        self.assertEqual([call for call in calls if call[:2] in (['release','upload'],['release','create'],['release','edit'])],[])
+        self.assertIn(tarball,[call[call.index('--pattern')+1] for call in calls if call[:2]==['release','download']])
+        os.environ['REMOTE_ASSETS']=json.dumps({tarball:'other bytes'})
+        with self.assertRaisesRegex(ValueError,tarball):
+            self.finalize()
+
+    def test_a_listed_r_tarball_that_is_missing_fails_before_any_release_call(self):
+        self.r_inventory(present=())
+        with self.assertRaisesRegex(ValueError,'cran/hypercast_0.10.0.tar.gz'):
+            self.finalize()
+        calls=(self.root/'calls').read_text() if (self.root/'calls').exists() else ''
+        self.assertNotIn('"release"',calls)
+
+    def test_only_the_inventoried_r_tarball_is_attached(self):
+        # A file in cran/ the inventory doesn't list was never verified: refused, not attached.
+        self.r_inventory(present=('hypercast_0.10.0.tar.gz','hypercast_0.9.0.tar.gz'))
+        with self.assertRaisesRegex(ValueError,'cran/hypercast_0.9.0.tar.gz'):
+            self.finalize()
+        # Nor is an inventoried tarball of another name or version.
+        shutil.rmtree(self.repo/'cran')
+        self.r_inventory(listed=('cran/hypercast_0.9.0.tar.gz',),present=('hypercast_0.9.0.tar.gz',))
+        with self.assertRaisesRegex(ValueError,'cran/hypercast_0.9.0.tar.gz'):
+            self.finalize()
+        # Without the R binding there is no cran/ entry and nothing to attach.
+        shutil.rmtree(self.repo/'cran')
+        self.r_inventory(listed=(),present=())
+        self.finalize()
 
     def test_an_existing_release_gets_only_its_missing_assets_and_keeps_matching_ones(self):
         assets=self.github_assets()

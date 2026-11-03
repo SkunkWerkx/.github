@@ -1,0 +1,25 @@
+{
+ "ahead_by": 59,
+ "behind_by": 2,
+ "commits": [
+  {
+   "commit": {
+    "message": "Fix the osx floor"
+   },
+   "sha": "17781f491f60c5eedd40ceeb92033545f9af3e73"
+  },
+  {
+   "commit": {
+    "message": "chore: stage native binaries from ci.yml run 39534507493 (17781f491f60c5eedd40ceeb92033545f9af3e73)"
+   },
+   "sha": "4e45124e6e4c964ede82cd7a20cc91fe8c17db10"
+  },
+  {
+   "commit": {
+    "message": "docs: date the 0.9.0 changelog entry and add the Go bullet"
+   },
+   "sha": "a6f34bf3a697ed61f74f8ffba55a07eb9dc3d5ab"
+  }
+ ],
+ "status": "diverged"
+}

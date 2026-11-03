@@ -19,7 +19,7 @@ Subjects are every file in `inventory.json`:
   `.crate` with its saved registry request, the signed Maven bundle and the repository files
   inside it (the jar, the sources and javadoc jars, the `.pom`, their signatures), and, from
   a consumer with those bindings, the ten npm tarballs (the root package, one per
-  platform and the WASI fallback package) and the CRAN source tarball, which no job uploads (the maintainer submits it);
+  platform and the WASI fallback package) and the CRAN source tarball, which the GitHub Release carries and no job uploads to CRAN (the maintainer submits it);
 - the native libraries committed at the tagged commit for Swift (the artifact bundle and
   the XCFramework), and the metadata staged beside them: the bundle's `info.json` and the
   XCFramework's `Info.plist`, headers and module maps (Go commits no library: its core is

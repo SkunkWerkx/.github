@@ -69,13 +69,15 @@ first one `release.yml` publishes through Trusted Publishing, and it carries npm
    publisher verifies its own files' build provenance just before uploading them, it
    publishes to the six registries, then creates `go/vX.Y.Z` and the GitHub Release at B
    with the CHANGELOG section, a Verifying section, `inventory.json` and the release's own
-   files attached (the Swift zips, the C archives and the PHP extension's PIE zips). Its last
+   files attached (the Swift zips, the C archives, the CRAN tarball and the PHP extension's
+   PIE zips). Its last
    job, `pie-acceptance` (`hyper-pie-acceptance.yml`), then has PIE install the extension from
    Packagist and that Release on every platform and PHP minor, and holds the installed file to
    that leg's zip on the Release, whose release attestation it verifies first. The CRAN
    tarball (`cran/hyperuuid_<v>.tar.gz`) is attested and inventoried like every other file
-   but no job uploads it: the maintainer submits it to CRAN by hand from the preserved
-   bytes.
+   and attached to the Release, but no job uploads it to CRAN: the maintainer submits it by
+   hand from the preserved bytes. A consumer's release installs it from the Release by
+   `url::` meanwhile (the companion-pins spec, "R in release mode").
 
 There is one native build matrix, in A's CI. Static production and Android shared
 production are separate producers; Apple and Android consumer tests start when their own
@@ -86,7 +88,7 @@ publication gate takes every `php-ext-<rid>-<minor>` artifact of A's run into th
 
 ## The release train
 
-HyperUuid runs this flow; HyperCast and HyperTabular stay on the one above until they thaw.
+HyperUuid and HyperCast run this flow; HyperTabular stays on the one above until it moves.
 It is the same release in two acts, with the packing, the inventory, CodeQL and B moved into
 the preparation run, so the tag run only signs and publishes what that run preserved.
 
@@ -145,6 +147,111 @@ receipts (`publication_run_id`, and `maven_deployment_id` after an ambiguous Cen
 then, for a wrong artifact, a patch release. Never a retag, a repack or a re-attest. A
 preparation that failed, or whose `release-packages` expired, is prepared again from a new
 `prepare-release.yml` dispatch; the tag guard refuses a B whose run has nothing preserved.
+
+## `purpose`
+
+Every Hyper\* repo's `ci.yml` takes a required `workflow_dispatch` input, `purpose`, and its
+`run-name` carries it (`CI purpose=<p>`):
+
+- `board` runs the full board and stops. It is how a companion pin is built (below), and it
+  can never prepare a release.
+- `release` runs the board, then the release tail, every job of which is gated on
+  `inputs.purpose == 'release'`. `hyper-prepare-release.yml` sends it
+  (`dispatch_preparation.py`).
+
+The Forge never declares or receives the input: inside a reusable workflow `inputs.purpose` is
+empty, so every Forge workflow and action reads the mode from the triggering event
+(`hyper_mode.py`, and its `MODE_RELEASE` expression in the `if:`s). A `release` dispatch is
+release mode; every other event, a `board` dispatch included, is companion mode;
+`hyper_mode.py` refuses a dispatch whose purpose is neither. Without a `companions` block the
+mode changes nothing, and `purpose` only decides whether the tail runs.
+
+## Moving a companion pin
+
+A consumer whose bindings are built on a sibling's (HyperTabular on HyperCast) tests every pull
+request, schedule and `board` dispatch against one commit of that companion and the green run
+that proved it, never against its registries. The pin is in the consumer's
+`.github/hyper.json`, one companion per block (`companion_mirror.py` refuses a second):
+
+```json
+"companions": {
+  "hypercast": {"repo": "SkunkWerkx/HyperCast", "commit": "<40-hex sha>", "run": <run id>}
+}
+```
+
+To move it:
+
+1. Get a pinnable run of the companion: a `board` dispatch,
+   `gh workflow run ci.yml --repo SkunkWerkx/<Companion> --ref master -f purpose=board`, a
+   green scheduled run, or the green `purpose=release` run that prepared one of its releases.
+   It must be a full board (`workflow_dispatch` or `schedule`, never a pull request's gated
+   board) of the companion's own `ci.yml`, green as a board (`pr-board` `success`, every other
+   job `success` or `skipped`, the release tail skipped, or on a `purpose=release` dispatch
+   green), at a commit on the companion's default branch.
+2. In the consumer's checkout, on a branch:
+   `python3 <forge>/.github/scripts/companion_pin.py --root . --companion hypercast --run <run id>`.
+   It reads the run through `gh api`, refuses it naming every rule it breaks, rewrites only that
+   companion's `commit` and `run`, and prints the old and new pins and the commits between them
+   for the pull request's description.
+3. Open the pull request. Its `companions` job (`hyper-companions.yml`) checks the pin again
+   (`companion_pin.py --check`), mirrors the pinned run's artifacts into the consumer's run as
+   `companion-<name>` with their `SHA256SUMS`, and every leg's `fetch-companions` step takes its
+   share, wires it and proves the origin before anything resolves the companion.
+
+A run's artifacts expire after 90 days. A pin older than that fails the `companions` job with
+"re-run `<repo>` CI at `<sha>` with `purpose=board` and move the pin": dispatch a new `board`
+run and move the pin to it.
+
+Every move starts the pin-keyed caches cold (R's `setup-r-dependencies`, Bundler, the ruby.wasm
+build tree and cargo-semver-checks' rustdoc, each keyed with the pin's commit), so the first
+board after it is slower, and adds their entries to the consumer's 10 GB repository cache, whose
+eviction can then drop pin-less and release entries. The Go and npm caches are
+content-addressed and shared; NuGet's global packages folder is job-local under a pin.
+
+The `companions` job holds the one credential: a token minted from a SkunkWerkx GitHub App, for
+the companion repositories only, with one permission, Actions read (a run's artifacts can't be
+downloaded without it). The App is set up once, by the owner:
+
+- a SkunkWerkx-owned GitHub App, webhook off, with the one repository permission Actions: read,
+  installed on the companion repositories only (HyperCast; a new companion is added to the
+  installation, and the mint's failure names the repositories it must include);
+- its ID as the org variable `HYPER_COMPANION_APP_ID`;
+- its private key as `HYPER_COMPANION_APP_KEY`, twice under that name: an org Actions secret and
+  an org Dependabot secret (Dependabot's pull requests get only Dependabot secrets), both
+  visible to the consumer repositories only.
+
+A fork's pull request gets neither secret, and its `companions` job fails at once, saying so: a
+maintainer re-runs it from a branch in the repository. Nothing falls back to a registry.
+
+## Release order
+
+A consumer's release takes its companion from the registries, at the version its manifests
+require, never from the pin. So the companion releases first:
+
+1. Release the companion. The Forge change that attaches the CRAN tarball to every GitHub
+   Release (`finalize-release`) must be live before it: the consumer's gate requires that
+   tarball on the companion's Release, so a companion released without it holds the consumer
+   until the companion releases again.
+2. Every manifest of the consumer must require the same companion version: the gate reads each
+   lower bound and fails on a disagreement. Before dispatching the consumer's
+   `prepare-release.yml`, run the gate from its checkout:
+   `python3 <forge>/.github/scripts/companion_gate.py --root .`.
+3. Prepare the consumer. In the release-mode run, the `companions` job mints nothing: it
+   refuses any companion override committed to the tree (a Cargo patch, a Go replace, a `file:`
+   or path requirement, a companion feed or repository) and any `.companions/`, then runs the
+   gate, which requires the version on crates.io, NuGet, Maven Central, PyPI, RubyGems, npm,
+   the Go proxy, Packagist and the companion's GitHub Release (the PIE zips, the Swift zips, the
+   C archives and the CRAN tarball). Every board job needs `companions`, so a companion not yet
+   live everywhere but CRAN holds the whole run, with every missing item listed; re-run its
+   failed jobs once it is. Every leg's `fetch-companions` only guards, and the R jobs install the companion
+   from its GitHub Release by `url::` (`companion_gate.py --r-package`).
+4. PIE acceptance runs after publishing and never takes a pin: it installs the released
+   companion from Packagist first (`hyper-pie-acceptance.yml` reads the block; its `companions`
+   input must equal it or be empty).
+5. CRAN, by hand, after both releases and in order: the companion's tarball first, then the
+   consumer's once the companion is on CRAN. Both come from their preserved `release-packages`,
+   within 90 days of each preparation, which covers both reviews. Until then R users install
+   either package from its GitHub Release.
 
 ## After publication
 

@@ -1,0 +1,13 @@
+{
+	"Path": "github.com/SkunkWerkx/HyperCast/go",
+	"Version": "v1.1.0",
+	"Replace": {
+		"Path": "@ROOT@/.companions/hypercast/go",
+		"Dir": "@ROOT@/.companions/hypercast/go",
+		"GoMod": "@ROOT@/.companions/hypercast/go/go.mod",
+		"GoVersion": "1.26"
+	},
+	"Dir": "@ROOT@/.companions/hypercast/go",
+	"GoMod": "@ROOT@/.companions/hypercast/go/go.mod",
+	"GoVersion": "1.26"
+}

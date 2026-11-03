@@ -1,0 +1,112 @@
+// The pinned companion for every Gradle build of this job (the companion-pins spec, the Java
+// row). companion_wire.py java copies this file, unchanged, to
+// $GRADLE_USER_HOME/init.d/companions.gradle (~/.gradle/init.d/ without it), and writes its data
+// beside it as companions.properties (java.util.Properties escaping); companion_container.sh's
+// companion_java does the same inside a musl suite's container, with that container's paths.
+// Gradle runs only *.gradle files from init.d/, so the properties file is read here alone. No
+// value ever becomes Groovy source.
+//
+// The module resolves from the job-local repository the pinned source was published into
+// (exclusiveContent: from that repository and from no other, so a registry copy can never stand
+// in), at the pin's version (forced over the consumer's requirement, which names the next
+// release). `companionOrigin` prints every copy of it the suites load and fails unless each is the
+// published jar, byte for byte: each project's runtimeClasspath and testRuntimeClasspath module
+// selections, and every jar of that module's name on the classpath of each Test and JavaExec
+// task (what the suite's JVM is actually given, every such task realized when the proof is in the
+// graph). Every Test and JavaExec task depends on it, so a suite never runs on another copy.
+import java.security.MessageDigest
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+
+def companionProperties = new Properties()
+new File(initscript.sourceFile.parentFile, 'companions.properties').withInputStream { companionProperties.load(it) }
+def companionValue = { String key ->
+    def value = companionProperties.getProperty(key)
+    if (!value) {
+        throw new GradleException("companions.properties beside ${initscript.sourceFile} has no ${key}")
+    }
+    value
+}
+def companionRepository = new File(companionValue('repository'))
+def companionGroup = companionValue('group')
+def companionModule = companionValue('module')
+def companionVersion = companionValue('version')
+def companionSha256 = companionValue('sha256')
+
+allprojects { p ->
+    p.repositories.exclusiveContent {
+        forRepository {
+            p.repositories.maven {
+                name = 'companions'
+                url = companionRepository.toURI()
+            }
+        }
+        filter { includeModule(companionGroup, companionModule) }
+    }
+    p.configurations.configureEach {
+        resolutionStrategy.force("${companionGroup}:${companionModule}:${companionVersion}".toString())
+    }
+    def origin = p.tasks.register('companionOrigin') {
+        group = 'verification'
+        description = "Prints where ${companionGroup}:${companionModule} resolves from, and fails unless it is the pin."
+    }
+    def projectPath = p.path
+    // Each module classpath's selections of the module, as [where, display, file] (module
+    // components only: a project dependency's jar is not built by this task).
+    def selections = []
+    p.plugins.withId('java') {
+        ['runtimeClasspath', 'testRuntimeClasspath'].each { name ->
+            def selected = p.configurations.named(name).flatMap { c ->
+                c.incoming.artifactView { componentFilter { it instanceof ModuleComponentIdentifier } }
+                    .artifacts.resolvedArtifacts
+            }
+            selections << {
+                selected.get().findAll { a ->
+                    def id = a.id.componentIdentifier
+                    id.group == companionGroup && id.module == companionModule
+                }.collect { a -> [projectPath, a.id.componentIdentifier.displayName, a.file] }
+            }
+        }
+    }
+    p.tasks.withType(Test).configureEach { t -> t.dependsOn(origin) }
+    p.tasks.withType(JavaExec).configureEach { t -> t.dependsOn(origin) }
+    def buildDir = p.layout.buildDirectory
+    origin.configure {
+        // The classpath each Test and JavaExec task hands its JVM, read when the proof runs
+        // (after the build scripts have set it): every jar named for the module, wherever it came
+        // from (a files() dependency, a copied jar), outside this project's own build output.
+        // Every such task, realized here, when the proof is in the graph: a task registered
+        // lazily and not run would otherwise never be seen.
+        def loaded = []
+        (p.tasks.withType(Test).toList() + p.tasks.withType(JavaExec).toList()).each { t ->
+            loaded << [t.path, { t.classpath }]
+        }
+        doLast {
+            def found = []
+            selections.each { found.addAll(it.call()) }
+            def output = buildDir.get().asFile.canonicalPath + File.separator
+            def prefix = "${companionModule}-".toString()
+            loaded.each { path, classpath ->
+                classpath.call().files.findAll { File f ->
+                    f.name.startsWith(prefix) && f.name.endsWith('.jar') && !f.canonicalPath.startsWith(output)
+                }.each { File f ->
+                    def version = f.name.substring(prefix.length(), f.name.length() - '.jar'.length())
+                    found << [path, "${companionGroup}:${companionModule}:${version}".toString(), f]
+                }
+            }
+            def wanted = "${companionGroup}:${companionModule}:${companionVersion}".toString()
+            def problems = []
+            found.unique { [it[0], it[2].canonicalPath] }.each { where, display, File file ->
+                def sha256 = MessageDigest.getInstance('SHA-256').digest(file.bytes).encodeHex().toString()
+                println "companion-origin\t${where}\t${display}\t${file.absolutePath}\t${sha256}"
+                def under = file.canonicalPath.startsWith(companionRepository.canonicalPath + File.separator)
+                if (!under || sha256 != companionSha256 || display != wanted) {
+                    problems << "${display} from ${file.absolutePath} (sha256 ${sha256})"
+                }
+            }
+            if (problems) {
+                throw new GradleException("Java (${projectPath}): found ${problems.join(', ')}, expected " +
+                    "${wanted} from ${companionRepository} (the pin, sha256 ${companionSha256})")
+            }
+        }
+    }
+}

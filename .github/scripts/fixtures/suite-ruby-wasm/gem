@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""RubyGems as suite-ruby-wasm.sh meets it: `unpack <gem> --target <dir>` extracts the bundle
+stub's tar into <dir>/<gem's name>/, `spec <gem> --ruby` prints a gemspec."""
+import os
+from pathlib import Path
+import sys
+import tarfile
+
+args = sys.argv[1:]
+with open(os.environ['STUB_LOG'], 'a') as log:
+    log.write(f'{os.getcwd()}: gem {" ".join(args)}\n')
+if args[0] == 'unpack':
+    target = Path(args[args.index('--target') + 1]) / Path(args[1]).stem
+    target.mkdir(parents=True)
+    with tarfile.open(args[1]) as tar:
+        tar.extractall(target, filter='data')
+elif args[0] == 'spec':
+    print(f'Gem::Specification.new {{ |s| s.name = "{Path(args[1]).stem.rsplit("-", 1)[0]}" }}')
+else:
+    sys.exit(3)

@@ -34,12 +34,46 @@ jobs:
     runs-on: ubuntu-26.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the Ruby wiring (the
+      # gemspec's requirement made the pin's version, the Gemfile's path gem), proven, before
+      # Bundler resolves the gems the lint runs under. The lint stages no binary.
+      - name: Fetch the companions
+        id: companions
+        if: inputs.lint_ruby
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-lint-ruby.yml:lint:linux-arm64
+
+      # With a pin, the Bundler cache's key carries its commit (cache-version), so vendor/bundle is
+      # never restored from, or saved for, a run without it; '0', the default, keeps the key as before.
       - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         if: inputs.lint_ruby
         with:
           ruby-version: "4.0"
           bundler-cache: true
+          cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '0' }}
           working-directory: ruby
+      - name: Bundler took the pinned companion
+        if: inputs.lint_ruby && steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py ruby --root . --dir ruby --installed'
       - name: rake docs:check
         if: inputs.lint_ruby
         working-directory: ruby

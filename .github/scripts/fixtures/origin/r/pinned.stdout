@@ -1,0 +1,6 @@
+libpaths	@SCRATCH@/rlib|/opt/homebrew/lib/R/4.6/site-library|/opt/homebrew/Cellar/r/4.6.2/lib/R/library
+path	@SCRATCH@/rlib/hypercast
+Package	hypercast
+Version	1.0.0
+Hyper-Pin	14df7225ddf983bb5ca04bf35b9ecc7aeebabc96
+Built	R 4.6.2; aarch64-apple-darwin27.0.0; 2026-11-02 22:21:18 UTC; unix

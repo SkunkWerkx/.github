@@ -83,12 +83,12 @@ class PieAcceptanceContracts(unittest.TestCase):
         self.assertIn('php_ext_package.py" pie-pin', fetch['run'])
         self.assertIn('gh attestation verify "$phar" --owner php', fetch['run'])
         self.assertNotRegex(self.text, r'[0-9a-f]{64}')
-        # The only checkout is the Forge's own: nothing of the consumer's but its Release.
-        checkouts = [s for job in self.workflow['jobs'].values() for s in job['steps']
-                     if s.get('uses', '').startswith('actions/checkout@')]
-        self.assertEqual(len(checkouts), 2)
-        for checkout in checkouts:
-            self.assertEqual(checkout['with']['path'], '.hyperforge')
+        # The legs check out the Forge only: nothing of the consumer's but its Release. The
+        # companions job alone also reads the consumer's one file, .github/hyper.json.
+        for name, job in self.workflow['jobs'].items():
+            checkouts = [s for s in job['steps'] if s.get('uses', '').startswith('actions/checkout@')]
+            paths = [c['with']['path'] for c in checkouts]
+            self.assertEqual(paths, ['.hyperforge', 'consumer'] if name == 'companions' else ['.hyperforge'], name)
         self.assertNotIn('composer install', self.text)
         self.assertNotIn('cargo', self.text)
         self.assertIn('tools: none', self.text)
@@ -172,7 +172,8 @@ class PieAcceptanceContracts(unittest.TestCase):
         for trigger in ('workflow_call', 'workflow_dispatch'):
             companions = self.workflow['on'][trigger]['inputs']['companions']
             self.assertEqual((companions['type'], companions['default']), ('string', ''))
-        self.assertEqual(self.workflow['jobs']['install']['env']['COMPANIONS'], '${{ inputs.companions }}')
+        # The list is the consumer's block's, or the input when there is none (the companions job).
+        self.assertEqual(self.workflow['jobs']['install']['env']['COMPANIONS'], '${{ needs.companions.outputs.companions }}')
         script = (WORKFLOWS.parent / 'scripts/pie_acceptance.sh').read_text()
         self.assertIn('companions=${9:-}', script)
         loop = script.index('for companion in $companions; do')
@@ -452,9 +453,12 @@ class PhpCompanionContracts(unittest.TestCase):
 
     def test_empty_by_default_and_every_leg_gates_on_it(self):
         self.assertEqual(self.workflow['on']['workflow_call']['inputs']['php_companions']['default'], '')
-        self.assertEqual(self.workflow['jobs']['build']['env']['COMPANIONS'], '${{ inputs.php_companions }}')
+        # The list the legs build is the block's or the input's (hyper_config.py), set once into
+        # COMPANIONS by a step (test_companion_workflows.py pins that step and the skip).
+        self.assertNotIn('COMPANIONS', self.workflow['jobs']['build']['env'])
         unix = self.step('Build the companion extensions')
-        self.assertEqual(unix['if'], "inputs.php_companions != '' && (matrix.kind == 'glibc' || matrix.kind == 'macos')")
+        self.assertTrue(unix['if'].startswith("steps.companions.outputs.companions != '' && "))
+        self.assertTrue(unix['if'].endswith("&& (matrix.kind == 'glibc' || matrix.kind == 'macos')"))
         windows = self.step('Build the extension (Windows)')['run']
         self.assertIn('if ($env:COMPANIONS) {\n  python "../$env:FORGE_SCRIPTS/php_ext_companions.py"', windows)
         musl = self.MUSL.read_text()
@@ -1062,7 +1066,9 @@ class BuildNativeContracts(unittest.TestCase):
         arm = self.suite.split('\n  node)\n', 1)[1].split('\n    ;;\n', 1)[0]
         self.assertIn('node:${NODE_VERSION:-26}-alpine', arm)
         self.assertIn('-C target-feature=-crt-static -L native=/unwind', arm)
-        self.assertIn('npm ci && npm run build && npm test', arm)
+        # `npm ci`, then the pinned companion's proof (a no-op without one), then the build and suite.
+        self.assertIn('npm ci || exit 1\n      companion_npm /src /work /forge /work/typescript origin --installed\n'
+                      '      npm run build && npm test || exit 1', arm)
         after = arm.split('npm run build', 1)[1]
         self.assertIn('for wrapper in index.js index.d.ts binding.js binding.d.ts; do\n'
                       '        cmp "$wrapper" "/src/typescript/$wrapper" || '
