@@ -537,7 +537,11 @@ def _choose_python_file(run, python, name, version, files):
                          '--no-deps', '--no-index', '--only-binary=:all:', '--quiet', '--report', '-']
         for directory in dict.fromkeys(str(f.parent) for f in wheels):
             argv += ['--find-links', directory]
-        result = run(argv + [f'{name}=={version}'], capture_output=True, text=True)
+        # The report carries the wheel's metadata, its README included, which need not be ASCII:
+        # pip writes it as UTF-8 and it is read back so, whatever the host's code page (Windows
+        # gives a pipe cp1252, where pip would fail on the first character outside it).
+        result = run(argv + [f'{name}=={version}'], capture_output=True, text=True, encoding='utf-8',
+                     env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
         if result.returncode == 0:
             try:
                 url = json.loads(result.stdout)['install'][0]['download_info']['url']

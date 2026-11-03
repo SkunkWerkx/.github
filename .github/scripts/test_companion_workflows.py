@@ -1000,14 +1000,14 @@ class FetchStepTests(unittest.TestCase):
         self.assertEqual(page, names.index('The package bundled into a page, in headless Chrome') + 1)
         self.assertIn('--dir typescript/browser-smoke --installed', steps[page]['run'])
         # The musl suite: the build container wires before `npm ci` and proves after it, before the
-        # build and the suite; Bun's installs the tarball itself and proves it before `bun test`.
+        # build and the suite; Bun's installs the tarball itself and proves it before `bun run test:bun`.
         text = (WORKFLOWS.parent / 'actions' / 'musl-suite' / 'suite-musl.sh').read_text()
         at = 0
         for needle in ('companion_cargo /src /work /work/rust /work/typescript',
                        'companion_npm /src /work /forge /work/typescript wire', 'npm ci || exit 1',
                        'companion_npm /src /work /forge /work/typescript origin --installed',
                        'npm run build && npm test || exit 1',
-                       'companion_npm /src /work /forge /work/typescript unpack', 'bun test tests/'):
+                       'companion_npm /src /work /forge /work/typescript unpack', 'bun run test:bun'):
             at = text.index(needle, at) + len(needle)
         node = text[text.index('\n  node)'):text.index('\n  ruby)')]
         self.assertEqual(node.count('-v "$forge_scripts:/forge:ro"'), 2)
@@ -1516,7 +1516,7 @@ class FetchStepTests(unittest.TestCase):
     def test_without_a_pin_every_cache_is_heads(self):
         # HEAD 666a621's settings, by step: without a pin each keyed expression reduces to the
         # action's default (R's '1', Ruby's '0') or to nothing, and the key is HEAD's byte for byte.
-        defaults = {'r-lib/actions/setup-r-dependencies': {'cache-version': '1'},
+        defaults = {'r-lib/actions/setup-r-dependencies': {'cache-version': '1', 'install-pandoc': PANDOC},
                     'ruby/setup-ruby': {'cache-version': '0'}, './.hyperforge/.github/actions/ruby-magnus':
                     {'cache-version': '0'}, SEMVER: {'prefix-key': ''}}
         found = {}
@@ -1791,6 +1791,11 @@ CACHE_OFF = ('actions/setup-python', 'actions/setup-java', 'actions/setup-dotnet
 # cargo-semver-checks' rustdoc cache (target/semver-checks/cache): the baseline it builds sees the
 # host's Cargo patch, so a pin's rustdoc is the pin's.
 SEMVER = 'obi1kenobi/cargo-semver-checks-action'
+# setup-r-dependencies' install-pandoc, decided by the `pandoc` step only with a pin; without
+# one that step is skipped, its output is empty and the action makes its own decision, as HEAD's
+# steps, which set none.
+PANDOC = '${{ steps.pandoc.outputs.install }}'
+
 KEYED_KINDS = ('actions/cache', 'actions/cache/restore', 'actions/cache/save', 'r-lib/actions/setup-r-dependencies',
                'ruby/setup-ruby', SEMVER)
 
@@ -3338,7 +3343,27 @@ class RWorkflowTests(unittest.TestCase):
         # without one: HEAD's step, which set none.
         if KEYED.fullmatch(str((step.get('with') or {}).get('cache-version', ''))):
             step['with'] = {k: v for k, v in step['with'].items() if k != 'cache-version'}
+        if (step.get('with') or {}).get('install-pandoc') == PANDOC:
+            step['with'] = {k: v for k, v in step['with'].items() if k != 'install-pandoc'}
         return step
+
+    def test_with_a_pin_pandoc_is_decided_without_pak(self):
+        # pak::pkg_deps("."), the action's own pandoc check, resolves from the repositories alone
+        # and failed on a pinned companion CRAN does not have yet. With a pin the `pandoc` step
+        # decides by DESCRIPTION, before every install, and each install takes its answer.
+        for workflow in self.JOBS:
+            with self.subTest(workflow=workflow):
+                steps = self.steps(workflow)
+                fetch = next(i for i, s in enumerate(steps) if s.get('uses') == FETCH_USES)
+                pandoc = next(i for i, s in enumerate(steps) if s.get('id') == 'pandoc')
+                self.assertIn(self.ACTIVE, steps[pandoc]['if'])
+                self.assertEqual(steps[pandoc]['shell'], 'Rscript {0}')
+                self.assertIn('"rmarkdown" %in% deps', steps[pandoc]['run'])
+                installs = [i for i, s in enumerate(steps) if str(s.get('uses', '')).startswith(self.SRD)]
+                self.assertLess(fetch, pandoc)
+                self.assertLess(pandoc, min(installs))
+                for i in installs:
+                    self.assertEqual(steps[i]['with'].get('install-pandoc'), PANDOC)
 
     def test_without_a_pin_the_r_legs_run_heads_commands(self):
         import hashlib

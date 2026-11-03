@@ -117,6 +117,20 @@ jobs:
           FETCH_PYTHON: ${{ steps.companions.outputs.python }}
         run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_gate.py --root . --r-package >> "$GITHUB_OUTPUT"'
 
+      # setup-r-dependencies decides on pandoc with pak::pkg_deps("."), which resolves from the
+      # repositories alone and so cannot find the pinned companion installed above (a package
+      # CRAN may not have yet). With a pin the decision is made here, by the action's own rule
+      # (rmarkdown among DESCRIPTION's direct dependencies), and handed to each call below.
+      - name: Does the R package need pandoc
+        id: pandoc
+        if: steps.companions.outputs.active == 'true'
+        working-directory: r
+        shell: Rscript {0}
+        run: |
+          fields <- read.dcf("DESCRIPTION", fields = c("Depends", "Imports", "LinkingTo", "Suggests", "Enhances"))
+          deps <- trimws(sub("[(].*", "", unlist(strsplit(fields[!is.na(fields)], ","))))
+          cat("install=", tolower("rmarkdown" %in% deps), "\n", file = Sys.getenv("GITHUB_OUTPUT"), sep = "", append = TRUE)
+
       # The package cache restores R_LIBS_USER over the pin installed above, and its fallback
       # key matches any earlier cache for this OS, R and arch: with a pin, cache-version carries
       # its commit, so only that pin's cache is restored, and this run's is saved under it alone.
@@ -124,6 +138,7 @@ jobs:
       - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
         if: steps.companions.outputs.mode != 'release'
         with:
+          install-pandoc: ${{ steps.pandoc.outputs.install }}
           working-directory: r
           cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '1' }}
           extra-packages: any::rcmdcheck
@@ -131,6 +146,7 @@ jobs:
       - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
         if: steps.companions.outputs.mode == 'release'
         with:
+          install-pandoc: ${{ steps.pandoc.outputs.install }}
           working-directory: r
           cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '1' }}
           extra-packages: any::rcmdcheck ${{ steps.companion_r.outputs.package }}
@@ -194,6 +210,7 @@ jobs:
           R_LIBS_USER: ${{ runner.temp }}/r-floor/library
           R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
         with:
+          install-pandoc: ${{ steps.pandoc.outputs.install }}
           working-directory: r
           cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '1' }}
           extra-packages: any::rcmdcheck
@@ -205,6 +222,7 @@ jobs:
           R_LIBS_USER: ${{ runner.temp }}/r-floor/library
           R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
         with:
+          install-pandoc: ${{ steps.pandoc.outputs.install }}
           working-directory: r
           cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '1' }}
           extra-packages: any::rcmdcheck ${{ steps.companion_r.outputs.package }}

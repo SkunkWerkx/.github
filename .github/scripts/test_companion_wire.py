@@ -380,12 +380,13 @@ class FakePip:
     which it records. `python` is the interpreter command the wiring was given."""
     def __init__(self, root, report='report-abi3.json', python=('/x/bin/python',)):
         self.root, self.report, self.python = Path(root), report, list(python)
-        self.calls, self.installed = [], []
+        self.calls, self.installed, self.kwargs = [], [], []
         self.edit = lambda text: text
 
-    def __call__(self, argv, cwd=None, check=False, capture_output=False, text=False, **_):
+    def __call__(self, argv, cwd=None, check=False, capture_output=False, text=False, **kwargs):
         argv = list(map(str, argv))
         self.calls.append(argv)
+        self.kwargs.append(kwargs)
         assert argv[:len(self.python) + 2] == self.python + ['-m', 'pip'], argv
         if '--dry-run' in argv:
             if self.report == 'nomatch.stderr':
@@ -427,6 +428,14 @@ class WirePythonTests(unittest.TestCase):
         self.assertIn(REQUIREMENT, before)
         self.assertEqual(self.pyproject.read_text(),
                          before.replace(REQUIREMENT, 'dependencies = ["hypercast==1.0.0"]'))
+
+    def test_the_dry_run_report_is_read_as_utf8_whatever_the_code_page(self):
+        # The report carries the wheel's README; on Windows a pipe is cp1252, where pip failed on
+        # HyperCast's check marks. pip is told to write UTF-8, and the report is decoded so.
+        pip = FakePip(self.root)
+        self.wire(pip)
+        self.assertEqual(pip.kwargs[0].get('encoding'), 'utf-8')
+        self.assertEqual((pip.kwargs[0].get('env') or {}).get('PYTHONIOENCODING'), 'utf-8')
 
     def test_wire_python_free_threaded_takes_the_abi3t_wheel(self):
         pip = FakePip(self.root, 'report-abi3t.json')

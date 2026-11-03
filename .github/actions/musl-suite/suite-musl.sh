@@ -284,7 +284,7 @@ case "$binding" in
   # tarball the host packed with this rid's addon (companion_npm wire, which regenerates and
   # proves the lock); after `npm ci`, and before the build and the suite, the installed package
   # is proven to be that tarball's. Bun's image has no npm: companion_npm unpack installs the
-  # same tarball into node_modules and proves it, before `bun test`.
+  # same tarball into node_modules and proves it, before `bun run test:bun`.
   node)
     addon=$(mktemp -d)
     trap 'rm -rf "$addon"' EXIT
@@ -332,7 +332,9 @@ case "$binding" in
       companion_npm /src /work /forge /work/typescript unpack
       cd /work/typescript
       echo "== bun $(bun --version), Alpine $(cat /etc/alpine-release), $RID"
-      bun test tests/
+      # The package script test:bun, as the hosted legs run it through npm: its flags, a
+      # timeout among them, hold here too.
+      bun run test:bun
     '
     cp "$addon"/*.node "$lib_dir/"
     ;;

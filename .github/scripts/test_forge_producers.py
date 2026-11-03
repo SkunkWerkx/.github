@@ -1077,7 +1077,7 @@ class BuildNativeContracts(unittest.TestCase):
         self.assertIn('readelf -d', arm)
         self.assertNeededGateIsExact(arm)
         self.assertIn('oven/bun:alpine', arm)
-        self.assertIn('bun test tests/', arm)
+        self.assertIn('bun run test:bun', arm)
 
     def assertNeededGateIsExact(self, script):
         # The count as well as the name: "libc.musl-"*".so.1 " alone also matches
