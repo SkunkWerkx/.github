@@ -15,7 +15,7 @@ import npm_package
 from release_package_metadata import WASI_RUNTIME, npm_all_names, npm_filename
 from test_package_inventory_metadata import NODE_SUFFIXES, NODE_WASI, WASI_RUNTIME_PINS, write_npm, write_tar
 
-ENGINES = '^22.13.0 || >=23.5.0'
+ENGINES = '^22.14.0 || >=23.6.0'
 WASI_FILES = (f'hypercast.{NODE_WASI}.wasm', 'hypercast.wasip1.cjs', 'hypercast.wasip1.d.cts',
               'hypercast.wasip1-browser.js', 'hypercast.wasip1-deferred.js', 'hypercast.wasip1-deferred.d.ts')
 CFG = SimpleNamespace(crate='hypercast', node_platforms=NODE_PLATFORMS, node_wasi=NODE_WASI)

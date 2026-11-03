@@ -35,10 +35,12 @@ import tempfile
 import hyper_config
 from release_package_metadata import NPM_SCOPE, WASI_RUNTIME, npm_all_names, npm_filename, npm_tarball, npm_wasi_name
 
-# The WASI package's own Node floor: `node:wasi`'s reactor `initialize` and the WASI preview1
-# surface the loader uses ship in 22.13 and 23.5. The root package carries the same range, and
-# `create-npm-dirs` copies it; this check holds the WASI package to it even if the root moves.
-WASI_NODE_ENGINES = '^22.13.0 || >=23.5.0'
+# The WASI package's own Node floor: Node-API 10, which the addons build against, ships in
+# 22.14 and 23.6 (the runtime's own floor, `node:wasi`'s reactor `initialize` and the WASI
+# preview1 surface the loader uses, is lower: 22.13 and 23.5). The root package carries the same
+# range, and `create-npm-dirs` copies it; this check holds the WASI package to it even if the
+# root moves.
+WASI_NODE_ENGINES = '^22.14.0 || >=23.6.0'
 
 
 def default_runner(cmd, cwd):
