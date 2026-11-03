@@ -37,7 +37,7 @@ if args[:2] == ['exec', 'rbwasm']:
     sys.exit(0)
 if args[:1] == ['info']:
     text = Path(os.environ['BUNDLE_GEMFILE']).read_text()
-    found = re.search(r"gem '" + re.escape(args[1]) + r"', path: '([^']*)'", text)
+    found = re.search(r'gem "' + re.escape(args[1]) + r'", path: "([^"]*)"', text)
     print(found[1] if found else f'{os.environ["HOME"]}/.gem/ruby/4.0.0/gems/{args[1]}-1.0.0')
     sys.exit(0)
 sys.exit(3)

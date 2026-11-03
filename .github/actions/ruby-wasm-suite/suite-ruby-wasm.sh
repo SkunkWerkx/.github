@@ -86,7 +86,7 @@ pack() {
 # >>> companion-pins
 # The pinned companion (companion-pins), only with .companions/env, which fetch-companions alone
 # writes: it placed the companion's ruby-wasm-<abi> archive in the pin (checked against
-# SHA256SUMS) and gave the smoke Gemfile `gem '<companion>-wasm', path:` this unpacked gem. Each
+# SHA256SUMS) and gave the smoke Gemfile `gem "<companion>-wasm", path:` this unpacked gem. Each
 # link packs that gem from the pin as the companion's release does (`rake wasm:gem[<abi>]`) and
 # unpacks it there; between the smoke Gemfile's install and rbwasm, companion_origin.py proves
 # Bundler took it and that it carries the staged archive, so rbwasm never links RubyGems' copy.

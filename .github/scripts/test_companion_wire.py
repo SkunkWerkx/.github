@@ -1053,7 +1053,7 @@ class WireRubyTests(unittest.TestCase):
         # The Gemfile gains the path gem, and nothing else in it moves.
         after = (self.root / 'ruby' / 'Gemfile').read_text()
         self.assertTrue(after.startswith(gemfile))
-        self.assertEqual(after[len(gemfile):].strip().splitlines()[-1], f"gem 'hypercast', path: '{self.gem.as_posix()}'")
+        self.assertEqual(after[len(gemfile):].strip().splitlines()[-1], f'gem "hypercast", path: "{self.gem.as_posix()}"')
         # The gemspec's requirement (the release its code needs) becomes the pin's exact version.
         changed, _ = self.changed(GEMSPEC, gemspec)
         self.assertEqual(changed, [('  spec.add_dependency "hypercast", "~> 1.0"', '  spec.add_dependency "hypercast", "= 1.0.0"')])
@@ -1065,6 +1065,19 @@ class WireRubyTests(unittest.TestCase):
         self.assertEqual((lib / '4.0' / 'hypercast_native.bundle').read_bytes(), b'magnus 4.0')
         self.assertEqual((lib / '3.4' / 'hypercast_native.bundle').read_bytes(), b'magnus 3.4')
         self.assertEqual((lib / 'native' / 'osx-arm64' / 'libhypercast.dylib').read_bytes(), b'fiddle library')
+
+    def test_ruby_literals_are_double_quoted_and_read_back(self):
+        # The wired Gemfile is in the job's tree, which a consumer's RuboCop lints: the default
+        # Style/StringLiterals refuses a single-quoted literal (HyperTabular's first pinned
+        # board). Double quotes then escape `#` as well, or a path holding `#{` interpolates.
+        import companion_origin
+        for text in ('/home/runner/work/x/.companions/hypercast/ruby', 'a"b', "a'b", 'a#{x}b', 'a\\b'):
+            with self.subTest(text=text):
+                literal = companion_wire._ruby_quote(text)
+                self.assertTrue(literal.startswith('"') and literal.endswith('"'), literal)
+                self.assertEqual(companion_origin._ruby_string(literal[0], literal[1:-1]), text)
+        # A single-quoted literal a consumer wrote still reads as Ruby reads it.
+        self.assertEqual(companion_origin._ruby_string("'", "a\\'b\\\\c\\#"), "a'b\\c\\#")
 
     def test_wire_ruby_registry_copy_is_rejected(self):
         # A Gemfile that already takes the companion from rubygems.org (or from another path) is
@@ -1112,7 +1125,7 @@ class WireRubyTests(unittest.TestCase):
         # The lint leg stages nothing: the gem's source alone is what Bundler resolves there.
         root = ruby_checkout(Path(self.tmp.name) / 'lint', {})
         companion_wire.wire_ruby(root, RUBY_ENV)
-        self.assertIn("gem 'hypercast', path:", (root / 'ruby' / 'Gemfile').read_text())
+        self.assertIn('gem "hypercast", path:', (root / 'ruby' / 'Gemfile').read_text())
         self.assertFalse((root / '.companions' / 'hypercast' / 'ruby' / 'lib' / 'hypercast').exists())
 
     def test_wire_ruby_rewrites_every_form(self):
@@ -1169,9 +1182,9 @@ class WireRubyWasmTests(unittest.TestCase):
         self.assertEqual(companion_wire.ruby_wasm_gem(self.root, 'hypercast', '1.0.0'), wasm)
         after = self.smoke.read_text()
         self.assertTrue(after.startswith(smoke))
-        self.assertEqual(after[len(smoke):].strip().splitlines()[-1], f"gem 'hypercast-wasm', path: '{wasm.as_posix()}'")
+        self.assertEqual(after[len(smoke):].strip().splitlines()[-1], f'gem "hypercast-wasm", path: "{wasm.as_posix()}"')
         # The host's Gemfile still takes the pin, as on every Ruby leg.
-        self.assertIn(f"gem 'hypercast', path: '{self.gem.as_posix()}'", (self.root / 'ruby' / 'Gemfile').read_text())
+        self.assertIn(f'gem "hypercast", path: "{self.gem.as_posix()}"', (self.root / 'ruby' / 'Gemfile').read_text())
         files = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
         companion_wire.wire_ruby(self.root, RUBY_ENV)
         self.assertEqual({p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}, files)

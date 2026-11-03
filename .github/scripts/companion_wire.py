@@ -34,8 +34,8 @@ companion_origin's.
         package, where a consumer names it, is packed by npm_package.pack_wasi; on a leg staging
         every addon (the consumer tests) the release's whole set by npm_package.pack, for the
         job's own registry, named to later steps as <NAME>_TARBALLS through $GITHUB_ENV.
-  ruby  Every gemspec requirement on <name> rewritten to `= <NAME>_VERSION`, `gem '<name>', path:
-        '<root>/<RUBY_REQ>'` appended to each Gemfile beside such a gemspec that takes it
+  ruby  Every gemspec requirement on <name> rewritten to `= <NAME>_VERSION`, `gem "<name>", path:
+        "<root>/<RUBY_REQ>"` appended to each Gemfile beside such a gemspec that takes it
         (`gemspec`), and the leg's binaries, each checked against SHA256SUMS, placed in the pinned
         gem where it loads them: each ruby-native-<rid>-<abi> extension in lib/<name>/<abi>/, the
         native-<rid> library in lib/<name>/native/<rid>/ for Fiddle, each ruby-wasm-<abi> archive
@@ -916,7 +916,10 @@ def _pin_gemspec(text, path, name, version):
 
 
 def _ruby_quote(text):
-    return "'" + text.replace('\\', '\\\\').replace("'", "\\'") + "'"
+    """A Ruby string literal for text, double-quoted as RuboCop's default Style/StringLiterals
+    wants (a consumer's lint runs over the job's tree, the wired Gemfile included): `\\`, `"`
+    and `#` (which would start an interpolation) escaped. companion_origin._ruby_string reads it."""
+    return '"' + re.sub(r'([\\"#])', r'\\\1', text) + '"'
 
 
 # The Magnus extension each ruby-native-<rid>-<abi> artifact holds, the shared library a
@@ -980,7 +983,7 @@ def _gemspec_statement(statement):
 
 def wire_ruby(root, env):
     """The pinned gem made the one Bundler resolves: every gemspec requirement on it rewritten to
-    `= <version>`, `gem '<name>', path: '<pin>'` added to each Gemfile that takes such a gemspec,
+    `= <version>`, `gem "<name>", path: "<pin>"` added to each Gemfile that takes such a gemspec,
     and the leg's binaries, each checked against SHA256SUMS, placed where the gem loads them (each
     ABI's Magnus extension and the Fiddle library). A Gemfile already naming the gem is refused:
     the pin would silently override it, or it the pin.

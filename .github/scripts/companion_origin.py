@@ -598,7 +598,7 @@ def _ruby_wasm_consumer(root, name, version, only=None):
     if not statements:
         raise OriginError(binding, f'no gem {wasm_name!r} with the pin\'s path: (rubygems.org resolves it, through '
                                    f'the consumer\'s wasm gem)', expected)
-    found = [m.group(2) for s in statements for m in [path_arg.search(s)] if m]
+    found = [_ruby_string(m.group(1), m.group(2)) for s in statements for m in [path_arg.search(s)] if m]
     if len(statements) != 1 or len(found) != 1 or Path(found[0]).resolve() != wanted:
         raise OriginError(binding, '; '.join(statements), expected)
     return path.parent
@@ -695,6 +695,14 @@ def _bundler_path(run, bundle, root, consumer, name, gem, expected):
     return found
 
 
+def _ruby_string(quote, body):
+    """A Ruby string literal's value, from its quote and the text between: single quotes escape
+    only `\\` and `'`; double quotes, as companion_wire._ruby_quote writes them, `\\`, `"` and
+    `#`. Any other escape is left as written, so a path it changes does not match the pin's."""
+    escapes = "\\'" if quote == "'" else '\\"#'
+    return re.sub(r'\\(.)', lambda m: m[1] if m[1] in escapes else m[0], body)
+
+
 def _ruby_consumers_simple(root, name, gem, expected):
     """The directories whose Gemfile takes the gem by the pin's path; a Gemfile naming the gem
     otherwise, or one beside a gemspec requiring the gem without it, is an OriginError."""
@@ -715,8 +723,7 @@ def _ruby_consumers_simple(root, name, gem, expected):
                     raise OriginError(binding, f'no gem {name!r} with the pin\'s path: (rubygems.org resolves it)',
                                       expected)
                 continue
-            found = [m.group(2).replace("\\'", "'").replace('\\\\', '\\')
-                     for s in statements for m in [path_arg.search(s)] if m]
+            found = [_ruby_string(m.group(1), m.group(2)) for s in statements for m in [path_arg.search(s)] if m]
             if len(statements) != 1 or len(found) != 1 or Path(found[0]).resolve() != gem:
                 raise OriginError(binding, '; '.join(statements), expected)
             consumers.append(directory)

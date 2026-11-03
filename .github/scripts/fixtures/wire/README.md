@@ -26,11 +26,11 @@ HyperTabular's own manifests, copied unchanged from its `hyper_conversion` branc
 - `ruby/ruby/Gemfile`, `ruby/ruby/hypertabular.gemspec`: the gem. The gemspec requires
   `hypercast` `~> 1.0` (RubyGems has 1.0.0, so an unwired leg installs that copy) and the
   Gemfile takes the gemspec (`gemspec`). The wiring rewrites the requirement to `= 1.0.0` and
-  appends `gem 'hypercast', path: '<the pin>'`.
+  appends `gem "hypercast", path: "<the pin>"`.
 - `ruby/ruby/wasm-smoke/Gemfile`: the ruby.wasm smoke's, which names no gem literally and takes
   the consumer's own wasm gem from `WASM_GEM_DIR`. Every leg but build-ruby-wasm leaves it
   alone; there, with `ruby-wasm-<abi>` staged, the wiring appends
-  `gem 'hypercast-wasm', path: '<root>/.companions/hypercast-wasm/hypercast-wasm-<version>'`,
+  `gem "hypercast-wasm", path: "<root>/.companions/hypercast-wasm/hypercast-wasm-<version>"`,
   where suite-ruby-wasm.sh unpacks the gem the pin packs.
 - `php/composer.json`, `php/php/composer.json`: the root manifest, requiring `ext-hypercast`
   `^1.1`, and the suite's, which requires no extension. The PHP wiring changes neither: it names
