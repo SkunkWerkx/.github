@@ -288,9 +288,11 @@ class Packages(unittest.TestCase):
         repo, _, records = self.history()
         prefix = f'repos/{repo}/actions/runs/66/attempts/1/jobs?per_page=50&page='
         publisher = records[prefix + '1']['jobs'][0]
-        records[prefix + '1'] = {'total_count': 101, 'jobs': [
-            {**publisher, 'id': i + 10, 'name': 'unrelated'} for i in range(100)]}
-        records[prefix + '2'] = {'total_count': 101, 'jobs': [publisher]}
+        # A full page is JOBS_PER_PAGE jobs, as GitHub serves it: never more than the page asked for.
+        full = self.p.JOBS_PER_PAGE
+        records[prefix + '1'] = {'total_count': full + 1, 'jobs': [
+            {**publisher, 'id': i + 10, 'name': 'unrelated'} for i in range(full)]}
+        records[prefix + '2'] = {'total_count': full + 1, 'jobs': [publisher]}
         self.require_unused(records=records)
 
     def test_same_run_initial_upload_needs_no_history_but_rerun_checks_previous_attempts(self):
