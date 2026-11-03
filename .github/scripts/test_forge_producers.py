@@ -38,7 +38,7 @@ class PieAcceptanceContracts(unittest.TestCase):
         # to the tap's current-minor `php` on every 8.3 and 8.4 macOS leg.
         tap = self.text.index('          brew tap shivammathur/php\n')
         trust = self.text.index('          brew trust shivammathur/php\n')
-        probe = self.text.index('          formula="shivammathur/php/php@$MINOR"\n')
+        probe = self.text.index('          formula="shivammathur/php/php@$MINOR$suffix"\n')
         self.assertTrue(tap < trust < probe, (tap, trust, probe))
         # ... and the probe's refusal, if it ever comes back, is in the log, not /dev/null.
         self.assertIn('if ! brew info --formula "$formula" >/dev/null; then', self.text)
@@ -166,6 +166,28 @@ class PieAcceptanceContracts(unittest.TestCase):
         self.assertIn('const TABULAR_INPUT = "a,b,c\\n12x4,256,x\\n -1,7,no\\n";', php)
         self.assertIn("extension_loaded('hypercast')", php)
 
+    def test_each_leg_installs_into_a_php_of_its_thread_safety(self):
+        # Both ways on every platform: setup-php's phpts, the tap's -zts formulae, and the
+        # official php:<minor>-zts-alpine image on musl (Alpine packages no ZTS PHP).
+        setup = next(step for step in self.steps if step.get('uses', '').startswith('shivammathur/setup-php'))
+        self.assertEqual(setup['env']['phpts'], '${{ matrix.ts }}')
+        self.assertEqual(self.workflow['jobs']['install']['env']['TS'], '${{ matrix.ts }}')
+        self.assertIn("suffix=''; if [ \"$TS\" = zts ]; then suffix=-zts; fi", self.text)
+        self.assertIn('formula=shivammathur/php/php$suffix', self.text)
+        fetch = self.step("Fetch this leg's zip from the Release, and verify it")
+        self.assertIn('--extension "$EXTENSION" --ts "$TS"', fetch['run'])
+        alpine = self.step('Install with PIE, then check from a fresh PHP (Alpine)')['run']
+        self.assertIn('"php:$MINOR-zts-alpine"', alpine)
+        self.assertIn('if [ "$TS" = zts ]; then', alpine)
+        install = self.workflow['jobs']['install']
+        self.assertEqual(install['name'], "${{ matrix.rid }} PHP ${{ matrix.minor }} ${{ matrix.ts }}")
+        # The leg's PHP is checked to be what the leg names before PIE asks it for a name.
+        check = self.step("The leg's PHP is its thread safety")
+        self.assertIn('PHP_ZTS', check['run'])
+        names = [step.get('name') for step in self.steps]
+        self.assertLess(names.index("The leg's PHP is its thread safety"),
+                        names.index('Install with PIE, then check from a fresh PHP'))
+
     def test_companions_install_first_on_every_leg(self):
         # HyperTabular's extension requires ext-hypercast: PIE installs each companion before the
         # package, as a consumer must, on both triggers and both install steps.
@@ -203,7 +225,7 @@ class PhpExtensionContracts(unittest.TestCase):
         # to the tap's current-minor `php` on every 8.3 and 8.4 macOS leg.
         tap = self.text.index('          brew tap shivammathur/php\n')
         trust = self.text.index('          brew trust shivammathur/php\n')
-        probe = self.text.index('          formula="shivammathur/php/php@$MINOR"\n')
+        probe = self.text.index('          formula="shivammathur/php/php@$MINOR$suffix"\n')
         self.assertTrue(tap < trust < probe, (tap, trust, probe))
         # ... and the probe's refusal, if it ever comes back, is in the log, not /dev/null.
         self.assertIn('if ! brew info --formula "$formula" >/dev/null; then', self.text)
@@ -228,6 +250,31 @@ class PhpExtensionContracts(unittest.TestCase):
         self.assertEqual(inputs['php_companions']['default'], '')
         self.assertEqual(inputs['mode']['default'], 'release')
 
+    def test_each_leg_builds_against_a_php_of_its_thread_safety(self):
+        self.assertEqual(self.jobs['build']['env']['TS'], '${{ matrix.ts }}')
+        self.assertEqual(self.jobs['build']['name'],
+                         "${{ matrix.rid }} PHP ${{ matrix.minor }} ${{ matrix.ts }}")
+        setup = next(step for step in self.steps if step.get('uses', '').startswith('shivammathur/setup-php'))
+        self.assertEqual(setup['env']['phpts'], '${{ matrix.ts }}')
+        self.assertIn("suffix=''; if [ \"$TS\" = zts ]; then suffix=-zts; fi", self.text)
+        self.assertIn('formula=shivammathur/php/php$suffix', self.text)
+        musl = self.step('Build, load-check, test and pack on Alpine')
+        self.assertTrue(musl['run'].rstrip("'").endswith('"$PIE_PHAR" php-dist "$TS"'), musl['run'])
+        fetch = self.step('Fetch the companions')
+        self.assertEqual(fetch['with']['leg'],
+                         'hyper-build-php-extension.yml:build:${{ matrix.rid }}:minor=${{ matrix.minor }}:ts=${{ matrix.ts }}')
+        # A PHP of the other mode would build, load and pack a zip named for it under this leg's
+        # artifact; the leg fails first, before the build.
+        check = self.step("The leg's PHP is its thread safety")
+        self.assertEqual(check['if'], "matrix.kind != 'musl'")
+        self.assertIn('PHP_ZTS', check['run'])
+        names = [step.get('name') for step in self.steps]
+        self.assertLess(names.index("The leg's PHP is its thread safety"), names.index('Build the extension'))
+        script = self.MUSL.read_text()
+        self.assertIn('ts=${8:-nts}', script)
+        self.assertIn('"php:$minor-zts-alpine"', script)
+        self.assertIn('PHP_ZTS', script)
+
     def test_php_workflow_wires_pr_legs(self):
         inputs = self.workflow['on']['workflow_call']['inputs']
         self.assertEqual(inputs['pr_legs']['default'], 'newest-plus-floor')
@@ -237,7 +284,8 @@ class PhpExtensionContracts(unittest.TestCase):
         # Under two-paths the linux-x64 leg takes the image's PHP: setup-php is off there, and
         # a step holds the image's PHP to the leg's minor (with php-config beside it).
         setup = next(step for step in self.steps if step.get('uses', '').startswith('shivammathur/setup-php'))
-        two_paths = "inputs.pr_legs == 'two-paths' && inputs.mode == 'pr' && matrix.rid == 'linux-x64'"
+        two_paths = ("inputs.pr_legs == 'two-paths' && inputs.mode == 'pr' && matrix.rid == 'linux-x64' && "
+                     "matrix.ts == 'nts'")
         self.assertIn(f"!({two_paths})", setup['if'])
         image = self.step("The image's PHP is the leg's minor")
         self.assertEqual(image['if'], two_paths)
@@ -334,7 +382,9 @@ class PhpExtensionContracts(unittest.TestCase):
         self.assertEqual(load['if'], "matrix.kind != 'musl'")
         self.assertIn('-d "extension=$EXTENSION"', load['run'])
         upload = next(step for step in self.steps if str(step.get('uses', '')).startswith('actions/upload-artifact@'))
-        self.assertEqual(upload['with']['name'], 'php-ext-${{ matrix.rid }}-${{ matrix.minor }}')
+        # The literal name php_ext_package.artifact_name gives the leg: companion_map resolves
+        # upload names by plain lookup, and NTS keeps the name existing pins carry.
+        self.assertEqual(upload['with']['name'], '${{ matrix.artifact }}')
         self.assertEqual(upload['with']['path'], 'php-dist/*.zip')
         attest = next(step for step in self.steps if str(step.get('uses', '')).startswith('actions/attest-build-provenance@'))
         self.assertIn("inputs.attest_native && inputs.mode == 'release'", attest['if'])

@@ -1,26 +1,29 @@
 name: HyperForge — build, test and pack the PHP extension for PIE
 
 # The PHP binding is a Zend extension, the core crate's `php` feature built with ext-php-rs, and
-# it ships the way PIE installs one: a pre-packaged zip per platform and PHP minor, attached to
-# the GitHub Release (php_ext_package.py has the names). This workflow builds those zips, one job
-# per (platform, minor), each against the PHP it is named for:
+# it ships the way PIE installs one: a pre-packaged zip per platform, PHP minor and thread safety,
+# attached to the GitHub Release (php_ext_package.py has the names). This workflow builds those
+# zips, one job per (platform, minor, NTS or ZTS), each against the PHP it is named for:
 #
 #   * `release`: the six platforms, linux-x64, linux-arm64, linux-musl-x64, linux-musl-arm64,
-#     osx-arm64 and win-x64, on every minor in php_versions; the zips a release ships.
-#   * `pr`: the six platforms on the newest minor, plus linux-x64 and win-x64 on
+#     osx-arm64 and win-x64, on every minor in php_versions, NTS and ZTS; the zips a release ships.
+#   * `pr`: the six platforms on the newest minor both ways, plus linux-x64 and win-x64 NTS on
 #     php_floor_version (win-x64 because the floor's Windows build can take another toolset).
 #
-# NTS only. There is no win-arm64 leg: PHP has never shipped a native Windows ARM64 build, and an
+# ZTS is its own build, never the NTS bytes renamed: PHP refuses a module whose build ID names
+# the other mode, ext-php-rs reaches the engine's globals through TSRM under ZTS, and a Windows TS
+# PHP is php8ts.dll, which the crates' own extern blocks link by name. There is no win-arm64 leg: PHP has never shipped a native Windows ARM64 build, and an
 # x64 PHP running under emulation there loads the win-x64 zip. There is no Intel macOS leg
 # either: Homebrew bottles nothing for it, and the leg that compiled an x86_64 PHP from source
 # to test against was retired on 2026-10-31 (php_ext_package.py has the receipt). A leg takes
 # the PHP its platform packages, or there is no leg; no leg builds a language runtime.
 #
-# Each leg, in order: build; on glibc, hold the library to the glibc floor; load-check it into
-# its PHP, which is where an extension built for the wrong ABI is refused; run the binding's
-# suite through it (`composer test`); pack and verify the zip against PIE's own naming code;
-# attest it (release mode); upload it as php-ext-<rid>-<minor>. The suite runs on every leg.
-# The stub diff runs on one leg, linux-x64 on the newest minor, where cargo-php is installed and
+# Each leg, in order: check that its PHP is the thread safety it is named for; build; on glibc,
+# hold the library to the glibc floor; load-check it into its PHP, which is where an extension
+# built for the wrong ABI is refused; run the binding's suite through it (`composer test`); pack
+# and verify the zip against PIE's own naming code; attest it (release mode); upload it as
+# php-ext-<rid>-<minor>, with -zts for a ZTS leg. The suite runs on every leg.
+# The stub diff runs on one leg, linux-x64 NTS on the newest minor, where cargo-php is installed and
 # StubTest regenerates the stubs and compares them with the committed file; clippy runs over the
 # `php` feature there too, the one feature set check-core can't build.
 #
@@ -30,11 +33,13 @@ name: HyperForge — build, test and pack the PHP extension for PIE
 # once; nothing types either by hand.
 #
 # How each platform gets its PHP:
-#   * linux glibc and win-x64: setup-php, which serves every minor on Ubuntu and Windows.
-#   * musl: Alpine's php8X-dev for the build, php:<minor>-cli-alpine for the load check, the
-#     suite and the pack (php_ext_musl.sh says why two).
-#   * osx-arm64: the shivammathur/php tap (its newest minor is `php`, older ones `php@X.Y`),
-#     installed with brew directly: setup-php installs from the same tap but discards brew's
+#   * linux glibc and win-x64: setup-php, which serves every minor on Ubuntu and Windows, NTS or
+#     ZTS (`phpts`).
+#   * musl: NTS, Alpine's php8X-dev for the build, php:<minor>-cli-alpine for the load check, the
+#     suite and the pack; ZTS, php:<minor>-zts-alpine for all of it, since Alpine packages no ZTS
+#     PHP (php_ext_musl.sh says why).
+#   * osx-arm64: the shivammathur/php tap (its newest minor is `php`, older ones `php@X.Y`, each
+#     with a `-zts` twin), installed with brew directly: setup-php installs from the same tap but discards brew's
 #     output, and on 2026-10-08 failed there with nothing but "Could not setup PHP 8.5"
 #     (HyperUuid run 37710502986).
 #
@@ -49,7 +54,7 @@ on:
         type: string
         required: true
       mode:
-        description: "`release` builds every platform on every minor in php_versions and attests the zips; `pr` builds every platform on the newest minor plus linux-x64 on php_floor_version, and attests nothing"
+        description: "`release` builds every platform on every minor in php_versions, NTS and ZTS, and attests the zips; `pr` builds every platform on the newest minor both ways plus linux-x64 and win-x64 NTS on php_floor_version, and attests nothing"
         type: string
         default: release
       php_versions:
@@ -61,7 +66,7 @@ on:
         type: string
         default: ""
       pr_legs:
-        description: "pr mode's legs: `newest-plus-floor` (the default: every platform on the newest minor, linux-x64 and win-x64 on the floor) or `two-paths` (the PR board's: linux-x64 on the newest minor from the image's own PHP, win-x64 on the floor from setup-php). Ignored in release mode."
+        description: "pr mode's legs: `newest-plus-floor` (the default: every platform on the newest minor, NTS and ZTS, linux-x64 and win-x64 NTS on the floor) or `two-paths` (the PR board's: linux-x64 NTS on the newest minor from the image's own PHP, win-x64 NTS on the floor and win-x64 ZTS on the newest from setup-php). Ignored in release mode."
         type: string
         default: "newest-plus-floor"
       php_companions:
@@ -142,7 +147,7 @@ jobs:
 
   build:
     needs: version
-    name: ${{ matrix.rid }} PHP ${{ matrix.minor }}
+    name: ${{ matrix.rid }} PHP ${{ matrix.minor }} ${{ matrix.ts }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.version.outputs.matrix) }}
@@ -152,6 +157,7 @@ jobs:
       CRATE: ${{ inputs.crate }}
       RID: ${{ matrix.rid }}
       MINOR: ${{ matrix.minor }}
+      TS: ${{ matrix.ts }}
       PACKAGE_VERSION: ${{ needs.version.outputs.package_version }}
       RELEASE_TAG: ${{ needs.version.outputs.release_tag }}
       ENV_PREFIX: ${{ needs.version.outputs.env_prefix }}
@@ -232,7 +238,7 @@ jobs:
         id: fetch
         uses: ./.hyperforge/.github/actions/fetch-companions
         with:
-          leg: hyper-build-php-extension.yml:build:${{ matrix.rid }}:minor=${{ matrix.minor }}
+          leg: hyper-build-php-extension.yml:build:${{ matrix.rid }}:minor=${{ matrix.minor }}:ts=${{ matrix.ts }}
 
       # The phar the packer runs PIE's own naming code from: the version and sha256 are
       # php_ext_package.py's, and the attestation is PIE's release workflow's, so the bytes are
@@ -260,22 +266,22 @@ jobs:
           gh attestation verify "$phar" --owner php
           echo "PIE_PHAR=$phar" >> "$GITHUB_ENV"
 
-      # Under the PR board's `two-paths`, the linux-x64 leg takes the PHP the ubuntu-26.04
+      # Under the PR board's `two-paths`, the linux-x64 NTS leg takes the PHP the ubuntu-26.04
       # image ships (the newest minor, with php-config and Composer beside it) and skips the
       # setup-php minutes; the step after it holds the image to the leg's minor, so an image
       # that moves ahead of `php_versions` turns the leg red instead of building for a minor
       # the matrix never named.
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
-        if: (matrix.kind == 'glibc' || matrix.kind == 'windows') && !(inputs.pr_legs == 'two-paths' && inputs.mode == 'pr' && matrix.rid == 'linux-x64')
+        if: (matrix.kind == 'glibc' || matrix.kind == 'windows') && !(inputs.pr_legs == 'two-paths' && inputs.mode == 'pr' && matrix.rid == 'linux-x64' && matrix.ts == 'nts')
         env:
-          phpts: nts
+          phpts: ${{ matrix.ts }}
         with:
           php-version: ${{ matrix.minor }}
           tools: composer
           coverage: none
 
       - name: The image's PHP is the leg's minor
-        if: inputs.pr_legs == 'two-paths' && inputs.mode == 'pr' && matrix.rid == 'linux-x64'
+        if: inputs.pr_legs == 'two-paths' && inputs.mode == 'pr' && matrix.rid == 'linux-x64' && matrix.ts == 'nts'
         shell: bash
         env:
           MINOR: ${{ matrix.minor }}
@@ -299,11 +305,14 @@ jobs:
           # Homebrew loads a third-party tap's formulae only once the tap is trusted; without
           # this, `brew info` below refuses every php@MINOR and the leg falls back to `php`.
           brew trust shivammathur/php
-          formula="shivammathur/php/php@$MINOR"
+          # A ZTS leg takes each formula's -zts twin (php@8.4-zts, php-zts).
+          suffix=''; if [ "$TS" = zts ]; then suffix=-zts; fi
+          formula="shivammathur/php/php@$MINOR$suffix"
           # The probe's stderr stays in the log: a refusal must be readable, not a silent fallback.
           if ! brew info --formula "$formula" >/dev/null; then
-            formula=shivammathur/php/php
-            # The image's Homebrew core php shares the tap formula's name.
+            formula=shivammathur/php/php$suffix
+            # The image's Homebrew core php shares the tap formula's name, and its links clash
+            # with php-zts's, which is not keg-only either.
             brew uninstall --ignore-dependencies --force php >/dev/null 2>&1 || true
           fi
           brew install "$formula"
@@ -316,6 +325,18 @@ jobs:
           "$bin/php" -v
           echo "COMPOSER_PHP=$bin/php" >> "$GITHUB_ENV"
           echo "$bin" >> "$GITHUB_PATH"
+
+      # setup-php, the tap and the image each have a build of either kind; a leg handed the
+      # other would build, load-check and pack a zip named for that one, under this leg's
+      # artifact. The musl legs check theirs inside the containers (php_ext_musl.sh).
+      - name: The leg's PHP is its thread safety
+        if: matrix.kind != 'musl'
+        shell: bash
+        run: |
+          set -euo pipefail
+          got=$(php -r 'echo PHP_ZTS ? "zts" : "nts";')
+          [ "$got" = "$TS" ] || { echo "::error::the leg's PHP is $got, the leg wants $TS"; exit 1; }
+          php -v | head -1
 
       # Composer from its installer, checked against the published signature, run by the
       # leg's PHP.
@@ -449,8 +470,9 @@ jobs:
           "MSVC $env:MSVC_TOOLSET`: $((& $have).Name -join ', ')"
           "MSVC_VS_PATH=$($vs.installationPath)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
-      # ext-php-rs fetches the PHP devel pack matching `php -i` (version, NTS, compiler) and links
-      # its php8.lib. Its Windows path needs `#![feature(abi_vectorcall)]`, which is unstable
+      # ext-php-rs fetches the PHP devel pack matching `php -i` (version, NTS or TS, compiler) and
+      # links its php8.lib, or php8ts.lib for a TS PHP (the crates' build.rs ask the same PHP and
+      # link their own extern blocks to the same one). Its Windows path needs `#![feature(abi_vectorcall)]`, which is unstable
       # (rust-lang/rust#124485, open); stable rustc accepts a nightly feature only with the
       # bootstrap variable set, so it is set on this step alone, never wider. Each stable bump is
       # re-proven here. vcvarsall selects the leg's toolset for this step only; with its
@@ -521,7 +543,7 @@ jobs:
       - name: Build, load-check, test and pack on Alpine
         if: matrix.kind == 'musl'
         shell: bash
-        run: '"$FORGE_SCRIPTS/php_ext_musl.sh" "$CRATE" "$RID" "$MINOR" . .hyperforge "$PIE_PHAR" php-dist'
+        run: '"$FORGE_SCRIPTS/php_ext_musl.sh" "$CRATE" "$RID" "$MINOR" . .hyperforge "$PIE_PHAR" php-dist "$TS"'
 
       - name: Install the suite's Composer dependencies
         if: matrix.kind != 'musl'
@@ -580,6 +602,6 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: php-ext-${{ matrix.rid }}-${{ matrix.minor }}
+          name: ${{ matrix.artifact }}
           path: php-dist/*.zip
           if-no-files-found: error

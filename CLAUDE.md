@@ -88,7 +88,9 @@ osx-x64, native wheels, ruby.wasm, ext-php-rs). Release-only work gates on
 `inputs.mode != 'pr'`; a PR run must sign nothing. In the per-binding family below, `pr`
 also drops each workflow's osx-x64 job, Python's free-threaded rebuild off linux-x64 and R's
 floor legs, and `hyper-build-php-extension.yml`'s `pr_legs: two-paths` trims PHP to one
-glibc and one Windows leg; release mode ignores `pr_legs`. `hyper-build-wasm.yml`'s `archive`
+glibc leg and two Windows legs (NTS on the floor, ZTS on the newest: the one leg where the
+consumers' own extern blocks link `php8ts`, kept on PRs until ZTS has shipped through a release
+train); release mode ignores `pr_legs`. `hyper-build-wasm.yml`'s `archive`
 (default true) switches the browser-wasm archive build off for a pull request that cannot reach
 it (the Blazor check skips with it); the WASI, Rust browser and Go wasm jobs run without it.
 

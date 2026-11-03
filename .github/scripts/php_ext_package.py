@@ -1,11 +1,11 @@
 """The PHP extension's release zips, for PIE's `pre-packaged-binary` download method.
 
-One zip per platform and PHP minor (NTS only), attached to the GitHub Release, named the way PIE
-looks a binary up and holding one file:
+One zip per platform, PHP minor and thread safety (NTS and ZTS), attached to the GitHub Release,
+named the way PIE looks a binary up and holding one file:
 
-    Unix     php_{ext}-{tag}_php{X.Y}-{x86_64|arm64}-{linux|darwin}-{glibc|musl|bsdlibc}-nts.zip
+    Unix     php_{ext}-{tag}_php{X.Y}-{x86_64|arm64}-{linux|darwin}-{glibc|musl|bsdlibc}-{nts|zts}.zip
              holding {ext}.so (a macOS build too: PIE copies `{ext}.so` and nothing else)
-    Windows  php_{ext}-{tag}-{X.Y}-nts-{vs16|vs17}-x86_64.zip
+    Windows  php_{ext}-{tag}-{X.Y}-{nts|ts}-{vs16|vs17}-x86_64.zip
              holding the zip's stem plus .dll, the name PIE's Windows installer looks for
 
 `{ext}` is the extension's name, the consumer's crate (`--extension`, which the workflows pass as
@@ -36,7 +36,7 @@ deflate bytes never meet the attested ones.)
   pack    --library F --php PHP --pie PHAR --version TAG --extension EXT --out DIR
           names and writes the zip, verifies it, and prints its path
   verify  ZIP --php PHP --pie PHAR --version TAG --extension EXT
-  asset   --rid RID --minor X.Y --version TAG --extension EXT
+  asset   --rid RID --minor X.Y --version TAG --extension EXT [--ts nts|zts]
           prints the name of the zip one release leg ships, from the platform table
   matrix  --mode pr|release --versions "8.3 8.4 8.5" --floor 8.3
           prints hyper-build-php-extension.yml's build matrix as JSON
@@ -107,6 +107,10 @@ WINDOWS_TOOLSETS = {
     'vs17': ('14.44', 'Microsoft.VisualStudio.Component.VC.14.44.17.14.x86.x64'),
 }
 LIBCS = {'glibc': 'glibc', 'musl': 'musl', 'macos': 'bsdlibc'}
+# Every platform and minor ships both: NTS for php-fpm, mod_php's prefork and the CLI, ZTS for the
+# threaded hosts (FrankenPHP, Apache's worker and event MPMs, Windows' thread-safe builds). PHP
+# refuses a module whose build ID names the other mode, so each is built against its own PHP.
+THREAD_SAFETY = ('nts', 'zts')
 
 
 def minor_key(minor):
@@ -117,14 +121,16 @@ PR_LEGS = ('newest-plus-floor', 'two-paths')
 
 
 def matrix(mode, versions, floor, pr_legs='newest-plus-floor'):
-    """The build legs. `release`: every platform on every minor, the zips a release ships.
-    `pr`: every platform on the newest minor, plus linux-x64 and win-x64 on the floor (win-x64
-    because the floor's Windows build can take another toolset). The stub diff runs on one leg,
-    linux-x64 on the newest minor. A Windows leg names its MSVC toolset and component.
+    """The build legs, each NTS or ZTS (`ts`). `release`: every platform on every minor, both
+    ways, the zips a release ships. `pr`: every platform on the newest minor both ways, plus
+    linux-x64 and win-x64 NTS on the floor (win-x64 because the floor's Windows build can take
+    another toolset). The stub diff runs on one leg, linux-x64 NTS on the newest minor. A Windows
+    leg names its MSVC toolset and component, and every leg the artifact it uploads.
     `pr_legs` trims pr mode further and means nothing in release: `two-paths` is the PR
-    board's, the glibc path on linux-x64 at the newest minor and the Windows path on win-x64 at
-    the floor (the newest, with no floor), one leg per toolchain; macOS, arm64 and musl are the
-    release board's."""
+    board's, the glibc path on linux-x64 at the newest minor, the Windows path on win-x64 at
+    the floor (the newest, with no floor), one leg per toolchain, and win-x64 ZTS at the
+    newest, where the crates' own extern blocks link php8ts rather than php8; macOS, arm64,
+    musl and the other ZTS legs are the release board's."""
     minors = versions.split()
     if not minors or len(set(minors)) != len(minors) or not all(MINOR.match(m) for m in minors):
         raise ValueError(f'php_versions must be distinct X.Y minors, space-separated, not {versions!r}')
@@ -134,35 +140,52 @@ def matrix(mode, versions, floor, pr_legs='newest-plus-floor'):
     if pr_legs not in PR_LEGS:
         raise ValueError(f'pr_legs is one of {", ".join(PR_LEGS)}, not {pr_legs!r}')
     if mode == 'release':
-        pairs = [(platform, minor) for minor in sorted(minors, key=minor_key) for platform in PLATFORMS]
+        triples = [(platform, minor, ts) for minor in sorted(minors, key=minor_key) for ts in THREAD_SAFETY
+                   for platform in PLATFORMS]
     elif mode == 'pr' and pr_legs == 'two-paths':
         by_rid = {platform[0]: platform for platform in PLATFORMS}
-        pairs = [(by_rid['linux-x64'], newest), (by_rid['win-x64'], floor or newest)]
+        triples = [(by_rid['linux-x64'], newest, 'nts'), (by_rid['win-x64'], floor or newest, 'nts'),
+                   (by_rid['win-x64'], newest, 'zts')]
     elif mode == 'pr':
-        pairs = [(platform, newest) for platform in PLATFORMS]
+        triples = [(platform, newest, 'nts') for platform in PLATFORMS]
         if floor and floor != newest:
-            pairs += [(platform, floor) for platform in PLATFORMS if platform[0] in ('linux-x64', 'win-x64')]
+            triples += [(platform, floor, 'nts') for platform in PLATFORMS if platform[0] in ('linux-x64', 'win-x64')]
+        triples += [(platform, newest, 'zts') for platform in PLATFORMS]
     else:
         raise ValueError(f'mode is pr or release, not {mode!r}')
-    return {'include': [leg(rid, runner, kind, minor, rid == 'linux-x64' and minor == newest)
-                        for (rid, runner, kind), minor in pairs]}
+    return {'include': [leg(rid, runner, kind, minor, ts, rid == 'linux-x64' and minor == newest and ts == 'nts')
+                        for (rid, runner, kind), minor, ts in triples]}
 
 
-def leg(rid, runner, kind, minor, stubs):
-    entry = {'rid': rid, 'os': runner, 'kind': kind, 'minor': minor, 'stubs': stubs}
+def leg(rid, runner, kind, minor, ts, stubs):
+    entry = {'rid': rid, 'os': runner, 'kind': kind, 'minor': minor, 'ts': ts, 'stubs': stubs,
+             'artifact': artifact_name(rid, minor, ts)}
     if kind == 'windows':
         entry['msvc_toolset'], entry['msvc_component'] = WINDOWS_TOOLSETS[windows_compiler(minor)]
     return entry
+
+
+def artifact_name(rid, minor, ts):
+    """The CI artifact a leg uploads its zip as. NTS keeps the name it had before ZTS shipped,
+    which companion pins already name."""
+    return f'php-ext-{rid}-{minor}' + ('-zts' if ts == 'zts' else '')
+
+
+def require_ts(ts):
+    if ts not in THREAD_SAFETY:
+        raise ValueError(f'--ts is one of {", ".join(THREAD_SAFETY)}, not {ts!r}')
 
 
 def windows_compiler(minor):
     return WINDOWS_COMPILERS.get(minor, 'vs17')
 
 
-def leg_asset_name(rid, minor, tag, extension):
-    """The zip one release leg (platform `rid`, PHP `minor`) ships, from the platform table."""
+def leg_asset_name(rid, minor, tag, extension, ts='nts'):
+    """The zip one release leg (platform `rid`, PHP `minor`, thread safety `ts`) ships, from the
+    platform table."""
     require_tag(tag)
     require_extension(extension)
+    require_ts(ts)
     if not MINOR.match(minor):
         raise ValueError(f'--minor is an X.Y minor, not {minor!r}')
     kind = next((kind for name, _runner, kind in PLATFORMS if name == rid), None)
@@ -170,16 +193,22 @@ def leg_asset_name(rid, minor, tag, extension):
         raise ValueError(f'no PHP leg for {rid!r}: one of {", ".join(name for name, _, _ in PLATFORMS)}')
     family, arch = rid.split('-')[0], ARCHITECTURES[rid.rsplit('-', 1)[1]]
     if kind == 'windows':
-        return f'php_{extension}-{tag}-{minor}-nts-{windows_compiler(minor)}-{arch}.zip'
+        return f'php_{extension}-{tag}-{minor}-{windows_ts(ts == "zts")}-{windows_compiler(minor)}-{arch}.zip'
     system = {'linux': 'linux', 'osx': 'darwin'}[family]
-    return f'php_{extension}-{tag}_php{minor}-{arch}-{system}-{LIBCS[kind]}-nts.zip'
+    return f'php_{extension}-{tag}_php{minor}-{arch}-{system}-{LIBCS[kind]}-{ts}.zip'
+
+
+def windows_ts(zts):
+    """PIE's ThreadSafetyMode::asShort(), the Windows spelling: `ts` or `nts`."""
+    return 'ts' if zts else 'nts'
 
 
 def release_asset_names(tag, extension, minors=MINORS):
-    """Every zip a release attaches, PLATFORMS x minors, from the platform table: the names
-    asset_name() gives each leg's PHP (a test holds the two equal), without a PHP to ask."""
-    return [leg_asset_name(rid, minor, tag, extension)
-            for minor in sorted(minors, key=minor_key) for rid, _runner, _kind in PLATFORMS]
+    """Every zip a release attaches, PLATFORMS x minors x THREAD_SAFETY, from the platform table:
+    the names asset_name() gives each leg's PHP (a test holds the two equal), without a PHP to
+    ask."""
+    return [leg_asset_name(rid, minor, tag, extension, ts)
+            for minor in sorted(minors, key=minor_key) for ts in THREAD_SAFETY for rid, _runner, _kind in PLATFORMS]
 
 
 def php_facts(php):
@@ -211,8 +240,6 @@ def asset_name(facts, version, extension):
     family = FAMILIES.get(facts['os_family'])
     if family is None:
         raise ValueError(f'no PIE binary for {facts["os_family"]}: built for Linux, Darwin and Windows only')
-    if facts['zts']:
-        raise ValueError('a thread-safe (ZTS) PHP: only NTS builds are shipped')
     if facts['debug']:
         raise ValueError('a debug PHP: only release builds are shipped')
     arch = ARCHITECTURES.get(facts['machine'].lower())
@@ -223,9 +250,10 @@ def asset_name(facts, version, extension):
         compilers = [part.lower() for part in parts if re.fullmatch(r'V[CS]\d+', part)]
         if len(compilers) != 1:
             raise ValueError(f'no compiler in "PHP Extension Build" ({facts["extension_build"]})')
-        stem = f'php_{extension}-{version}-{facts["php"]}-nts-{compilers[0]}-{arch}'
+        stem = f'php_{extension}-{version}-{facts["php"]}-{windows_ts(facts["zts"])}-{compilers[0]}-{arch}'
         return f'{stem}.zip', f'{stem}.dll'
-    return f'php_{extension}-{version}_php{facts["php"]}-{arch}-{family}-{facts["libc"]}-nts.zip', f'{extension}.so'
+    ts = 'zts' if facts['zts'] else 'nts'
+    return f'php_{extension}-{version}_php{facts["php"]}-{arch}-{family}-{facts["libc"]}-{ts}.zip', f'{extension}.so'
 
 
 def pie_names(php, pie, version, extension):
@@ -318,6 +346,7 @@ def main():
     leg.add_argument('--minor', required=True, help='the PHP minor, X.Y')
     leg.add_argument('--version', required=True, help='the release tag, vX.Y.Z')
     leg.add_argument('--extension', required=True, help="the extension's name (the crate's)")
+    leg.add_argument('--ts', default='nts', help='the thread safety, nts (the default) or zts')
     legs = sub.add_parser('matrix', help="print the build workflow's matrix as JSON")
     legs.add_argument('--mode', dest='leg_mode', required=True, help='pr or release')
     legs.add_argument('--versions', required=True, help='the PHP minors, space-separated')
@@ -340,7 +369,7 @@ def run(args):
     elif args.mode == 'pie-pin':
         print(PIE_VERSION, PIE_SHA256)
     elif args.mode == 'asset':
-        print(leg_asset_name(args.rid, args.minor, args.version, args.extension))
+        print(leg_asset_name(args.rid, args.minor, args.version, args.extension, args.ts))
     elif args.mode == 'pack':
         print(pack(args.library, args.php, args.pie, args.version, args.extension, args.out))
     else:

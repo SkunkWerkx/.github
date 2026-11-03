@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 import companion_gate
+import php_ext_package
 
 FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'gate'
 REGISTRIES = ('crates.io', 'NuGet', 'Maven Central', 'PyPI', 'RubyGems', 'npm', 'Go', 'Packagist', 'GitHub Release')
@@ -28,6 +29,21 @@ def _is_cran(url):
     from urllib.parse import urlparse
     host = (urlparse(url).hostname or '').lower()
     return host == 'r-project.org' or host.endswith('.r-project.org') or 'cran' in host
+
+def zts_zips(crate, version):
+    """The ZTS PIE zips a release attaches, which a release recorded before they shipped lacks."""
+    return [name for name in php_ext_package.release_asset_names(f'v{version}', crate)
+            if name.endswith('-zts.zip') or '-ts-vs' in name]
+
+
+def attach_missing(fixture):
+    """The recorded HyperUuid 1.1.0 Release, with what it predates attached: the R tarball and the
+    ZTS zips."""
+    release = next(u for u in fixture['responses'] if '/releases/tags/' in u)
+    body = json.loads(fixture['responses'][release]['body'])
+    body['assets'] += [{'name': name} for name in zts_zips('hyperuuid', '1.1.0') + ['hyperuuid_1.1.0.tar.gz']]
+    fixture['responses'][release]['body'] = json.dumps(body)
+
 
 class Replay:
     """Serves the recorded responses, refuses CRAN and any URL nobody recorded, and remembers
@@ -96,15 +112,16 @@ class RegistryTests(unittest.TestCase):
         fixture = load('hyperuuid-1.1.0')
         replay = Replay(fixture)
         missing = companion_gate.check('hyperuuid', '1.1.0', http=replay, repo='SkunkWerkx/HyperUuid')
-        # Recorded live: HyperUuid 1.1.0 predates finalize-release attaching the R tarball, so
-        # its GitHub Release lacks exactly that, and nothing else is missing anywhere.
-        self.assertEqual(missing, ['GitHub Release: SkunkWerkx/HyperUuid v1.1.0 lacks hyperuuid_1.1.0.tar.gz'])
+        # Recorded live: HyperUuid 1.1.0 predates finalize-release attaching the R tarball and
+        # the ZTS PIE zips, so its GitHub Release lacks exactly those, and nothing else is
+        # missing anywhere.
+        lacks = 'GitHub Release: SkunkWerkx/HyperUuid v1.1.0 lacks '
+        self.assertEqual(sorted(missing), sorted([lacks + name for name in zts_zips('hyperuuid', '1.1.0')]
+                                                 + [lacks + 'hyperuuid_1.1.0.tar.gz']))
+        self.assertEqual(len(missing), 19)
         self.assertEqual(sorted(replay.asked), sorted(fixture['responses']))
-        # With the tarball attached, the gate passes.
-        release = next(u for u in fixture['responses'] if '/releases/tags/' in u)
-        body = json.loads(fixture['responses'][release]['body'])
-        body['assets'].append({'name': 'hyperuuid_1.1.0.tar.gz'})
-        fixture['responses'][release]['body'] = json.dumps(body)
+        # With both attached, the gate passes.
+        attach_missing(fixture)
         self.assertEqual(companion_gate.check('hyperuuid', '1.1.0', http=Replay(fixture), repo='SkunkWerkx/HyperUuid'), [])
 
     def test_cran_is_never_queried(self):
@@ -324,10 +341,7 @@ class MainTests(unittest.TestCase):
 
     def test_main_passes_a_live_version(self):
         fixture = load('hyperuuid-1.1.0')
-        release = next(u for u in fixture['responses'] if '/releases/tags/' in u)
-        body = json.loads(fixture['responses'][release]['body'])
-        body['assets'].append({'name': 'hyperuuid_1.1.0.tar.gz'})
-        fixture['responses'][release]['body'] = json.dumps(body)
+        attach_missing(fixture)
         with mock.patch('builtins.print') as printed:
             self.assertEqual(companion_gate.main(['--crate', 'hyperuuid', '--version', '1.1.0',
                                                   '--repo', 'SkunkWerkx/HyperUuid'], http=Replay(fixture)), 0)

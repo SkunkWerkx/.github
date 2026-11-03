@@ -30,17 +30,25 @@ WINDOWS = {'os_family': 'Windows', 'machine': 'AMD64', 'php': '8.4', 'zts': Fals
            'extension_build': 'API20240924,NTS,VS17'}
 
 
-def pie_unix(version, arch, os_family, libc, php):
-    """What PrePackagedBinaryAssetName::packageNames() prints for an NTS, non-debug PHP."""
+ZTS_MUSL = {**MUSL, 'zts': True, 'extension_build': 'API20240924,TS'}
+ZTS_WINDOWS = {**WINDOWS, 'zts': True, 'extension_build': 'API20240924,TS,VS17'}
+
+
+def pie_unix(version, arch, os_family, libc, php, zts=False):
+    """What PrePackagedBinaryAssetName::packageNames() prints for a non-debug PHP: an NTS one
+    lists each name bare and with `-nts`, a ZTS one only with `-zts` (both of its spellings)."""
     stem = f'php_hyperuuid-{version}_php{php}-{arch}-{os_family}'
     libcs = (libc, 'anylibc') if os_family == 'linux' else (libc,)
-    return [f'{stem}-{flavour}{ts}.{ext}' for flavour in libcs for ts in ('', '-nts') for ext in ('zip', 'tgz')]
+    suffixes = ('-zts',) if zts else ('', '-nts')
+    return [f'{stem}-{flavour}{ts}.{ext}' for flavour in libcs for ts in suffixes for ext in ('zip', 'tgz')]
 
 
-def pie_windows(version, php, compiler):
-    """What WindowsExtensionAssetName::zipNames() and dllNames() print for an NTS x86_64 PHP."""
+def pie_windows(version, php, compiler, zts=False):
+    """What WindowsExtensionAssetName::zipNames() and dllNames() print for an x86_64 PHP: `nts`
+    or `ts` beside the compiler, in either order."""
+    ts = 'ts' if zts else 'nts'
     return [f'php_hyperuuid-{version}-{php}-{order}-x86_64.{ext}'
-            for ext in ('zip', 'dll') for order in (f'nts-{compiler}', f'{compiler}-nts')]
+            for ext in ('zip', 'dll') for order in (f'{ts}-{compiler}', f'{compiler}-{ts}')]
 
 
 class Fixture(unittest.TestCase):
@@ -119,6 +127,23 @@ class Verify(Fixture):
         zips_only = [n for n in pie_windows(TAG, '8.4', 'vs17') if n.endswith('.zip')]
         self.assert_fails(path, WINDOWS, zips_only, 2)
 
+    def test_a_correct_zts_unix_zip_passes(self):
+        path = self.zip('php_hyperuuid-v1.1.0_php8.4-x86_64-linux-musl-zts.zip', ['hyperuuid.so'])
+        self.verify(path, ZTS_MUSL, pie_unix(TAG, 'x86_64', 'linux', 'musl', '8.4', zts=True))
+
+    def test_a_correct_ts_windows_zip_passes(self):
+        name = 'php_hyperuuid-v1.1.0-8.4-ts-vs17-x86_64'
+        path = self.zip(f'{name}.zip', [f'{name}.dll'])
+        self.verify(path, ZTS_WINDOWS, pie_windows(TAG, '8.4', 'vs17', zts=True))
+
+    def test_an_nts_zip_for_a_zts_php_fails_check_3(self):
+        # A ZTS PHP refuses an NTS build at load, and PIE never looks for one there.
+        path = self.zip('php_hyperuuid-v1.1.0_php8.4-x86_64-linux-musl-nts.zip', ['hyperuuid.so'])
+        self.assert_fails(path, ZTS_MUSL, pie_unix(TAG, 'x86_64', 'linux', 'musl', '8.4', zts=True), 3)
+        name = 'php_hyperuuid-v1.1.0-8.4-nts-vs17-x86_64'
+        path = self.zip(f'{name}.zip', [f'{name}.dll'])
+        self.assert_fails(path, ZTS_WINDOWS, pie_windows(TAG, '8.4', 'vs17', zts=True), 3)
+
     def test_an_empty_pie_listing_never_passes(self):
         path = self.zip('php_hyperuuid-v1.1.0_php8.4-x86_64-linux-musl-nts.zip', ['hyperuuid.so'])
         self.assert_fails(path, MUSL, [], 3)
@@ -140,8 +165,17 @@ class Name(unittest.TestCase):
         vs16 = {**WINDOWS, 'php': '8.3', 'extension_build': 'API20230831,NTS,VS16'}
         self.assertEqual(php_ext_package.asset_name(vs16, TAG, EXT)[0], 'php_hyperuuid-v1.1.0-8.3-nts-vs16-x86_64.zip')
 
+    def test_a_thread_safe_php_gets_the_zts_names(self):
+        # PIE's spelling: `-zts` closes a Unix name, and `ts` stands beside the Windows compiler.
+        self.assertEqual(php_ext_package.asset_name(ZTS_MUSL, TAG, EXT),
+                         ('php_hyperuuid-v1.1.0_php8.4-x86_64-linux-musl-zts.zip', 'hyperuuid.so'))
+        self.assertEqual(php_ext_package.asset_name({**DARWIN, 'zts': True}, TAG, EXT)[0],
+                         'php_hyperuuid-v1.1.0_php8.5-arm64-darwin-bsdlibc-zts.zip')
+        stem = 'php_hyperuuid-v1.1.0-8.4-ts-vs17-x86_64'
+        self.assertEqual(php_ext_package.asset_name(ZTS_WINDOWS, TAG, EXT), (f'{stem}.zip', f'{stem}.dll'))
+
     def test_refuses_what_is_not_shipped(self):
-        for facts, why in (({**MUSL, 'zts': True}, 'thread-safe'), ({**MUSL, 'debug': True}, 'debug'),
+        for facts, why in (({**MUSL, 'debug': True}, 'debug'),
                            ({**WINDOWS, 'extension_build': 'API20240924,NTS'}, 'compiler'),
                            ({**WINDOWS, 'extension_build': 'API20240924,NTS,VS17', 'machine': 'x86'}, 'x86'),
                            ({**MUSL, 'os_family': 'BSD'}, 'BSD')):
@@ -168,6 +202,13 @@ class Pack(Fixture):
             info = archive.getinfo('hyperuuid.so')
             self.assertEqual(info.date_time, (1980, 1, 1, 0, 0, 0))
             self.assertEqual(info.external_attr >> 16, 0o100755)
+
+    def test_packs_a_zts_zip(self):
+        path = self.pack(ZTS_MUSL, pie_unix(TAG, 'x86_64', 'linux', 'musl', '8.4', zts=True))
+        self.assertEqual(path.name, 'php_hyperuuid-v1.1.0_php8.4-x86_64-linux-musl-zts.zip')
+        path = self.pack(ZTS_WINDOWS, pie_windows(TAG, '8.4', 'vs17', zts=True))
+        with zipfile.ZipFile(path) as archive:
+            self.assertEqual(archive.namelist(), ['php_hyperuuid-v1.1.0-8.4-ts-vs17-x86_64.dll'])
 
     def test_packs_windows_with_the_dll_named_for_the_zip(self):
         path = self.pack(WINDOWS, pie_windows(TAG, '8.4', 'vs17'))
@@ -247,36 +288,51 @@ class Matrix(unittest.TestCase):
     def legs(self, mode, versions='8.3 8.4 8.5', floor='8.3'):
         return php_ext_package.matrix(mode, versions, floor)['include']
 
-    def test_release_is_every_platform_on_every_minor(self):
-        legs = self.legs('release')
-        pairs = [(leg['rid'], leg['minor']) for leg in legs]
-        self.assertEqual(len(pairs), 18)
-        self.assertEqual(set(pairs), {(rid, minor) for rid in self.RIDS for minor in ('8.3', '8.4', '8.5')})
+    @staticmethod
+    def triples(legs):
+        return [(leg['rid'], leg['minor'], leg['ts']) for leg in legs]
 
-    def test_pr_is_every_platform_on_the_newest_plus_the_floor_on_linux_x64_and_win_x64(self):
-        pairs = [(leg['rid'], leg['minor']) for leg in self.legs('pr')]
-        self.assertEqual(pairs, [(rid, '8.5') for rid in self.RIDS] + [('linux-x64', '8.3'), ('win-x64', '8.3')])
+    def test_release_is_every_platform_on_every_minor_both_nts_and_zts(self):
+        triples = self.triples(self.legs('release'))
+        self.assertEqual(len(triples), 36)
+        self.assertEqual(set(triples), {(rid, minor, ts) for rid in self.RIDS for minor in ('8.3', '8.4', '8.5')
+                                        for ts in ('nts', 'zts')})
+
+    def test_pr_is_every_platform_on_the_newest_both_ways_plus_the_floor_nts_on_linux_x64_and_win_x64(self):
+        self.assertEqual(self.triples(self.legs('pr')),
+                         [(rid, '8.5', 'nts') for rid in self.RIDS] + [('linux-x64', '8.3', 'nts'), ('win-x64', '8.3', 'nts')]
+                         + [(rid, '8.5', 'zts') for rid in self.RIDS])
         # A floor that is the newest minor adds no second leg.
-        self.assertEqual(len(self.legs('pr', floor='8.5')), 6)
-        self.assertEqual(len(self.legs('pr', floor='')), 6)
+        self.assertEqual(len(self.legs('pr', floor='8.5')), 12)
+        self.assertEqual(len(self.legs('pr', floor='')), 12)
 
     def test_matrix_two_paths_in_pr_mode(self):
-        # The PR board's PHP: the glibc path on the newest minor and the Windows path on the
-        # floor (the floor's Windows build takes another toolset); macOS, arm64 and musl wait
-        # for the release board.
+        # The PR board's PHP: the glibc path on the newest minor, the Windows path on the floor
+        # (the floor's Windows build takes another toolset), and the thread-safe Windows path on
+        # the newest, the one leg where the crates' own code links differently for ZTS (php8ts);
+        # macOS, arm64 and musl wait for the release board.
         legs = php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3', 'two-paths')['include']
-        self.assertEqual([(leg['rid'], leg['minor']) for leg in legs], [('linux-x64', '8.5'), ('win-x64', '8.3')])
-        self.assertEqual([leg['stubs'] for leg in legs], [True, False])
-        self.assertEqual(legs[1]['msvc_toolset'], '14.29')
+        self.assertEqual(self.triples(legs), [('linux-x64', '8.5', 'nts'), ('win-x64', '8.3', 'nts'), ('win-x64', '8.5', 'zts')])
+        self.assertEqual([leg['stubs'] for leg in legs], [True, False, False])
+        self.assertEqual([leg['msvc_toolset'] for leg in legs[1:]], ['14.29', '14.44'])
         # No floor, or the floor is the newest: the Windows path takes the newest minor.
         for floor in ('', '8.5'):
             legs = php_ext_package.matrix('pr', '8.3 8.4 8.5', floor, 'two-paths')['include']
-            self.assertEqual([(leg['rid'], leg['minor']) for leg in legs], [('linux-x64', '8.5'), ('win-x64', '8.5')], floor)
+            self.assertEqual(self.triples(legs), [('linux-x64', '8.5', 'nts'), ('win-x64', '8.5', 'nts'),
+                                                  ('win-x64', '8.5', 'zts')], floor)
 
     def test_matrix_two_paths_ignored_in_release(self):
         self.assertEqual(php_ext_package.matrix('release', '8.3 8.4 8.5', '8.3', 'two-paths'),
                          php_ext_package.matrix('release', '8.3 8.4 8.5', '8.3'))
-        self.assertEqual(len(php_ext_package.matrix('release', '8.3 8.4 8.5', '8.3', 'two-paths')['include']), 18)
+        self.assertEqual(len(php_ext_package.matrix('release', '8.3 8.4 8.5', '8.3', 'two-paths')['include']), 36)
+
+    def test_each_leg_names_its_artifact_nts_unsuffixed(self):
+        # The upload name is a literal in the entry: companion_map resolves names by plain lookup.
+        # NTS keeps the name it had before ZTS shipped, which existing companion pins name.
+        for leg in self.legs('release'):
+            suffix = '-zts' if leg['ts'] == 'zts' else ''
+            self.assertEqual(leg['artifact'], f"php-ext-{leg['rid']}-{leg['minor']}{suffix}")
+        self.assertEqual(len({leg['artifact'] for leg in self.legs('release')}), 36)
 
     def test_matrix_default_unchanged(self):
         self.assertEqual(php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3', 'newest-plus-floor'),
@@ -290,10 +346,10 @@ class Matrix(unittest.TestCase):
                                         '--pr-legs', 'two-paths')),
                          php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3', 'two-paths'))
 
-    def test_the_stub_diff_runs_on_linux_x64_newest_only(self):
+    def test_the_stub_diff_runs_on_linux_x64_newest_nts_only(self):
         for mode in ('pr', 'release'):
-            stubs = [(leg['rid'], leg['minor']) for leg in self.legs(mode) if leg['stubs']]
-            self.assertEqual(stubs, [('linux-x64', '8.5')], mode)
+            stubs = [(leg['rid'], leg['minor'], leg['ts']) for leg in self.legs(mode) if leg['stubs']]
+            self.assertEqual(stubs, [('linux-x64', '8.5', 'nts')], mode)
 
     def test_each_leg_names_its_runner_and_kind(self):
         kinds = {leg['rid']: (leg['os'], leg['kind']) for leg in self.legs('pr')}
@@ -335,6 +391,10 @@ class Matrix(unittest.TestCase):
         self.assertEqual(run('pie-pin').split(), [php_ext_package.PIE_VERSION, php_ext_package.PIE_SHA256])
         self.assertEqual(run('asset', '--rid', 'win-x64', '--minor', '8.3', '--version', TAG, '--extension', EXT),
                          'php_hyperuuid-v1.1.0-8.3-nts-vs16-x86_64.zip\n')
+        self.assertEqual(run('asset', '--rid', 'win-x64', '--minor', '8.3', '--version', TAG, '--extension', EXT,
+                             '--ts', 'zts'), 'php_hyperuuid-v1.1.0-8.3-ts-vs16-x86_64.zip\n')
+        self.assertEqual(run('asset', '--rid', 'linux-musl-arm64', '--minor', '8.5', '--version', TAG, '--extension',
+                             EXT, '--ts', 'zts'), 'php_hyperuuid-v1.1.0_php8.5-arm64-linux-musl-zts.zip\n')
 
     def test_cli_failures_are_one_line_not_a_traceback(self):
         for args in (('pack', '--library', __file__, '--php', '/nonexistent/php', '--pie', 'pie.phar',
@@ -358,31 +418,35 @@ class ReleaseAssetNames(unittest.TestCase):
     FACTS = {'glibc': ('Linux', 'glibc'), 'musl': ('Linux', 'musl'), 'macos': ('Darwin', 'bsdlibc'),
              'windows': ('Windows', None)}
     MACHINES = {'x64': 'x86_64', 'arm64': 'aarch64'}
-    BUILD = {'8.3': 'API20230831,NTS,VS16', '8.4': 'API20240924,NTS,VS17', '8.5': 'API20250925,NTS,VS17'}
+    BUILD = {'8.3': 'API20230831,{}TS,VS16', '8.4': 'API20240924,{}TS,VS17', '8.5': 'API20250925,{}TS,VS17'}
 
-    def test_eighteen_names_each_what_the_packer_names_that_leg(self):
+    def test_thirty_six_names_each_what_the_packer_names_that_leg(self):
         names = php_ext_package.release_asset_names(TAG, EXT)
-        self.assertEqual(len(names), 18)
-        self.assertEqual(names, [php_ext_package.leg_asset_name(leg['rid'], leg['minor'], TAG, EXT)
-                                 for leg in php_ext_package.matrix('release', ' '.join(php_ext_package.MINORS),
-                                                                   '')['include']])
-        self.assertEqual(len(set(names)), 18)
+        self.assertEqual(len(names), 36)
+        legs = php_ext_package.matrix('release', ' '.join(php_ext_package.MINORS), '')['include']
+        self.assertEqual(names, [php_ext_package.leg_asset_name(leg['rid'], leg['minor'], TAG, EXT, leg['ts'])
+                                 for leg in legs])
+        self.assertEqual(len(set(names)), 36)
         packed = []
-        for leg in php_ext_package.matrix('release', ' '.join(php_ext_package.MINORS), '')['include']:
+        for leg in legs:
             family, libc = self.FACTS[leg['kind']]
             machine = 'AMD64' if family == 'Windows' else self.MACHINES[leg['rid'].rsplit('-', 1)[1]]
-            facts = {'os_family': family, 'machine': machine, 'php': leg['minor'], 'zts': False, 'debug': False,
-                     'libc': libc, 'extension_build': self.BUILD[leg['minor']]}
+            zts = leg['ts'] == 'zts'
+            facts = {'os_family': family, 'machine': machine, 'php': leg['minor'], 'zts': zts, 'debug': False,
+                     'libc': libc, 'extension_build': self.BUILD[leg['minor']].format('' if zts else 'N')}
             packed.append(php_ext_package.asset_name(facts, TAG, EXT)[0])
         self.assertEqual(sorted(names), sorted(packed))
 
     def test_windows_is_vs16_on_8_3_and_vs17_after(self):
-        windows = [n for n in php_ext_package.release_asset_names(TAG, EXT) if '-nts-vs' in n]
-        self.assertEqual(windows, ['php_hyperuuid-v1.1.0-8.3-nts-vs16-x86_64.zip',
-                                   'php_hyperuuid-v1.1.0-8.4-nts-vs17-x86_64.zip',
-                                   'php_hyperuuid-v1.1.0-8.5-nts-vs17-x86_64.zip'])
-        self.assertTrue(all(n.endswith('-nts.zip') for n in php_ext_package.release_asset_names(TAG, EXT)
-                            if n not in windows))
+        for ts in ('nts', 'ts'):
+            windows = [n for n in php_ext_package.release_asset_names(TAG, EXT) if f'-{ts}-vs' in n]
+            self.assertEqual(windows, [f'php_hyperuuid-v1.1.0-8.3-{ts}-vs16-x86_64.zip',
+                                       f'php_hyperuuid-v1.1.0-8.4-{ts}-vs17-x86_64.zip',
+                                       f'php_hyperuuid-v1.1.0-8.5-{ts}-vs17-x86_64.zip'], ts)
+        unix = [n for n in php_ext_package.release_asset_names(TAG, EXT) if '-vs' not in n]
+        self.assertEqual(len(unix), 30)
+        self.assertEqual(sum(n.endswith('-nts.zip') for n in unix), 15)
+        self.assertEqual(sum(n.endswith('-zts.zip') for n in unix), 15)
 
     def test_the_version_segment_is_the_tag(self):
         with self.assertRaises(ValueError):

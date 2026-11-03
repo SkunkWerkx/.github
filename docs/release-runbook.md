@@ -81,9 +81,10 @@ first one `release.yml` publishes through Trusted Publishing, and it carries npm
 
 There is one native build matrix, in A's CI. Static production and Android shared
 production are separate producers; Apple and Android consumer tests start when their own
-artifacts are ready. The PHP extension's PIE zips, one per platform and PHP minor, are built
-in jobs of their own (`hyper-build-php-extension.yml`), never inside the native matrix; the
-publication gate takes every `php-ext-<rid>-<minor>` artifact of A's run into the inventory's
+artifacts are ready. The PHP extension's PIE zips, one per platform, PHP minor and thread
+safety (NTS and ZTS), are built in jobs of their own (`hyper-build-php-extension.yml`), never
+inside the native matrix; the publication gate takes every `php-ext-<rid>-<minor>` and
+`php-ext-<rid>-<minor>-zts` artifact of A's run into the inventory's
 `php/` group, and the finalizer attaches them to the GitHub Release, where PIE looks.
 
 ## The release train
@@ -287,7 +288,7 @@ failed only on the real registries.
   GitHub Release's two zips, unpacked under `.build/artifacts/`); PHP the target PHP's
   `extension_dir` (`php -r 'echo ini_get("extension_dir");'`), where `pie install
   skunkwerkx/<repo>:vX.Y.Z` puts the `.so` or `.dll` from the GitHub Release's
-  `php_<crate>-vX.Y.Z...` zip for that platform and minor, and the ini line PIE wrote to enable
+  `php_<crate>-vX.Y.Z...` zip for that platform, minor and thread safety, and the ini line PIE wrote to enable
   it; C (with `c_assets`) `<crate>-<version>-<rid>/lib` and `bin` in the GitHub Release's
   archives.
 - `pie-acceptance` is the PHP smoke, already run: a red leg there is the release's, and is

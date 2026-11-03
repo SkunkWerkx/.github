@@ -55,8 +55,9 @@ class Leg(NamedTuple):
 
 
 # The matrix values that choose a leg's artifacts beyond its rid: the Ruby ABI (one of the
-# config's ruby_abis; absent, every one), the PHP minor, and hyper-build-native.yml's shard.
-LEG_KEYS = ('abi', 'minor', 'shard')
+# config's ruby_abis; absent, every one), the PHP minor and thread safety (`nts` or `zts`; absent,
+# NTS), and hyper-build-native.yml's shard.
+LEG_KEYS = ('abi', 'minor', 'ts', 'shard')
 _LEG_PART = re.compile(r'[A-Za-z0-9_.-]+')
 
 
@@ -94,7 +95,8 @@ def leg_string(leg):
 # A role is one binding's part of a leg: the ecosystems it overrides and the artifact
 # templates it takes. `{rid}` is the leg's rid; `{abi}` every Ruby ABI (the leg's, given) and `{wasi}` the WASI
 # platform from the config; `{node_rid}` every napi RID; `{android}` every Android RID
-# hyper-build-android.yml builds; `{minor}` the leg's PHP minor.
+# hyper-build-android.yml builds; `{minor}` the leg's PHP minor and `{ts}` its thread safety, as
+# php_ext_package.artifact_name spells it in the upload name (nothing for NTS, `-zts` for ZTS).
 ROLES = {
     'rust': (('rust',), ()),
     'go': (('go',), ()),
@@ -124,7 +126,7 @@ ROLES = {
     'csharp-blazor': (('csharp',), (WASM_ARCHIVE,)),
     'csharp-android': (('csharp',), ('native-{android}', 'static-libs')),
     'csharp-apple': (('csharp',), ('static-libs',)),
-    'php': (('rust', 'php'), ('php-ext-{rid}-{minor}',)),
+    'php': (('rust', 'php'), ('php-ext-{rid}-{minor}{ts}',)),
     'swift': (('swift',), ('swift-release-assets',)),
     'r': (('r',), ()),
     'c': (('c',), (C_PACKAGES,)),
@@ -349,6 +351,9 @@ def _expand(template, leg, cfg, github):
         return []  # no platform gem for this rid (osx-x64): Fiddle on the native library alone
     if 'minor' in fields and not leg.extra.get('minor'):
         raise ValueError(f'{leg.workflow}:{leg.job}: {template} needs the leg\'s PHP minor')
+    ts = leg.extra.get('ts', 'nts')
+    if 'ts' in fields and ts not in php_ext_package.THREAD_SAFETY:
+        raise ValueError(f'{leg.workflow}:{leg.job}: thread safety {ts!r} is nts or zts')
     if 'wasi' in fields and not cfg.node_wasi:
         return []
     abis = list(cfg.ruby_abis)
@@ -359,7 +364,7 @@ def _expand(template, leg, cfg, github):
         abis = [str(leg.extra['abi'])]
     values = {'rid': [leg.rid], 'abi': abis, 'wasi': [cfg.node_wasi],
               'node_rid': list(cfg.node_platforms), 'android': list(_android_rids(github)),
-              'minor': [leg.extra.get('minor')]}
+              'minor': [leg.extra.get('minor')], 'ts': ['-zts' if ts == 'zts' else '']}
     names = [template]
     for field in fields:
         names = [n.replace('{' + field + '}', str(v)) for n in names for v in values[field]]
@@ -375,8 +380,8 @@ def _artifacts(leg, cfg, github):
 
 
 def _unread_keys(leg):
-    """The leg's LEG_KEYS values nothing of its job reads: `abi` and `minor` where no template
-    of its roles has the field, `shard` off a shard job."""
+    """The leg's LEG_KEYS values nothing of its job reads: `abi`, `minor` and `ts` where no
+    template of its roles has the field, `shard` off a shard job."""
     key = (leg.workflow, leg.job)
     sharded = key in JOBS and JOBS[key] and JOBS[key][0] == 'shard'
     fields = {f for role in _roles(leg) for t in ROLES[role][1] for f in re.findall(r'\{(\w+)\}', t)}

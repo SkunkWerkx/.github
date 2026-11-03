@@ -24,9 +24,9 @@ Subjects are every file in `inventory.json`:
   the XCFramework), and the metadata staged beside them: the bundle's `info.json` and the
   XCFramework's `Info.plist`, headers and module maps (Go commits no library: its core is
   Go source in the tree, part of the tagged commit like any other source);
-- the files under `php/`: the PHP extension's PIE zips, one per platform and PHP minor
-  (`php_<crate>-v<version>_php<minor>-<arch>-<os>-<libc>-nts.zip`, and on Windows
-  `php_<crate>-v<version>-<minor>-nts-<vs16|vs17>-x86_64.zip`), built and attested by the
+- the files under `php/`: the PHP extension's PIE zips, one per platform, PHP minor and thread
+  safety (`php_<crate>-v<version>_php<minor>-<arch>-<os>-<libc>-<nts|zts>.zip`, and on Windows
+  `php_<crate>-v<version>-<minor>-<nts|ts>-<vs16|vs17>-x86_64.zip`), built and attested by the
   Forge in the `ci.yml` run at A, which the GitHub Release carries and PIE installs from;
 - from a consumer that sets `swift_remote`, which commits no Swift binaries, the files under
   `github/` instead: the zipped artifact bundle and XCFramework the GitHub Release carries

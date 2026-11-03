@@ -470,21 +470,22 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
             (self.root / 'bun/x.tgz').write_bytes(b'')
             self.m.payload_files(self.root)
 
-    def test_php_zips_are_exactly_the_eighteen_named_with_the_release_tag(self):
-        # The release 1.1.0: six platforms x 8.3, 8.4, 8.5, each named with v1.1.0 (no Intel
-        # macOS zip: no leg builds a PHP, and Homebrew bottles none for it).
+    def test_php_zips_are_exactly_the_thirty_six_named_with_the_release_tag(self):
+        # The release 1.1.0: six platforms x 8.3, 8.4, 8.5 x NTS and ZTS, each named with v1.1.0
+        # (no Intel macOS zip: no leg builds a PHP, and Homebrew bottles none for it).
         layout = [p for p in self.layout() if not p.startswith('php/')]
-        # Written out, not derived: the spec's asset table for 1.1.0, so the formula is checked
-        # against names it did not produce.
-        zips = [f'php/php_hyperuuid-v1.1.0_php{m}-{arch}-{system}-nts.zip'
+        # Written out, not derived: PIE's spelling for 1.1.0 (`-nts`/`-zts` on Unix, `nts`/`ts`
+        # beside the compiler on Windows), so the formula is checked against names it did not
+        # produce.
+        zips = [f'php/php_hyperuuid-v1.1.0_php{m}-{arch}-{system}-{ts}.zip'
                 for m in ('8.3', '8.4', '8.5')
+                for ts in ('nts', 'zts')
                 for arch in ('x86_64', 'arm64')
                 for system in ('linux-glibc', 'linux-musl', 'darwin-bsdlibc')
                 if (arch, system) != ('x86_64', 'darwin-bsdlibc')]
-        zips += ['php/php_hyperuuid-v1.1.0-8.3-nts-vs16-x86_64.zip',
-                 'php/php_hyperuuid-v1.1.0-8.4-nts-vs17-x86_64.zip',
-                 'php/php_hyperuuid-v1.1.0-8.5-nts-vs17-x86_64.zip']
-        self.assertEqual(len(set(zips)), 18)
+        zips += [f'php/php_hyperuuid-v1.1.0-{m}-{ts}-{vs}-x86_64.zip'
+                 for m, vs in (('8.3', 'vs16'), ('8.4', 'vs17'), ('8.5', 'vs17')) for ts in ('nts', 'ts')]
+        self.assertEqual(len(set(zips)), 36)
         # The fixture's other groups are hypercast 0.10.0; validate those names for 1.1.0.
         others = [p.replace('hypercast', 'hyperuuid').replace('0.10.0', '1.1.0') for p in layout]
         self.m.validate_layout(others + zips, 'hyperuuid', '1.1.0')
@@ -492,6 +493,8 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
         missing = 'php/php_hyperuuid-v1.1.0_php8.3-x86_64-linux-glibc-nts.zip'
         broken = {
             'missing one zip': ([z for z in zips if z != missing], missing),
+            'missing one ZTS zip': ([z for z in zips if z != 'php/php_hyperuuid-v1.1.0-8.5-ts-vs17-x86_64.zip'],
+                                    'php/php_hyperuuid-v1.1.0-8.5-ts-vs17-x86_64.zip'),
             'an extra php/ file': (zips + ['php/README.md'], 'php/README.md'),
             'a bare 1.1.0 version segment': ([z.replace('-v1.1.0', '-1.1.0') if z == missing else z for z in zips],
                                              'php/php_hyperuuid-1.1.0_php8.3-x86_64-linux-glibc-nts.zip'),
@@ -505,7 +508,7 @@ sys.exit(0 if args[args.index('--source-digest')+1]==source else 1)
     def test_php_zips_are_built_at_a_signed_by_the_forge_and_attached_to_the_release(self):
         inventory = self.build()
         entries = [e for e in inventory['files'] if e['path'].startswith('php/')]
-        self.assertEqual(len(entries), 18)
+        self.assertEqual(len(entries), 36)
         for entry in entries:
             self.assertEqual((entry['signer_repo'], entry['source_sha'], entry['location']),
                              (self.m.FORGE, 'a' * 40, 'packages'))
