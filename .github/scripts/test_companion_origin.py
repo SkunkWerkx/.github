@@ -313,12 +313,34 @@ class OriginPythonTests(unittest.TestCase):
             companion_origin.origin_python(self.root, env, sums, python=python, environ={})
         self.assertEqual(caught.exception.found, 'hypercast 1.0.0 from an index (PyPI), with no direct_url.json')
 
+    @unittest.skipUnless(sys.version_info >= (3, 11), 'tomllib')
+    def test_origin_python_reads_a_non_ascii_readme_on_any_code_page(self):
+        # HyperCast's README has a ✓, and `pip inspect` prints it; a Windows pipe is cp1252,
+        # forced here as PYTHONIOENCODING, where pip could not write it.
+        venv = Path(self.tmp.name) / 'venv'
+        made = subprocess.run([sys.executable, '-m', 'venv', str(venv)], capture_output=True, text=True)
+        if made.returncode != 0:
+            self.skipTest(f'no venv here: {made.stderr.strip()[-200:]}')
+        python = str(venv / ('Scripts' if os.name == 'nt' else 'bin') / 'python')
+        wheel_dir = self.root / '.companions' / 'hypercast-artifacts' / 'pypi-wheels-any'
+        wheel = wheel_dir / 'hypercast-1.0.0-py3-none-any.whl'
+        make_wheel(wheel, 'pinned', description='| macOS | \u2713 |\n')
+        sums = {'pypi-wheels-any/hypercast-1.0.0-py3-none-any.whl': hashlib.sha256(wheel.read_bytes()).hexdigest()}
+        with (wheel_dir.parent / 'SHA256SUMS').open('a') as listed:
+            listed.writelines(f'{v}  {k}\n' for k, v in sums.items())
+        env = {**PY_ENV, 'HYPERCAST_PYTHON_REQ': wheel.relative_to(self.root).as_posix()}
+        import companion_wire
+        companion_wire.wire_python(self.root, env, python=python, environ={})
+        with mock.patch.dict(os.environ, {'PYTHONIOENCODING': 'cp1252'}):
+            companion_origin.origin_python(self.root, env, sums, python=python, environ={})
 
-def make_wheel(path, marker):
+
+def make_wheel(path, marker, description=''):
     """A minimal pure wheel of hypercast 1.0.0, which pip installs offline."""
     path.parent.mkdir(parents=True, exist_ok=True)
     files = {'hypercast/__init__.py': f'ORIGIN = {marker!r}\n',
-             'hypercast-1.0.0.dist-info/METADATA': 'Metadata-Version: 2.1\nName: hypercast\nVersion: 1.0.0\n',
+             'hypercast-1.0.0.dist-info/METADATA': 'Metadata-Version: 2.1\nName: hypercast\nVersion: 1.0.0\n'
+                                                   + (f'\n{description}' if description else ''),
              'hypercast-1.0.0.dist-info/WHEEL': 'Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\n'
                                                 'Tag: py3-none-any\n'}
     record = ''.join(f'{name},,\n' for name in files) + 'hypercast-1.0.0.dist-info/RECORD,,\n'

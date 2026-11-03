@@ -229,7 +229,12 @@ def origin_python(root, env, sums, run=subprocess.run, python=None, environ=None
     binding = f'Python ({" ".join(command)})'
     expected = (f'{name} {version} installed from a pinned file ({", ".join(_relative(root, f) for f in files)}), '
                 'its sha256 as SHA256SUMS lists it')
-    result = _probe(run, command + ['-m', 'pip', '--disable-pip-version-check', 'inspect'])
+    # The report carries every installed package's metadata, READMEs included, which need not
+    # be ASCII: pip writes it as UTF-8 and it is read back so, whatever the host's code page
+    # (Windows gives a pipe cp1252, where pip fails on the first character outside it), as
+    # companion_wire's dry run does.
+    result = _probe(run, command + ['-m', 'pip', '--disable-pip-version-check', 'inspect'], encoding='utf-8',
+                    env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
     if result.returncode != 0:
         raise OriginError(binding, f'pip inspect failed (exit {result.returncode}): {_tail(result.stderr)}', expected)
     try:
