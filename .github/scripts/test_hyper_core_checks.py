@@ -55,7 +55,9 @@ class CoreChecksWorkflowTests(unittest.TestCase):
         checkout = self.step('Check out the executing Forge revision')
         self.assertEqual(checkout['with']['path'], '.hyperforge')
         self.assertEqual(checkout['with']['ref'], '${{ job.workflow_sha }}')
-        self.assertEqual(checkout['if'], control['if'])
+        # Every host checks the Forge out, unconditionally: fetch-companions needs it on each.
+        self.assertNotIn('if', checkout)
+        self.assertLess(names.index('Check out the executing Forge revision'), names.index('Fetch the companions'))
         self.assertLess(names.index('Check out the executing Forge revision'), names.index(control['name']))
 
     def test_three_hosts_fail_fast_off(self):

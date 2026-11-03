@@ -1,0 +1,1 @@
+{"conclusion":"failure","display_title":"CI — build native, build wasm, test every binding","event":"schedule","head_sha":"43d62eb695117855312a2170023203dc82989bf7","id":39245328402,"name":"CI — build native, build wasm, test every binding","path":".github/workflows/ci.yml","repository":{"full_name":"SkunkWerkx/HyperCast"},"status":"completed"}

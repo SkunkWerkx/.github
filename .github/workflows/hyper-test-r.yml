@@ -98,10 +98,42 @@ jobs:
           # RTOOLS4x_HOME when it builds a package, so the check needs nothing on PATH.
           windows-path-include-rtools: false
 
+      # A pinned companion: its R package vendored, stamped Hyper-Pin and installed from the pin
+      # into the job's library (R_LIBS_USER, before setup-r-dependencies, which finds it there),
+      # the consumer's requirement relaxed to the pin's version, and <NAME>_PATH pointing the
+      # consumer's vendor.sh at the pin's crate. After the toolchain and R, which the wiring runs.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-r.yml:test:${{ matrix.rid }}
+
+      # Release mode with companions: the companion from its GitHub Release tarball (url::),
+      # never from CRAN, whose review the companion's release does not wait for.
+      - name: The companion's R package, from its GitHub Release
+        id: companion_r
+        if: steps.companions.outputs.mode == 'release'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_gate.py --root . --r-package >> "$GITHUB_OUTPUT"'
+
+      # The package cache restores R_LIBS_USER over the pin installed above, and its fallback
+      # key matches any earlier cache for this OS, R and arch: with a pin, cache-version carries
+      # its commit, so only that pin's cache is restored, and this run's is saved under it alone.
+      # Without one it is the action's default, '1', and the key is as before.
       - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: steps.companions.outputs.mode != 'release'
         with:
           working-directory: r
+          cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '1' }}
           extra-packages: any::rcmdcheck
+
+      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: steps.companions.outputs.mode == 'release'
+        with:
+          working-directory: r
+          cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '1' }}
+          extra-packages: any::rcmdcheck ${{ steps.companion_r.outputs.package }}
 
       # R CMD check --as-cran, failing on a NOTE as CRAN's incoming checks would, from the
       # tree vendor.sh leaves (the crates vendored with this checkout's core among them, the
@@ -111,6 +143,14 @@ jobs:
         id: r_vendor
         run: |
           bash r/tools/vendor.sh
+
+      # After the last install (setup-r-dependencies') and the vendor tarball, in the R the check
+      # runs: the pin's build is the copy that loads, and the tarball holds the pin's crate.
+      - name: The check takes the pinned companion
+        if: steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py r --root . --installed'
 
       - name: R CMD check the R package
         uses: r-lib/actions/check-r-package@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
@@ -137,15 +177,46 @@ jobs:
           use-public-rspm: true
           windows-path-include-rtools: false
 
+      # The pinned companion again, built by the floor R into its own library.
+      - name: Install the pinned companion for the floor R
+        if: ${{ inputs.mode != 'pr' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.companions.outputs.active == 'true' }}
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_wire.py r --root .'
+
       - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
-        if: ${{ inputs.mode != 'pr' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version }}
+        if: ${{ inputs.mode != 'pr' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.companions.outputs.mode != 'release' }}
         env:
           R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
           R_LIBS_USER: ${{ runner.temp }}/r-floor/library
           R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
         with:
           working-directory: r
+          cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '1' }}
           extra-packages: any::rcmdcheck
+
+      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
+        if: ${{ inputs.mode != 'pr' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.companions.outputs.mode == 'release' }}
+        env:
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
+        with:
+          working-directory: r
+          cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '1' }}
+          extra-packages: any::rcmdcheck ${{ steps.companion_r.outputs.package }}
+
+      - name: The floor check takes the pinned companion
+        if: ${{ inputs.mode != 'pr' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.r_vendor.conclusion == 'success' && steps.companions.outputs.active == 'true' }}
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
+          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
+          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py r --root . --installed'
 
       - name: R CMD check the R package — the floor R
         if: ${{ inputs.mode != 'pr' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.r_vendor.conclusion == 'success' }}

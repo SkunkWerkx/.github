@@ -92,9 +92,25 @@ jobs:
           path: .hyperforge
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      # Before the fetch: the Python wiring installs the pinned wheel into this interpreter,
+      # named by its path (on Windows, python3 on PATH is not setup-python's).
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: py
         with:
           python-version: ${{ inputs.python_version }}
+
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise, before the extension builds,
+      # the Cargo patch, and the requirement rewritten to the pin's version with the pinned wheel
+      # installed into the interpreter above, each proven. conftest.py then finds the companion
+      # installed and installs nothing.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        env:
+          HYPER_COMPANION_PYTHON: ${{ steps.py.outputs.python-path }}
+        with:
+          leg: hyper-test-python.yml:test:${{ matrix.rid }}
 
       # The PyO3 extension is the crate's `python` feature, built here from rust/ (the only
       # Python backend, and what every PyPI release ships), so it is proven on every PR.
@@ -112,10 +128,17 @@ jobs:
 
       - name: Test Python bindings
         working-directory: python
+        env:
+          COMPANIONS: ${{ steps.companions.outputs.active }}
         run: |
           # mypy is what tests/test_typing.py checks a consumer file with; without it that
           # test skips, and the package's `py.typed` claim goes unexercised.
           pip install pytest mypy
+          # The pinned companion, proven again in the interpreter the suite runs on, after the
+          # last install: conftest.py would otherwise install the index's copy unseen.
+          if [[ "$COMPANIONS" == true ]]; then
+            python ../.hyperforge/.github/scripts/companion_origin.py python --root .. --python "$(python -c 'import sys; print(sys.executable)')"
+          fi
           pytest
 
       # The same suite on a free-threaded CPython, where threads run in parallel and a GIL
@@ -138,6 +161,7 @@ jobs:
           PY: ${{ steps.ft-python.outputs.python-path }}
           PYO3_PYTHON: ${{ steps.ft-python.outputs.python-path }}
           CRATE: ${{ inputs.crate }}
+          COMPANIONS: ${{ steps.companions.outputs.active }}
         run: |
           set -euo pipefail
           (cd rust && cargo rustc --release --crate-type cdylib --features python)
@@ -146,8 +170,17 @@ jobs:
             Linux)   cp "rust/target/release/lib$CRATE.so" "python/src/$CRATE/_native.so" ;;
             Windows) cp "rust/target/release/$CRATE.dll" "python/src/$CRATE/_native.pyd" ;;
           esac
+          # The pinned companion's wheel for this interpreter (abi3t), installed before the
+          # suite, which would otherwise install the consumer's requirement itself, and proven
+          # after the last install.
+          if [[ "$COMPANIONS" == true ]]; then
+            "$PY" .hyperforge/.github/scripts/companion_wire.py python --root . --python "$PY"
+          fi
           cd python
           "$PY" -m pip install --quiet pytest
+          if [[ "$COMPANIONS" == true ]]; then
+            "$PY" ../.hyperforge/.github/scripts/companion_origin.py python --root .. --python "$PY"
+          fi
           "$PY" -m pytest
           PYTHONPATH=src "$PY" -W error::RuntimeWarning -c "import sys, $CRATE; assert not sys._is_gil_enabled(), 'the GIL came back on'; print('$CRATE on', sys.version.split()[0], 'GIL', sys._is_gil_enabled())"
 
@@ -183,6 +216,18 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .hyperforge
           persist-credentials: false
+      # The host's wiring runs cargo (cargo update) before the containers copy the lock.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      # The pinned companion (companion-pins): the Cargo patch on the host, and the requirement
+      # rewritten to the pin's version. No interpreter here runs the consumer (none), so the
+      # musllinux wheel is installed and proven inside each Alpine container (suite-musl.sh,
+      # companion_python), where the build container takes the patch too (companion_cargo).
+      - name: Fetch the companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        env:
+          HYPER_COMPANION_PYTHON: none
+        with:
+          leg: hyper-test-python.yml:test-musl:${{ matrix.rid }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: native-${{ matrix.rid }}

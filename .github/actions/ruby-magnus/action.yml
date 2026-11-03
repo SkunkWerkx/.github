@@ -20,6 +20,18 @@ inputs:
     description: "Sign SLSA build provenance for the extension ('true'/'false'); the calling job must hold id-token and attestations write"
     required: false
     default: "false"
+  companions:
+    description: "fetch-companions' `active` output ('true'/'false'): with 'true', prove the suite takes the pinned companion (companion_origin.py ruby --installed) right before rspec"
+    required: false
+    default: "false"
+  python:
+    description: "fetch-companions' `python` output: the Python 3.11+ the proof runs with when companions is 'true' (on Windows, python3 may be missing or the WindowsApps alias)"
+    required: false
+    default: python3
+  cache-version:
+    description: "setup-ruby's bundler cache-version: '0', its default, without a pinned companion; with one, a value carrying the pin's commit (fetch-companions' `commit` output), so the Bundler cache never crosses modes or pins"
+    required: false
+    default: "0"
 
 runs:
   using: composite
@@ -118,6 +130,7 @@ runs:
         ruby-version: ${{ inputs.ruby-version }}
         bundler: default
         bundler-cache: true
+        cache-version: ${{ inputs.cache-version }}
         working-directory: ruby
 
     # The script is a file beside this action rather than YAML: it is 170 lines of
@@ -129,6 +142,16 @@ runs:
         ABI: ${{ inputs.ruby-version }}
         CRATE: ${{ inputs.crate }}
       run: "$GITHUB_ACTION_PATH/build-magnus.sh"
+
+    # After setup-ruby's install, in the Ruby rspec runs on: Bundler resolves the companion from
+    # the pin, and requiring it loads the pin's files, this ABI's staged extension among them.
+    - name: The suite takes the pinned companion — Ruby ${{ inputs.ruby-version }}
+      if: inputs.companions == 'true'
+      shell: bash
+      env:
+        FETCH_PYTHON: ${{ inputs.python }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: '"$FETCH_PYTHON" "$FORGE_SCRIPTS/companion_origin.py" ruby --root . --dir ruby --installed'
 
     - name: Test Ruby bindings (Magnus backend) — Ruby ${{ inputs.ruby-version }}
       shell: bash

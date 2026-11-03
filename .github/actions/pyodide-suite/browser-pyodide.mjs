@@ -15,16 +15,21 @@
 // the first of google-chrome, google-chrome-stable, chromium, chromium-browser on PATH.
 // puppeteer-core drives it and never downloads one.
 import puppeteer from "puppeteer-core";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, delimiter, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { createRequire } from "node:module";
+import { PINNED_INSTALLED, distName, readSums, requirePinnedSums } from "./companion-guard.mjs";
 
 const [crate, want, wheel, testsDir] = process.argv.slice(2);
 if (!testsDir) {
   console.error("usage: node browser-pyodide.mjs <crate> <version> <wheel> <tests-dir>");
   process.exit(2);
 }
+
+// The pinned companion's wheels must all reach this suite (companion-guard.mjs).
+requirePinnedSums();
 
 const pyodideDir = dirname(createRequire(import.meta.url).resolve("pyodide/package.json"));
 for (const pkg of ["micropip", "pytest"]) {
@@ -58,9 +63,29 @@ function listTree(root, dir = root) {
 const wheelName = basename(wheel);
 // The wheels the one under test depends on (PYODIDE_SUITE_DEPS, a directory of Pyodide wheels
 // such as HyperCast's for HyperTabular), installed first, so that micropip finds each
-// requirement already met instead of fetching it from PyPI off 127.0.0.1.
+// requirement already met instead of fetching it from PyPI off 127.0.0.1. Each is read once
+// and only that buffer is served. With PYODIDE_SUITE_SUMS (a pinned companion's SHA256SUMS,
+// companion-pins), every wheel it lists must be among them with that hash; the page fetches
+// it once, hashes those bytes with crypto.subtle, writes the same bytes to
+// /companions/<wheel> in the emscripten filesystem and installs them from there (as
+// suite-pyodide.mjs does), and requires micropip to report the companion from that path once
+// the wheel under test is in. Any other dependency is installed from its URL, as before.
 const depsDir = process.env.PYODIDE_SUITE_DEPS ? resolve(process.env.PYODIDE_SUITE_DEPS) : "";
 const deps = depsDir ? readdirSync(depsDir).filter((name) => name.endsWith(".whl")).sort() : [];
+const depBytes = new Map(deps.map((name) => [name, readFileSync(join(depsDir, name))]));
+const sums = readSums(process.env.PYODIDE_SUITE_SUMS);
+for (const [name, want] of sums) {
+  if (!depBytes.has(name)) {
+    console.error(`the pinned ${name} is not among the dependency wheels (${depsDir || "none given"})`);
+    process.exit(1);
+  }
+  if (createHash("sha256").update(depBytes.get(name)).digest("hex") !== want) {
+    console.error(`${name} differs from SHA256SUMS (${want})`);
+    process.exit(1);
+  }
+}
+const pinned = Object.fromEntries(sums);
+const pinnedNames = Object.fromEntries([...sums.keys()].map((name) => [name, distName(name)]));
 const page_html = `<!doctype html><meta charset="utf-8"><title>${crate} in Pyodide</title>
 <script src="/pyodide/pyodide.js"></script>
 <script>
@@ -77,10 +102,29 @@ window.result = (async () => {
     py.setStderr({ write });
     await py.loadPackage(["micropip", "pytest"]);
     const micropip = py.pyimport("micropip");
+    const pinned = ${JSON.stringify(pinned)};
     for (const dep of ${JSON.stringify(deps)}) {
-      await micropip.install(new URL("/deps/" + dep, location.href).href);
+      const url = new URL("/deps/" + dep, location.href).href;
+      if (!pinned[dep]) {
+        await micropip.install(url);
+        continue;
+      }
+      // One fetch: the bytes hashed are the bytes micropip installs.
+      const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+      const digest = await crypto.subtle.digest("SHA-256", bytes);
+      const found = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+      if (found !== pinned[dep]) throw new Error(dep + ": sha256 " + found + ", not SHA256SUMS' " + pinned[dep]);
+      py.FS.mkdirTree("/companions");
+      py.FS.writeFile("/companions/" + dep, bytes);
+      await micropip.install("emfs:/companions/" + dep);
     }
     await micropip.install(new URL("/wheel/${wheelName}", location.href).href);
+    // Each pinned companion, as micropip has it once the wheel under test (which requires it) is in.
+    for (const dep of Object.keys(pinned)) {
+      py.globals.set("pinned_name", ${JSON.stringify(pinnedNames)}[dep]);
+      py.globals.set("pinned_source", "emfs:/companions/" + dep);
+      lines.push(py.runPython(${JSON.stringify(PINNED_INSTALLED)}) + ", sha256 " + pinned[dep]);
+    }
     const tests = await (await fetch("/tests.json")).json();
     for (const { path, data } of tests) {
       const target = "/work/tests/" + path;
@@ -126,8 +170,8 @@ const server = createServer((req, res) => {
   } else if (url === `/wheel/${wheelName}`) {
     body = readFileSync(wheel);
     type = types[".whl"];
-  } else if (url.startsWith("/deps/") && deps.includes(url.slice("/deps/".length))) {
-    body = readFileSync(join(depsDir, url.slice("/deps/".length)));
+  } else if (url.startsWith("/deps/") && depBytes.has(url.slice("/deps/".length))) {
+    body = depBytes.get(url.slice("/deps/".length));
     type = types[".whl"];
   } else if (url.startsWith("/pyodide/")) {
     const file = resolve(pyodideDir, url.slice("/pyodide/".length));

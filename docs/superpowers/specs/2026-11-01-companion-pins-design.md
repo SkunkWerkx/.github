@@ -177,8 +177,9 @@ Where the key is absent the job fails at once, saying why:
 
 In a `release` run the job still runs, has no job-level `if:`, and succeeds without minting a
 token or downloading anything: its steps are gated on the event's purpose (above), not on
-`inputs.purpose`, which is empty inside a reusable workflow, and its one
-release-mode step asserts there is no `.companions/` in the checkout. It is never skipped,
+`inputs.purpose`, which is empty inside a reusable workflow, and its release-mode guard
+asserts there is no companion override (the ones `fetch-companions` refuses, below) and no
+`.companions/` in the checkout. It is never skipped,
 because a skipped need fails GitHub's implicit `success()` and would skip every dependant,
 whatever their own `if:` admits. So no dependant's `if:` changes: the existing change gates and
 failure blocking stay as they are. A repo without companions doesn't call the workflow, and its jobs don't need
@@ -218,8 +219,8 @@ companion from `.companions/env` and proves its own origin, inside itself:
 |---|---|---|
 | The musl builds | `musl-native/build-musl.sh`, `ruby-magnus-musl/build-magnus-musl.sh`, `php_ext_musl.sh` | copy `.companions/` into `/work` beside `rust/`; write the patch, with `/work` paths, to the container's own `$CARGO_HOME/config.toml`; run `cargo tree -i hypercast` inside before building |
 | The musl suites | `musl-suite/suite-musl.sh`, every binding branch (C#, Go, Java, JNI, Node, Python, Ruby) | copy `.companions/` into `/work` with the binding's tree; regenerate that binding's configuration from `.companions/env` with `/work` as the root (the NuGet feed and `nuget.config`, the Maven repository, the Cargo patch, the Go replace, the npm tarball reference, the wheel, the Gemfile path); run that binding's origin check inside before the suite |
-| Swift static (musl) | `swift-static-suite` | the bundle and source copied in; `swift package edit` inside |
-| Job-level `container:` jobs | `hyper-core`, `hyper-check-core`, `hyper-build-native`, `hyper-build-wheels`, `hyper-test-c`, `hyper-lint-swift` | the host steps already run inside the container, so `fetch-companions` runs there unchanged |
+| Swift static (musl) | `swift-static-suite` | the bundle and source copied in; the same `.package(path:)` rewrite inside |
+| Job-level `container:` jobs | `hyper-core`, `hyper-check-core`, `hyper-build-native`, `hyper-build-wheels`, `hyper-test-c` | the host steps already run inside the container, so `fetch-companions` runs there unchanged |
 | Pyodide in Node | `pyodide-suite/suite-pyodide.mjs` | gains the browser runner's `PYODIDE_SUITE_DEPS`: the pinned Pyodide wheel installed with micropip before the consumer's, so micropip never fetches HyperCast |
 | Pyodide in the browser | `pyodide-suite/browser-pyodide.mjs` | `PYODIDE_SUITE_DEPS` set to the pinned wheel's directory (the hook exists today) |
 | The sdist and fallthrough venvs | `hyper-build-wheels.yml`'s fresh venvs, several in Docker | the pinned wheel, or the pinned sdist where the venv's platform has none, installed into each venv from a mounted directory before the consumer, so the consumer's requirement is already met and pip never resolves HyperCast from an index |
@@ -239,28 +240,34 @@ fails a Forge test, not a run.
 |---|---|---|---|
 | Rust core: every core leg, `core-checks`, and every crate that builds it (napi, JNI, PHP, Python, Blazor) | (none) | `rust/` | `patch.crates-io.hypercast.path` in `$CARGO_HOME/config.toml` on the host, and in each container's own (above); then `cargo update -p hypercast` once per workspace, so later `--locked` calls see a consistent lock |
 | Go: native, TinyGo, `js`, `wasip1` | (none) | `go/` | `go mod edit -replace github.com/SkunkWerkx/HyperCast/go=…`; a local replace needs no `go.sum` line |
-| Python: wheels, sdist, Pyodide | `pypi-wheels-<rid>`, `-pyodide`, `-sdist` | (none) | the pinned wheel installed first in every interpreter that runs a test (above); the requirement rewritten to `hypercast @ file:///…/<wheel>` |
-| TypeScript: addon and wasm fallback | `node-<rid>`, `node-wasm32-wasip1` | `typescript/` | HyperCast packed with a **job-local `files` list** that adds the leg's addon (or the WASI payload), since the committed whitelist excludes them; the consumer's direct devDependency rewritten to `file:<that tarball>` (an `overrides` entry for a direct dependency is `EOVERRIDE`); the peer rewritten to the same tarball; the lockfile regenerated with `npm install --package-lock-only` before the workflows' `npm ci` |
+| Python: wheels, sdist, Pyodide | `pypi-wheels-<rid>`, `-pyodide`, `-sdist` | (none) | the requirement rewritten to `hypercast==<pinned>`, and the pinned wheel installed by its path first in every interpreter that runs a test (above), since a `@ file://` reference names one wheel for every interpreter (abi3 or abi3t) and a host path a container lacks |
+| TypeScript: addon and wasm fallback | `node-<rid>`, `node-wasm32-wasip1` | `typescript/` | HyperCast packed with a **job-local `files` list** that adds the leg's addon (or the WASI payload), since the committed whitelist excludes them; the consumer's direct devDependency rewritten to `file:<that tarball>` (an `overrides` entry for a direct dependency is `EOVERRIDE`); the peer rewritten to the exact pinned version, which that devDependency satisfies; the lockfile regenerated with `npm install --package-lock-only` before the workflows' `npm ci` |
 | Ruby: native and Fiddle | `ruby-native-<rid>-<abi>`, the leg's native library | `ruby/lib` | Gemfile `gem "hypercast", path:` with the extension staged where `lib/hypercast.rb` looks |
 | Java: JNI and FFM | `jni-<rid>`, `native-<rid>` | `java/` | HyperCast published into the job-local repository `.companions/m2/` (`-Dmaven.repo.local`), declared first as a `maven { url }` repository by a Gradle init script, with a `resolutionStrategy.force` to the pinned version |
-| C#: desktop, Native AOT, Blazor, Apple, Android | `native-<rid>`, `static-libs`, `wasm-emscripten-staticlib`, the mobile natives | `csharp/` | `dotnet pack` HyperCast into the job-local feed `.companions/nuget/`, which a generated `nuget.config` makes the *only* source for `HyperCast` (package source mapping); `HyperCastVersion` set to the pinned version |
-| PHP | `php-ext-<rid>-<minor>` | (none) | loaded with `-d extension=<absolute path>`; Composer told to ignore `ext-hypercast`'s version |
-| Swift: macOS, Linux, static, Android | `swift-release-assets` (the artifactbundle and xcframework) | `swift/` | `swift package edit HyperCast --path .companions/hypercast/swift`, with the bundle unpacked beside it |
+| C#: desktop, Native AOT, Blazor, Apple, Android | `native-<rid>`, `static-libs`, `wasm-emscripten-staticlib`, the mobile natives | `csharp/` | `dotnet pack` HyperCast into the job-local feed `.companions/nuget/`, which a generated `nuget.config` makes the *only* source for `HyperCast` (package source mapping); the `HyperCast` requirement rewritten to `[<pinned>]` (HyperTabular's is a literal PackageReference, not `HyperCastVersion`) |
+| PHP | `php-ext-<rid>-<minor>` | (none) | loaded with `-d extension=<absolute path>`; Composer told to ignore `ext-hypercast`'s version; the lint takes no companion (phpcs loads no extension) |
+| Swift: macOS, Linux, static, Android | `swift-release-assets` (the artifactbundle and xcframework) | `swift/` | the requirement rewritten to `.package(path: ".companions/hypercast")`, the pin's root package, with the bundle unpacked into it (`swift package edit` needs the remote resolvable first, and xcodebuild ignores it) |
 | R | (none) | `r/`, `rust/` | HyperCast's `vendor.sh`, then `R CMD INSTALL` of a source tree whose `DESCRIPTION` the job stamps with `Hyper-Pin: <commit>`; the consumer's floor relaxed in the job |
 | C and C++: smoke, musl, Apple mobile | `c-packages-*` | (none) | `HYPERCAST_PACKAGES=<dir>`, which `c/smoke/hypercast.sh` already honours, in place of the release download |
 
 The host steps go into the Forge workflows the legs already call: `hyper-core`,
 `hyper-core-checks`, `hyper-build-*`, `hyper-lint-*`, `hyper-test-*`. Each workflow gains one
 `fetch-companions` step and no new inputs, because the action reads `hyper.json`, and the
-run's purpose from the event (`hyper_mode.py`).
+run's purpose from the event (`hyper_mode.py`). `hyper-pie-acceptance.yml` gets no fetch step:
+it is a release-only check, run after publishing, that installs the released companion from
+Packagist.
 
 ### Caches never cross modes
 
 A pin-built "HyperCast 1.0.0" with 1.1 code inside must never reach a cache a release-mode job
 restores. So:
 
-- Companion-mode jobs keep the NuGet, npm, pip, Gradle, Bundler, Cargo-registry and Go module
-  caches job-local, or keyed with the pin's commit.
+- Companion-mode jobs keep every cache that could hold the companion job-local (NuGet's
+  global packages folder), keyed with the pin's commit (Bundler, R, the ruby.wasm build tree,
+  cargo-semver-checks' rustdoc), or off (pip, Gradle, Maven).
+- The Go and npm caches are exempt, because they are content-addressed: a Go `replace` never
+  enters the module cache, and npm's cache is keyed by integrity, so neither can serve the
+  pin's bytes for the registry's.
 - Release-mode jobs only restore keys that carry no pin.
 - A Forge test reads every cache step in the workflows and holds that rule.
 
@@ -268,7 +275,8 @@ restores. So:
 
 ### `companion-gate`
 
-`companion-gate` is the first job of a release-mode run (a `release` dispatch), before any
+`companion-gate` is the release-mode step of the `companions` job, after its guard; every
+board job needs that job, so in a release-mode run (a `release` dispatch) it runs before any
 build. It reads the version of each companion the consumer's manifests require; they must all
 agree, or the gate fails. It then checks that version is live:
 
@@ -338,7 +346,7 @@ package manager records a hash:
 | Ruby | `bundle info hypercast --path` is the companion's `lib/` source; `HyperCast::BACKEND` is `:native` from the staged extension's path | the loaded extension's SHA-256 is in `SHA256SUMS` |
 | PHP | `ReflectionExtension` loaded, and the `-d extension=` path is the artifact's | the loaded file's SHA-256 is in `SHA256SUMS` |
 | R | `packageDescription("hypercast")$"Hyper-Pin"` equals the pin; no `Repository` field | n/a (built in the job) |
-| Swift | `swift package show-dependencies --format json` gives the edited path | the bundle's checksum equals the artifact's |
+| Swift | `swift package show-dependencies --format json` gives the rewritten path | the bundle's checksum equals the artifact's |
 | C | `hypercast.sh` reports the `HYPERCAST_PACKAGES` directory | the archive's SHA-256 is in `SHA256SUMS` |
 
 The negative control for every row runs **with a same-version registry copy reachable**.
@@ -364,7 +372,7 @@ build to fail or the check to name the missing origin.
   - the legacy inputs' compatibility, with and without a `companions` block;
   - the cache rule;
   - the `companions` job has no job-level `if:`, and no step of it but the release-mode
-    assertion runs when `purpose` is `release`;
+    guard and gate runs when `purpose` is `release`;
   - no Forge workflow or action references `inputs.purpose`; each mode condition is the
     event-based one, and `hyper_mode.py` is tested against recorded event payloads
     (`workflow_dispatch` with `board`, `release`, an unknown value and none; `pull_request`;
@@ -397,8 +405,9 @@ build to fail or the check to name the missing origin.
     with the event condition swapped for `inputs.purpose` must mint, which proves the test
     catches the boundary;
   - a byte changed in a mirrored file fails `fetch-companions`' checksum.
-- **Positive control:** `companion-gate` passes for HyperUuid 1.1.0, which is live everywhere
-  but CRAN.
+- **Positive control:** `companion-gate` passes for a release that is live everywhere but CRAN
+  and whose GitHub Release carries the R tarball. HyperUuid 1.1.0's Release doesn't carry it,
+  so the gate fails HyperUuid 1.1.0 on that one item.
 - **Locally first:**
   - each override and its origin check, on macOS against a pin built from the HyperCast
     checkout;

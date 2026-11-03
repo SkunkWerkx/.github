@@ -145,6 +145,15 @@ jobs:
         with:
           python-version: "3.x"
 
+      # The pinned companion (companion-pins): nothing without a `companions` block in
+      # hyper.json, the release guard alone in a release dispatch, and otherwise the Cargo
+      # patch, proven, before anything resolves the companion.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-core.yml:core:${{ matrix.rid }}
+
       # The plain core is built through the crate's own `cargo cdylib` alias (rust/.cargo/
       # config.toml), because how it is built is the crate's call: every Hyper* alias today
       # builds the library without std, abort-on-panic, output in target/release/.
@@ -264,6 +273,15 @@ jobs:
           command -v pkg-config >/dev/null && exit 0
           if [ "$RUNNER_OS" = macOS ]; then brew install pkgconf; else sudo apt-get update && sudo apt-get install -y pkg-config; fi
 
+      # A pinned companion: the archives of its c-packages-ci, unpacked into .companions/, are the
+      # ones c/smoke/<name>.sh reports for every platform (fetch-companions set <NAME>_PACKAGES).
+      - name: The smoke takes the pinned companion
+        if: ${{ inputs.c_smoke && inputs.static_libs && steps.companions.outputs.active == 'true' }}
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+          RID: ${{ matrix.rid }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py c --root . --installed --rid "$RID"'
+
       # The archive as the release packs it, from this leg's two libraries, then the smoke
       # consumers built against it every way a consumer would (c/smoke/run.sh says what each
       # build must show). SMOKE_CXX: every runner's compiler has C++23's <expected>, so the
@@ -331,6 +349,19 @@ jobs:
           path: .hyperforge
           persist-credentials: false
 
+      # The job's own toolchain, before the fetch: its wiring runs cargo on the runner, and the
+      # static archive below is built there too.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      # The pinned companion (companion-pins): nothing without a `companions` block in
+      # hyper.json, the release guard alone in a release dispatch, and otherwise the Cargo
+      # patch, proven; the Alpine build writes its own and proves it inside (build-musl.sh).
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-core.yml:core-musl:${{ matrix.rid }}
+
       # The crate's own suite runs inside the container as part of this step, and the
       # library is held to one NEEDED entry, musl's libc; see build-musl.sh for the three
       # linker facts it encodes.
@@ -341,9 +372,6 @@ jobs:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
           attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
 
       - name: Build this leg's static library
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
@@ -395,8 +423,17 @@ jobs:
           docker run --rm -v "$PWD:/work:ro" -w /work -e LIB -e SMOKE python:3-alpine \
             sh -c 'python -I "$SMOKE" "$LIB" rust/Cargo.toml'
 
+      - name: The smoke takes the pinned companion
+        if: ${{ inputs.c_smoke && inputs.static_libs && steps.companions.outputs.active == 'true' }}
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+          RID: ${{ matrix.rid }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py c --root . --installed --rid "$RID"'
+
+      # The host's <NAME>_PACKAGES names a runner path: with a pinned companion, the twin below
+      # has companion_c set the container's and prove it there before the smoke.
       - name: Smoke-test the C archive
-        if: ${{ inputs.c_smoke && inputs.static_libs }}
+        if: ${{ inputs.c_smoke && inputs.static_libs && steps.companions.outputs.active != 'true' }}
         env:
           CRATE: ${{ inputs.crate }}
           PROJECT: ${{ inputs.project }}
@@ -412,6 +449,24 @@ jobs:
           export PACKAGE VERSION
           docker run --rm -v "$PWD:/work" -w /work -e PACKAGE -e VERSION -e SMOKE_CXX=1 alpine:3.22 sh -c \
             'apk add -q bash build-base cmake pkgconf && bash c/smoke/run.sh "$PACKAGE" "$VERSION"'
+
+      - name: Smoke-test the C archive, the companion pinned
+        if: ${{ inputs.c_smoke && inputs.static_libs && steps.companions.outputs.active == 'true' }}
+        env:
+          CRATE: ${{ inputs.crate }}
+          PROJECT: ${{ inputs.project }}
+          RID: ${{ matrix.rid }}
+          LIB: ${{ steps.native_lib.outputs.lib }}
+        run: |
+          set -euo pipefail
+          static="csharp/$PROJECT/staticlibs/$RID/lib$CRATE.a"
+          [ -f "$static" ] || { echo "::error::no static archive at $static (csharp/$PROJECT must exist for the static-libs composite to place one)"; exit 1; }
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -n 1)
+          PACKAGE=$(python3 .hyperforge/.github/scripts/c_package.py assemble --rid "$RID" --out c-archive \
+                      --static "$static" --shared "$LIB")
+          export PACKAGE VERSION
+          docker run --rm -v "$PWD:/work" -w /work -e PACKAGE -e VERSION -e RID -e SMOKE_CXX=1 alpine:3.22 sh -c \
+            'apk add -q bash build-base cmake pkgconf && . /work/.hyperforge/.github/scripts/companion_container.sh && companion_c /work "$RID" && bash c/smoke/run.sh "$PACKAGE" "$VERSION"'
 
   # ===========================================================================
   # Intel macOS, in its sunset: cross-built on the Apple silicon runner, the crate's suite and
@@ -442,6 +497,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: x86_64-apple-darwin
+
+      # The pinned companion (companion-pins): nothing without a `companions` block in
+      # hyper.json, the release guard alone in a release dispatch, and otherwise the Cargo
+      # patch, proven, before anything resolves the companion.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-core.yml:core-osx-x64:osx-x64
 
       # The hosted arm64 images ship with Rosetta 2; this is for the day one does not, so
       # the failure is "installing Rosetta" rather than a test binary that will not start.
@@ -542,6 +606,12 @@ jobs:
       - name: Install pkg-config
         if: ${{ inputs.c_smoke && inputs.static_libs }}
         run: command -v pkg-config >/dev/null || brew install pkgconf
+
+      - name: The smoke takes the pinned companion
+        if: ${{ inputs.c_smoke && inputs.static_libs && steps.companions.outputs.active == 'true' }}
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py c --root . --installed --rid osx-x64'
 
       - name: Smoke-test the C archive
         if: ${{ inputs.c_smoke && inputs.static_libs }}

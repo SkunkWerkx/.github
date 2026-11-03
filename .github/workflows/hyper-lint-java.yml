@@ -73,6 +73,16 @@ jobs:
         if: inputs.lint_java_jni
         with:
           components: rustfmt, clippy
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the Cargo patch, proven, before
+      # clippy and the tests of java/jni. spotlessCheck, above, resolves no dependency, so the lint
+      # has no Java side to wire.
+      - name: Fetch the companions
+        if: inputs.lint_java_jni
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-lint-java.yml:lint
+
       - name: cargo fmt --check (java/jni)
         if: inputs.lint_java_jni
         working-directory: java/jni

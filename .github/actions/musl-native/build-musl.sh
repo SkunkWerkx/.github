@@ -42,6 +42,10 @@
 #    What is copied is rust/ (minus target/) and, when the repo has one, corpus/ — the
 #    conformance vectors a core's own tests replay from ../corpus.
 #
+# With a pinned companion (.companions/env from fetch-companions), the companion's crate is
+# copied in beside rust/ and patched in with /work paths before anything builds, and its
+# origin is proven inside the container (companion_container.sh, companion_cargo).
+#
 # The Alpine tag is the oldest release still in upstream support, the same reason the PyPI
 # wheels build against the oldest manylinux: a library built against an older libc loads on
 # a newer one, not the other way round. Raise it when that release reaches end of life.
@@ -59,9 +63,10 @@ image=${ALPINE_IMAGE:-alpine:3.22}
 [ "$core" = true ] || [ "$jni" = true ] || { echo "::error::CORE=false with nothing else to build"; exit 1; }
 platform_args=()
 [ -n "${DOCKER_PLATFORM:-}" ] && platform_args=(--platform "$DOCKER_PLATFORM")
+companion_sh=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts" && pwd)/companion_container.sh
 
 docker run --rm "${platform_args[@]}" \
-  -v "$repo_root:/src:ro" -v "$out_dir:/out" \
+  -v "$repo_root:/src:ro" -v "$out_dir:/out" -v "$companion_sh:/companion.sh:ro" \
   -e CRATE="$crate" -e JNI="$jni" -e CORE="$core" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   "$image" sh -euc '
     apk add --no-cache build-base curl >/dev/null
@@ -72,6 +77,8 @@ docker run --rm "${platform_args[@]}" \
     mkdir /work
     (cd /src && tar cf - --exclude=./rust/target --exclude=./java/jni/target ./rust $([ -d corpus ] && echo ./corpus) $([ "$JNI" = true ] && echo ./java/jni)) | tar xf - -C /work
     cd /work/rust
+    . /companion.sh
+    companion_cargo /src /work /work/rust $([ "$JNI" = true ] && echo /work/java/jni)
 
     mkdir /unwind
     echo "GROUP ( $(gcc -print-file-name=libgcc_eh.a) $(gcc -print-file-name=libgcc.a) )" > /unwind/libgcc_s.so

@@ -135,6 +135,21 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The Forge revision this job runs, beside the checkout: the companions' fetch, and the
+      # big-endian control's hyper_config.py.
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
       # One stable toolchain for every Linux check: the components and targets the old jobs
       # installed one at a time. Windows runs only the no-panic link and takes a plain stable.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -148,6 +163,15 @@ jobs:
         if: matrix.arch == 'x64'
         with:
           python-version: ${{ inputs.python_version }}
+
+      # The pinned companion (companion-pins): nothing without a `companions` block in
+      # hyper.json, the release guard alone in a release dispatch, and otherwise the Cargo
+      # patch, proven, before anything resolves the companion.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-core-checks.yml:checks
 
       - name: cargo fmt --check
         if: inputs.lint_rust && matrix.arch == 'x64'
@@ -213,6 +237,9 @@ jobs:
         with:
           manifest-path: rust/Cargo.toml
           feature-group: default-features
+          # The rustdoc cache's key starts with prefix-key ("semver" when empty, as without a pin):
+          # with a pin, its commit, so a pinned baseline is never restored by another pin or none.
+          prefix-key: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '' }}
       - name: Fail only when the version claims
         if: inputs.semver && matrix.arch == 'x64' && steps.semver.outcome == 'failure'
         working-directory: rust
@@ -346,22 +373,6 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y qemu-user "gcc-$ARCH-linux-gnu" "libc6-dev-$ARCH-cross"
-      # The negative control reads which vector to corrupt from the consumer's hyper.json,
-      # through hyper_config.py: the Forge revision this job runs, checked out beside it.
-      - name: Validate Forge workflow revision
-        if: inputs.big_endian != '' && matrix.arch == 'x64'
-        env:
-          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
-        run: |
-          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
-      - name: Check out the executing Forge revision
-        if: inputs.big_endian != '' && matrix.arch == 'x64'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
-          path: .hyperforge
-          persist-credentials: false
       - name: cargo test on the big-endian target
         if: inputs.big_endian != '' && matrix.arch == 'x64'
         working-directory: rust
@@ -384,7 +395,8 @@ jobs:
           export "${v}_LINKER=$ARCH-linux-gnu-gcc"
           export "${v}_RUNNER=qemu-$ARCH -L /usr/$ARCH-linux-gnu"
           # The vector, its test target and the test that must fail: `big_endian_control` in
-          # .github/hyper.json (HyperUuid's SQL order vector by default).
+          # .github/hyper.json (HyperUuid's SQL order vector by default), read through the
+          # Forge revision checked out at the top of the job.
           control=$(python3 ../.hyperforge/.github/scripts/hyper_config.py corrupt-corpus --root ..)
           CONTROL_TEST=$(sed -n 's/^CONTROL_TEST=//p' <<<"$control")
           CONTROL_FAILS=$(sed -n 's/^CONTROL_FAILS=//p' <<<"$control")

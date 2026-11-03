@@ -34,6 +34,21 @@ jobs:
     runs-on: ubuntu-26.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: inputs.lint_node
         with:
@@ -42,10 +57,26 @@ jobs:
         if: inputs.lint_node
         with:
           components: rustfmt, clippy
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the Cargo patch and the npm
+      # wiring (HyperCast packed with this runner's addon, typescript/'s dependency and lock
+      # pointed at it), each proven, before `npm ci` and clippy over the addon.
+      - name: Fetch the companions
+        id: companions
+        if: inputs.lint_node
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-lint-typescript.yml:lint:linux-arm64
+
       - name: npm ci
         if: inputs.lint_node
         working-directory: typescript
         run: npm ci
+      - name: npm ci took the pinned companion
+        if: inputs.lint_node && steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py npm --root . --dir typescript --installed'
       # Biome (typescript/biome.json): the lint rules and the formatter, both checked.
       - name: npm run lint
         if: inputs.lint_node

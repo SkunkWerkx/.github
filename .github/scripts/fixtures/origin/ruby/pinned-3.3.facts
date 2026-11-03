@@ -1,0 +1,15 @@
+name=hypercast
+version=1.0.0
+ruby=3.3.13
+abi=3.3
+rid=osx-arm64
+backend=fiddle
+pure=
+source=@ROOT@/.companions/hypercast/ruby/lib/hypercast.rb
+extension=
+extension_sha256=
+library=@ROOT@/.companions/hypercast/ruby/lib/hypercast/native/osx-arm64/libhypercast.dylib
+library_sha256=0e96b9e05b68783ebbb01e5b011b2dc066c64387cb733b6f92cab2b152a1ac02
+observed=1
+mapped=@ROOT@/.companions/hypercast/ruby/lib/hypercast/native/osx-arm64/libhypercast.dylib
+gem=@ROOT@/.companions/hypercast/ruby

@@ -137,11 +137,34 @@ jobs:
           # (see csharp_extra_runtime); the empty string installs nothing.
           dotnet-version: ${{ inputs.csharp_extra_runtime != '' && format('{0}.x', inputs.csharp_extra_runtime) || '' }}
 
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the pin packed (dotnet pack,
+      # with this leg's native and static libraries) into the job-local feed, every requirement on
+      # it set to the pin's exact version, and nuget.config mapping it to that feed alone. After
+      # the SDK: the wiring packs with it. Each restore below is proven before what it serves.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-csharp.yml:test:${{ matrix.rid }}
+
       - name: Place native lib for C# in-repo testing
         if: inputs.csharp_runtimes_dir != ''
         run: |
           mkdir -p "${{ inputs.csharp_runtimes_dir }}/${{ matrix.rid }}/native"
           cp "out/${{ matrix.lib_name }}" "${{ inputs.csharp_runtimes_dir }}/${{ matrix.rid }}/native/"
+
+      # The suite's project restored as `dotnet test` restores it, then the global packages
+      # folder's copy proven to be the feed's, byte for byte, right before the suite.
+      - name: The suite takes the pinned companion
+        if: steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+          CSHARP_TEST_PROJECT: ${{ inputs.csharp_test_project }}
+        run: |
+          set -euo pipefail
+          dotnet restore "$GITHUB_WORKSPACE/$CSHARP_TEST_PROJECT"
+          "$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py csharp --root . --installed
 
       # An absolute project path: for a multi-targeted project `dotnet test` re-resolves a
       # relative --project against the project's own directory and fails with a doubled
@@ -151,6 +174,19 @@ jobs:
         env:
           CSHARP_TEST_PROJECT: ${{ inputs.csharp_test_project }}
         run: dotnet test --project "$GITHUB_WORKSPACE/$CSHARP_TEST_PROJECT" -c Release
+
+      # The Native AOT project restored for this RID as `dotnet publish -r` restores it, then
+      # proven the same way, right before the publish.
+      - name: The Native AOT publish takes the pinned companion
+        if: inputs.csharp_aot_project != '' && steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+          AOT_PROJECT: ${{ inputs.csharp_aot_project }}
+          RID: ${{ matrix.rid }}
+        run: |
+          set -euo pipefail
+          dotnet restore "$AOT_PROJECT" -r "$RID" -p:PublishAot=true
+          "$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py csharp --root . --dir "$(dirname "$AOT_PROJECT")" --installed
 
       # The bar here is "zero warnings, exit 0" on every platform, not "the csproj sets
       # PublishAot". Three separate things get proven per leg: the publish emits no
@@ -261,6 +297,22 @@ jobs:
         with:
           name: static-libs
           path: .
+      # The runner's SDK, for the fetch's wiring (dotnet pack, with this RID's musl natives); the
+      # Alpine suite has its own.
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the pin packed into the
+      # job-local feed, which the Alpine suite copies, maps in its own nuget.config and proves
+      # after each restore (suite-musl.sh's companion_csharp).
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-csharp.yml:test-musl:${{ matrix.rid }}
+
       # The major.minor of the caller's global.json SDK -> 11.0-alpine-aot. The `-aot` variant
       # carries the clang and linker Native AOT needs; a channel's rc and GA builds are both served
       # under the bare major.minor tag, and global.json's latestFeature roll-forward takes it.

@@ -1,0 +1,29 @@
+Package: hypercast
+Type: Package
+Title: Allocation-Free Casts of Scalars from Untrusted Text
+Version: 1.0.0
+Authors@R: c(
+    person("Brian", "Buvinghausen", email = "buvinghausen@gmail.com",
+           role = c("aut", "cre")),
+    person("Skunk Werkx", role = "cph")
+  )
+Description: Parses booleans, characters, integers, reals, exact decimals, UUIDs,
+    dates, times, date-times, durations, Unix and spreadsheet serial instants from text,
+    under formats, field orders, precisions and epochs the caller declares rather than
+    guesses. Every parse returns a verdict: the value, or a closed reason (empty,
+    malformed, out of range) with the offending span of the input. The work is done by a
+    compiled 'Rust' core shared with the project's bindings for other languages, which
+    neither allocates nor panics. Every cast is vectorised and returns a data frame with
+    one verdict per element; no cast signals an error for its data.
+License: MIT + file LICENSE
+URL: https://github.com/SkunkWerkx/HyperCast
+BugReports: https://github.com/SkunkWerkx/HyperCast/issues
+Depends: R (>= 4.2)
+Suggests:
+    testthat (>= 3.0.0),
+    jsonlite
+SystemRequirements: Cargo (Rust's package manager), rustc
+Config/testthat/edition: 3
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+Config/roxygen2/version: 8.1.1

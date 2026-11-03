@@ -55,10 +55,31 @@ jobs:
             machine: X86-64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: ${{ matrix.target }}
+
+      # The pinned companion (companion-pins): nothing without a `companions` block in
+      # hyper.json, the release guard alone in a release dispatch, and otherwise the Cargo
+      # patch, proven, before anything resolves the companion.
+      - name: Fetch the companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-build-android.yml:build-native-android:${{ matrix.rid }}
 
       - name: Locate the NDK
         run: |

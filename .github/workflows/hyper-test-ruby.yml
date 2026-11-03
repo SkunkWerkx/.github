@@ -112,6 +112,17 @@ jobs:
           path: out
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the Cargo patch and the Ruby
+      # wiring (the gemspec's requirement made the pin's version, the Gemfile's path gem, and this
+      # rid's Magnus extension per ABI and Fiddle library placed in the pin), each proven, before
+      # Magnus builds. Each suite proves again what its Ruby loads, right before rspec.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-ruby.yml:test:${{ matrix.rid }}
+
       # macOS: three things, all so that mkmf can link the test program it builds before it
       # will compile a native gem (fiddle here). hyper-build-native.yml's Ruby section has the
       # history (a Command Line Tools-only developer directory, and what a Swift toolchain on
@@ -194,6 +205,9 @@ jobs:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
           attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          companions: ${{ steps.companions.outputs.active }}
+          python: ${{ steps.companions.outputs.python }}
+          cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '0' }}
 
       - name: Ruby (Magnus) — primary ABI
         if: inputs.magnus
@@ -203,17 +217,32 @@ jobs:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
           attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          companions: ${{ steps.companions.outputs.active }}
+          python: ${{ steps.companions.outputs.python }}
+          cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '0' }}
 
       # The Fiddle backend, forced explicitly: the universal zero-compile path every platform
       # must keep green regardless of whether a Magnus extension exists there. The primary-ABI
-      # call above leaves its Ruby active; the step below exists only for `magnus: false`.
+      # call above leaves its Ruby active; the step below exists only for `magnus: false`. With a
+      # pin, its Bundler cache (and ruby-magnus's) is keyed with the pin's commit (cache-version);
+      # '0', the default, keeps the key as before.
       - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         if: ${{ !inputs.magnus }}
         with:
           ruby-version: ${{ inputs.ruby_version }}
           bundler: default
           bundler-cache: true
+          cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '0' }}
           working-directory: ruby
+
+      # After the last install (setup-ruby's, or the primary ABI's in ruby-magnus), in the Ruby
+      # the Fiddle suite runs on: Bundler resolves the companion from the pin, and requiring it
+      # loads the pin's files, the staged binary for this ABI among them.
+      - name: The Fiddle suite takes the pinned companion
+        if: steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py ruby --root . --dir ruby --installed'
 
       # (bash + export because an env: mapping key can't be an expression.)
       - name: Test Ruby bindings (Fiddle backend) against this platform's native lib
@@ -250,6 +279,21 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .hyperforge
           persist-credentials: false
+
+      # The runner's own toolchain, for the fetch's wiring (cargo update here); the Alpine
+      # build has its own.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the Cargo patch, proven on the
+      # runner, and again inside the Alpine Magnus build (build-magnus-musl.sh), and the Ruby
+      # wiring, this rid's musl binaries placed in the pin: each Alpine suite puts the pin on
+      # RUBYLIB and proves what its Ruby loads before rspec (companion_ruby).
+      - name: Fetch the companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-ruby.yml:test-musl:${{ matrix.rid }}
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: native-${{ matrix.rid }}

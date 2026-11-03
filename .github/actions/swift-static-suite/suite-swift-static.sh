@@ -45,6 +45,14 @@
 # The source tree is copied into the container, not built in place: Docker runs as root, and
 # a .build directory written through a bind mount would leave root-owned files in the
 # checkout.
+#
+# A pinned companion (.companions/env, which fetch-companions wrote on the host): the host
+# already pointed every manifest at the pin by a relative path and extracted the pin's bundle
+# into it, so companion_swift (companion_container.sh, mounted at /companion.sh) copies the pin's
+# manifest and swift/ to the same relative path under /work, checks their bytes against the
+# host's record and proves the package graph takes them; before each check's build,
+# companion_swift_link proves a fresh verbose build links those archives. Without the file both
+# do nothing.
 set -euo pipefail
 
 usage="usage: suite-swift-static.sh <Project> <repo-root> <swift-version> <check> [<check> ...]"
@@ -69,6 +77,7 @@ done
 # The WASI shim the browser check runs the module with, pinned.
 browser_wasi_shim="@bjorn3/browser_wasi_shim@0.4.2"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+companion_sh=$(cd "$here/../../scripts" && pwd)/companion_container.sh
 out=""
 if $need_browser; then
   chrome="${CHROME:-google-chrome}"
@@ -127,12 +136,14 @@ fi
 docker run --rm \
   -e PROJECT="$project" -e CHECKS="$checks" -e TAG="$tag" \
   -e STATIC_FILE="$static_file" -e WASM_FILE="$wasm_file" \
-  -v "$root":/src:ro -v "$cache":/sdk:ro ${out:+-v "$out":/out} \
+  -v "$root":/src:ro -v "$cache":/sdk:ro -v "$companion_sh:/companion.sh:ro" ${out:+-v "$out":/out} \
   "$image" bash -euo pipefail -c '
     mkdir /work
     cd /src
     tar -cf - --exclude=.build --exclude=target Package.swift swift rust/Cargo.toml $([ -d corpus ] && echo corpus) \
       | tar -xf - -C /work
+    . /companion.sh
+    companion_swift /src /work /work/swift /work/swift/StaticSmokeTest
     swift --version
 
     [ -z "$STATIC_FILE" ] || swift sdk install "/sdk/$STATIC_FILE"
@@ -145,6 +156,7 @@ docker run --rm \
       local label="$1"; shift
       echo "::group::$PROJECT smoke test — $label"
       cd /work/swift/StaticSmokeTest
+      companion_swift_link /work /work/swift/StaticSmokeTest "$@"
       swift build "$@"
       local bin; bin="$(swift build "$@" --show-bin-path)"
       if [ -f "$bin/StaticSmokeTest.wasm" ]; then
@@ -159,10 +171,12 @@ docker run --rm \
       case "$check" in
         test)
           echo "::group::$PROJECT swift test — glibc"
+          companion_swift_link /work /work/swift --build-tests
           cd /work/swift && swift test
           echo "::endgroup::" ;;
         test-wasm)
           echo "::group::$PROJECT swift test — WebAssembly"
+          companion_swift_link /work /work/swift --build-tests --swift-sdk "$wasm_sdk"
           cd /work/swift && swift test --swift-sdk "$wasm_sdk"
           echo "::endgroup::" ;;
         smoke-glibc) smoke glibc ;;

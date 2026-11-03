@@ -52,6 +52,19 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
 
       # No module cache: the binding's go.sum is the standard library and a test dependency
       # or two, and restoring a cache costs more than the download it saves.
@@ -59,6 +72,14 @@ jobs:
         with:
           go-version-file: ${{ inputs.go_version_file }}
           cache: false
+
+      # The pinned companion (companion-pins): nothing without a `companions` block in
+      # hyper.json, the release guard alone in a release dispatch, and otherwise the Go
+      # replace, proven, before anything resolves the companion.
+      - name: Fetch the companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-go.yml:test:${{ matrix.rid }}
 
       - name: Test Go bindings, the translated core
         working-directory: go
@@ -93,6 +114,21 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .hyperforge
           persist-credentials: false
+
+      # The host's go wires the replace and proves it; the suite's own Go is the image's.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ inputs.go_version_file }}
+          cache: false
+
+      # The pinned companion (companion-pins): nothing without a `companions` block in
+      # hyper.json, the release guard alone in a release dispatch, and otherwise the Go
+      # replace, proven; the Alpine suite rewrites it for its copy and proves it inside
+      # (suite-musl.sh).
+      - name: Fetch the companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-go.yml:test-musl:${{ matrix.rid }}
 
       - name: Resolve the Alpine image that follows go.mod
         id: images

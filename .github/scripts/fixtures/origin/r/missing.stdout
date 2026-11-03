@@ -1,0 +1,2 @@
+libpaths	@SCRATCH@/emptylib|/opt/homebrew/lib/R/4.6/site-library|/opt/homebrew/Cellar/r/4.6.2/lib/R/library
+error	there is no package called ‘hypercast’

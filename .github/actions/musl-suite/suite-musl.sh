@@ -50,11 +50,18 @@ platform_args=()
 # $CRATE and $RID, and starts with a /work that already holds rust/Cargo.toml and corpus/ —
 # the two things outside a binding's own directory its tests read. A suite that needs more
 # of the caller's environment inside the container names it in extra_env first.
+# /companion.sh (companion_container.sh) gives a branch the pinned companion, when
+# fetch-companions wrote .companions/env: the override rewritten with /work paths, and its
+# origin proven inside the container.
+companion_sh=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts" && pwd)/companion_container.sh
+# The Forge's scripts themselves, for a branch whose image has an interpreter to run them
+# (Python's companion_python, and Node's or Bun's companion_npm, at /forge).
+forge_scripts=$(dirname "$companion_sh")
 extra_env=()
 extra_mounts=()
 in_alpine() {
   docker run --rm "${platform_args[@]}" \
-    -v "$repo_root:/src:ro" -v "$lib_dir:/musl:ro" "${extra_mounts[@]}" \
+    -v "$repo_root:/src:ro" -v "$lib_dir:/musl:ro" -v "$companion_sh:/companion.sh:ro" "${extra_mounts[@]}" \
     -e CRATE="$crate" -e RID="$rid" "${extra_env[@]}" \
     "$1" sh -euc '
       mkdir -p /work/rust
@@ -72,6 +79,11 @@ case "$binding" in
   #
   # The publish log goes to a file, not through `tee`: this is plain sh, which has no
   # pipefail, and a pipe would report tee's exit status and hide a failed publish.
+  #
+  # A pinned companion (.companions/env): the copied projects already require the pin's exact
+  # version (the host rewrote them); companion_csharp copies the feed the host packed and writes
+  # /work/nuget.config for it, then restores and proves the global packages folder's copy came
+  # from that feed with the packed bytes, before the suite and before each Native AOT publish.
   csharp)
     : "${CSHARP_TEST_PROJECT:?the C# suite needs CSHARP_TEST_PROJECT}" "${CSHARP_RUNTIMES_DIR:?the C# suite needs CSHARP_RUNTIMES_DIR}"
     extra_env=(-e TEST_PROJECT="$CSHARP_TEST_PROJECT" -e RUNTIMES_DIR="$CSHARP_RUNTIMES_DIR" -e AOT_PROJECT="${CSHARP_AOT_PROJECT:-}" -e AOT_FRAMEWORKS="${CSHARP_AOT_FRAMEWORKS:-}")
@@ -91,6 +103,8 @@ case "$binding" in
     in_alpine "${SUITE_IMAGE:-mcr.microsoft.com/dotnet/sdk:11.0-alpine-aot}" '
       (cd /src && tar --exclude=bin --exclude=obj --exclude=runtimes --exclude=TestResults \
           --exclude=BenchmarkDotNet.Artifacts -cf - csharp global.json LICENSE) | tar -C /work -xf -
+      . /companion.sh
+      companion_csharp /src /work wire
       cd /work
       mkdir -p "$RUNTIMES_DIR/$RID/native"
       cp "/musl/lib$CRATE.so" "$RUNTIMES_DIR/$RID/native/"
@@ -100,11 +114,13 @@ case "$binding" in
       fi
       # An absolute project path: a multi-targeted project fails to load a relative one
       # (the path is re-resolved against the project directory and doubles).
+      companion_csharp /src /work origin "/work/$TEST_PROJECT"
       dotnet test --project "/work/$TEST_PROJECT" -c Release
       if [ -n "$AOT_PROJECT" ]; then
         # No frameworks named: today'"'"'s single publish into aot-out.
         for tfm in ${AOT_FRAMEWORKS:--}; do
           if [ "$tfm" = "-" ]; then out=/work/aot-out; set --; else out="/work/aot-out/$tfm"; set -- -f "$tfm"; fi
+          companion_csharp /src /work origin "$AOT_PROJECT" -r "$RID" -p:PublishAot=true
           dotnet publish "$AOT_PROJECT" -c Release -r "$RID" -p:PublishAot=true "$@" -o "$out" \
             > /tmp/aot.log 2>&1 || { cat /tmp/aot.log; echo "::error::Native AOT publish failed for $RID $tfm"; exit 1; }
           cat /tmp/aot.log
@@ -128,9 +144,13 @@ case "$binding" in
   # The suite, with CGO_ENABLED=0 and no C toolchain in the image: the core is committed Go
   # source, so nothing links and no archive is staged. What the run proves on musl is the
   # binding's own OS random source and its CPU-feature read, on the floor Go the image names.
+  # The copied go.mod carries the host's replace of a pinned companion, a host path that is
+  # not here: companion_go replaces it with the /work copy, and proves it, before the suite.
   go)
     in_alpine "${SUITE_IMAGE:-golang:1.26-alpine}" '
       cp -r /src/go /work/go
+      . /companion.sh
+      companion_go /src /work /work/go
       cd /work/go
       CGO_ENABLED=0 go test -count=1 ./...
     '
@@ -138,15 +158,26 @@ case "$binding" in
 
   # The FFM suite, then the smoke program on a plain JVM. Only the musl library is on the
   # classpath, so a suite that passes means the musl library is what loaded.
+  #
+  # A pinned companion (.companions/env): companion_java copies the job-local Maven repository
+  # the host published the pin into and installs the init script with the container's own
+  # companions.properties for it, and before the suite proves every copy the suites load
+  # (runtimeClasspath, testRuntimeClasspath, each Test and JavaExec task's classpath) is that
+  # jar (the init script's companionOrigin, which those tasks depend on as well). The same
+  # in the JNI branch below.
   java)
+    extra_env=(-v "$forge_scripts:/forge:ro")
     in_alpine "${SUITE_IMAGE:-eclipse-temurin:25-jdk-alpine}" '
       cp -r /src/java /work/java
       cp /src/LICENSE /work/
+      . /companion.sh
+      companion_java /src /work /forge wire
       cd /work/java
       rm -rf build .gradle aot-smoke-test/build benchmarks/build src/main/resources/native
       mkdir -p "src/main/resources/native/$RID"
       cp "/musl/lib$CRATE.so" "src/main/resources/native/$RID/"
       chmod +x gradlew
+      companion_java /src /work /forge origin /work/java
       ./gradlew test :aot-smoke-test:run --console=plain
     '
     ;;
@@ -166,14 +197,18 @@ case "$binding" in
     docker cp "$cid:/opt/java/openjdk" "$lib_dir/jdk-floor"
     docker rm "$cid" >/dev/null
     cid=
+    extra_env=(-v "$forge_scripts:/forge:ro")
     in_alpine "${SUITE_IMAGE:-eclipse-temurin:25-jdk-alpine}" '
       cp -r /src/java /work/java
       cp /src/LICENSE /work/
+      . /companion.sh
+      companion_java /src /work /forge wire
       cd /work/java
       rm -rf build .gradle aot-smoke-test/build benchmarks/build jni/target src/main/resources/native
       mkdir -p "src/main/resources/native/$RID"
       cp "/musl/lib$CRATE.so" "/musl/lib${CRATE}_jni.so" "src/main/resources/native/$RID/"
       chmod +x gradlew
+      companion_java /src /work /forge origin /work/java
       ./gradlew test testFloor checkSuiteParity :aot-smoke-test:run --console=plain \
         -Porg.gradle.java.installations.paths=/musl/jdk-floor -Porg.gradle.java.installations.auto-detect=false
     '
@@ -186,6 +221,11 @@ case "$binding" in
   #
   # SUITE_IMAGE picks the interpreter the suite runs on; the wheel is always built on the
   # default image, since it is abi3 and one build serves every supported Python.
+  #
+  # A pinned companion (.companions/env): the build container takes the Cargo patch before
+  # maturin (companion_cargo), and the suite container installs the pinned musllinux wheel
+  # pip chooses for its interpreter, then proves it, before the consumer's wheel, whose
+  # requirement the host already rewrote to the pin's version, and proves it again after.
   python)
     wheels=$(mktemp -d)
     trap 'rm -rf "$wheels"' EXIT
@@ -198,14 +238,19 @@ case "$binding" in
       pip install -q --root-user-action=ignore "maturin[patchelf]>=1.9,<2.0"
       (cd /src && tar --exclude=target --exclude=.pytest_cache --exclude=__pycache__ \
           --exclude="_native*.so" --exclude="_native*.pyd" -cf - rust python) | tar -C /work -xf -
+      . /companion.sh
+      companion_cargo /src /work /work/rust
       cd /work/python
       maturin build --release --compatibility musllinux_1_2 --out /wheels
       chmod -R a+rX /wheels
     '
-    extra_env=(-v "$wheels:/wheels:ro")
+    extra_env=(-v "$wheels:/wheels:ro" -v "$forge_scripts:/forge:ro" -e PIP_ROOT_USER_ACTION=ignore)
     in_alpine "${SUITE_IMAGE:-python:3.14-alpine}" '
       if ls /usr/lib/libgcc_s* >/dev/null 2>&1; then echo "::error::libgcc is installed, so this run proves nothing"; exit 1; fi
+      . /companion.sh
+      companion_python /src /forge python3 wire
       pip install -q --root-user-action=ignore pytest /wheels/*.whl
+      companion_python /src /forge python3 origin
       mkdir /t && cp -r /src/python/tests /t/tests
       if [ -d /work/corpus ]; then cp -r /work/corpus /t/corpus; fi
       mkdir -p /t/rust && cp /work/rust/Cargo.toml /t/rust/
@@ -233,23 +278,35 @@ case "$binding" in
   # from x86_64 and asks for aarch64-linux-musl-gcc, which a native arm64 Alpine does not have
   # (measured: "linker `aarch64-linux-musl-gcc` not found"); napi leaves a set one alone. The
   # x86_64 one is set the same way so a napi release that maps that target too changes nothing.
+  #
+  # A pinned companion (.companions/env): the build container takes the Cargo patch for both
+  # workspaces (companion_cargo) and points typescript/'s dependency at the /work copy of the
+  # tarball the host packed with this rid's addon (companion_npm wire, which regenerates and
+  # proves the lock); after `npm ci`, and before the build and the suite, the installed package
+  # is proven to be that tarball's. Bun's image has no npm: companion_npm unpack installs the
+  # same tarball into node_modules and proves it, before `bun test`.
   node)
     addon=$(mktemp -d)
     trap 'rm -rf "$addon"' EXIT
     chmod 777 "$addon"
-    extra_env=(-v "$addon:/addon" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)")
+    extra_env=(-v "$addon:/addon" -v "$forge_scripts:/forge:ro" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)")
     in_alpine "${SUITE_IMAGE:-node:${NODE_VERSION:-26}-alpine}" '
       apk add --no-cache build-base curl >/dev/null
       curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -q
       . "$HOME/.cargo/env"
       echo "== node $(node --version), $(rustc -vV | sed -n "s/^host: //p"), Alpine $(cat /etc/alpine-release), $RID"
       (cd /src && tar --exclude=target --exclude=node_modules --exclude="*.node" -cf - rust typescript) | tar -C /work -xf -
+      . /companion.sh
+      companion_cargo /src /work /work/rust /work/typescript
+      companion_npm /src /work /forge /work/typescript wire
       mkdir /unwind
       echo "GROUP ( $(gcc -print-file-name=libgcc_eh.a) $(gcc -print-file-name=libgcc.a) )" > /unwind/libgcc_s.so
       export RUSTFLAGS="-C target-feature=-crt-static -L native=/unwind"
       export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=gcc CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=gcc
       cd /work/typescript
-      npm ci && npm run build && npm test || exit 1
+      npm ci || exit 1
+      companion_npm /src /work /forge /work/typescript origin --installed
+      npm run build && npm test || exit 1
       for wrapper in index.js index.d.ts binding.js binding.d.ts; do
         cmp "$wrapper" "/src/typescript/$wrapper" || { echo "::error::napi build rewrote typescript/$wrapper"; exit 1; }
       done
@@ -267,10 +324,12 @@ case "$binding" in
       cp ./*.node /addon/
       chown "$HOST_UID:$HOST_GID" /addon/*.node
     '
-    extra_env=(-v "$addon:/addon:ro")
+    extra_env=(-v "$addon:/addon:ro" -v "$forge_scripts:/forge:ro")
     in_alpine "oven/bun:alpine" '
       (cd /src && tar --exclude=target --exclude=node_modules --exclude="*.node" -cf - typescript) | tar -C /work -xf -
       cp /addon/*.node /work/typescript/
+      . /companion.sh
+      companion_npm /src /work /forge /work/typescript unpack
       cd /work/typescript
       echo "== bun $(bun --version), Alpine $(cat /etc/alpine-release), $RID"
       bun test tests/
@@ -291,17 +350,25 @@ case "$binding" in
   # The gem's own runtime dependencies (HyperTabular's on hypercast), from its gemspec, since
   # Bundler is not used: each a plain `gem install`, --conservative so that one an image
   # already has (its default or bundled fiddle) is kept rather than rebuilt from source.
+  #
+  # A pinned companion (.companions/env): companion_ruby puts the pinned gem, with the binaries
+  # the host placed in it, on RUBYLIB, the install loop skips it (HYPER_COMPANION_GEM), and
+  # after the last install it proves what this Ruby loads is the pin's, before rspec.
   ruby)
+    extra_env=(-v "$forge_scripts:/forge:ro")
     in_alpine "${SUITE_IMAGE:-ruby:4.0-alpine}" '
       cp -r /src/ruby /work/ruby
       rm -rf "/work/ruby/lib/$CRATE/native/linux-x64" "/work/ruby/lib/$CRATE/native/linux-arm64"
       mkdir -p "/work/ruby/lib/$CRATE/native/$RID"
       cp "/musl/lib$CRATE.so" "/work/ruby/lib/$CRATE/native/$RID/"
+      . /companion.sh
+      companion_ruby /src /work /forge wire
       cd /work/ruby
       rm -f Gemfile Gemfile.lock
       gem install rspec -v "~> 3.13" --no-document --silent
-      ruby -e "Gem::Specification.load(Dir[%q(*.gemspec)].first).runtime_dependencies.each { |d| system(%q(gem), %q(install), d.name, %q(-v), d.requirement.to_s, %q(--conservative), %q(--no-document), %q(--silent)) or abort(%(could not install #{d.name} #{d.requirement})) }"
+      ruby -e "Gem::Specification.load(Dir[%q(*.gemspec)].first).runtime_dependencies.each { |d| next if d.name == ENV[%q(HYPER_COMPANION_GEM)]; system(%q(gem), %q(install), d.name, %q(-v), d.requirement.to_s, %q(--conservative), %q(--no-document), %q(--silent)) or abort(%(could not install #{d.name} #{d.requirement})) }"
       export "$(echo "$CRATE" | tr a-z A-Z)_PURE=1"
+      companion_ruby /src /work /forge origin
       rspec
     '
     ;;

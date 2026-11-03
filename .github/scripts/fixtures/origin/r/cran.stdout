@@ -1,0 +1,6 @@
+libpaths	@SCRATCH@/emptylib|/opt/homebrew/lib/R/4.6/site-library|/opt/homebrew/Cellar/r/4.6.2/lib/R/library
+path	/opt/homebrew/lib/R/4.6/site-library/jsonlite
+Package	jsonlite
+Version	2.0.0
+Repository	CRAN
+Built	R 4.6.1; aarch64-apple-darwin27.0.0; 2026-10-26 23:02:21 UTC; unix

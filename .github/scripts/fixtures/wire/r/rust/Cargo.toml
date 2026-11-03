@@ -1,0 +1,177 @@
+[package]
+name = "hypertabular"
+version = "1.0.0"
+edition = "2024"
+# Private-core tests stay in tests/ but are included by lib.rs as unit tests. List
+# integration targets explicitly so Cargo does not also compile those sources as crates.
+autotests = false
+# HyperCast's, the one dependency, whose own floor this cannot go below. CI checks the
+# library on it (check-msrv).
+rust-version = "1.89"
+description = "Forward-only tabular parsing — delimited text and spreadsheets — with a HyperCast verdict for every cell: an allocation-free, panic-free, no_std core that fills caller-owned column buffers, wrapped as a native library (libhypertabular) for direct FFI from every host language."
+license = "MIT"
+# A copy of the root README inside the crate's own directory, not a path up to it: maturin
+# reads this file whenever it builds the Python wheel from this manifest, and the forge's
+# Alpine suite builds that wheel from a copy of rust/ and python/ alone (musl-suite), where
+# `../README.md` is not there to read. HyperCast's crate carries its own for the same reason.
+readme = "README.md"
+repository = "https://github.com/SkunkWerkx/HyperTabular"
+keywords = ["csv", "xlsx", "parser", "ffi", "allocation-free"]
+categories = ["parsing", "no-std", "no-std::no-alloc"]
+
+# Only the rlib is declared. The shared library every binding loads is built by naming its
+# crate type on the command line (`cargo cdylib`, an alias in .cargo/config.toml), as
+# HyperCast's is and for the same reasons (SkunkWerkx/.github, "The Rust core").
+[lib]
+crate-type = ["rlib"]
+# The unit tests are not benches: keeps `cargo bench` on the criterion targets only.
+bench = false
+
+[dependencies]
+# The one upstream, and the core's only dependency: every cell verdict is a HyperCast
+# verdict. 0.7.0 brought the interop surface and the typed doors this crate reads workbook
+# cells through, 0.8.0 Android, and 0.9.0 a `python-values` built on PyO3 0.30, the PyO3 the
+# Python binding below needs for free-threaded CPython (Cargo links one PyO3 per build).
+# 1.0.0 is the floor: the first stable surface, and the one the Swift binding's
+# non-throwing doors need. `exports` stays off, so no library built from this crate carries
+# HyperCast's `cast_*` symbols.
+hypercast = { version = "1.0.0", default-features = false }
+# The asynchronous reads (the `async` feature): the runtime-neutral `AsyncRead` trait alone,
+# which Tokio's readers meet through `tokio_util::compat` and every other runtime's directly.
+futures-io = { version = "0.3", default-features = false, features = ["std"], optional = true }
+# The PHP binding, a Zend extension (the `php` feature). Never part of the core.
+ext-php-rs = { version = "0.16", optional = true }
+# Build-time check only, never shipped: see the `no-panic` feature.
+no-panic = { version = "0.1", optional = true }
+# The Python binding (src/python_ext.rs), linked into a CPython extension module.
+# abi3-py311, as HyperCast's is: one build per platform serves every CPython from the
+# package's floor up with the GIL. abi3t-py315 is PEP 803's stable ABI for 3.15+, with or
+# without the GIL; free-threaded 3.13 and 3.14 have no stable ABI and get no wheel. The same
+# PyO3 as HyperCast's `python-values`.
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py311", "abi3t-py315"], optional = true }
+# The Ruby binding's Magnus extension (src/ruby_ext.rs), linked into a Ruby native
+# extension (`hypertabular_native`) and, for ruby.wasm, into the interpreter itself. The
+# versions HyperCast's own extension is built with.
+magnus = { version = "0.9", features = ["rb-sys"], optional = true }
+rb-sys = { version = "0.9", optional = true }
+
+[features]
+# On by default for the crates.io consumer, the test suite and the benchmarks: the Rust
+# API over the core — the Rust binding: readers that own their buffers, and files.
+# Nothing the crate ships as a library is built with it. The core (src/kernel) is the same
+# code with or without it, and compiles with it off, where `std` cannot be named.
+default = ["std", "exports"]
+std = ["hypercast/std"]
+# `DelimitedReader::from_async_reader` / `read_async` and `Workbook::from_async_reader`: the
+# Rust API's reads from an asynchronous source. The core is synchronous and never waits —
+# only the binding's refills are awaited — so nothing under src/kernel changes with it.
+async = ["dep:futures-io", "std"]
+# The C ABI symbols. On by default and implied by every feature that builds a library of
+# this crate's own; off for a crate that links this one as an rlib and exports a C ABI of
+# its own, so that its library does not carry these (HyperCast's `exports`, same reason).
+exports = []
+# The panic handler a no_std static library needs (lib.rs); see HyperCast's manifest for
+# why the static libraries carry no copy of Rust's standard library.
+staticlib = ["exports"]
+# The shared library every binding loads (`cargo cdylib`), without Rust's standard
+# library: the `staticlib` panic handler plus what a no_std shared library needs that a
+# static one does not (lib.rs).
+cdylib = ["staticlib"]
+# This crate as the PHP binding: the Zend extension `hypertabular` (ext-php-rs, src/php_ext/),
+# which the Forge builds, load-checks and packs for PIE, and which judges every cell with
+# HyperCast's own extension at runtime. Off by default, and outside src/kernel, which no
+# feature reaches.
+php = ["dep:ext-php-rs", "std"]
+# Proves at link time that no C ABI export can panic: `cargo no-panic` fails with an
+# undefined symbol naming any export the optimizer could not clear of every panic path.
+# Built with std, because the proof needs the unwind edge a panic leaves and a no_std
+# build has to abort; the exports' code is the same either way.
+no-panic = ["dep:no-panic", "exports"]
+# The Python binding: a binding like any other — it allocates every buffer and the core
+# fills them — but written in Rust and linked with the core into one extension module
+# (`hypertabular._native`), so it calls the core's Rust functions instead of loading the
+# shared library. maturin builds it into the wheels (python/pyproject.toml); the forge's
+# suites build it with `cargo rustc --release --crate-type cdylib --features python`.
+# Nothing under src/kernel knows it exists.
+python = ["dep:pyo3", "std", "hypercast/python-values"]
+# The Ruby binding's fast backend: the gem's Fiddle crossing (ruby/lib/hypertabular/
+# runtime) written again in Rust over the core's own functions and linked with the core
+# into one Magnus extension, which replaces that crossing in place on require. The forge
+# builds it on every leg (`cargo rustc --release --crate-type cdylib --features ruby`) and
+# for ruby.wasm (ruby/ext/hypertabular_native/extconf.rb). Nothing under src/kernel knows
+# it exists.
+ruby = ["dep:magnus", "dep:rb-sys", "std"]
+
+[dev-dependencies]
+# tests/header.rs: generates the C header and compares it with include/hypertabular.h.
+# `unstable_ir` lets the test drop the struct-valued constants C cannot spell (it says why).
+cbindgen = { version = "0.29.4", default-features = false, features = ["unstable_ir"] }
+# The comparison baseline for the delimited conformance suite and bench — never linked.
+csv = "1.4"
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+# The corpus is JSON: the example that writes it and the test that replays it. Without
+# `float_roundtrip`, serde_json reads a 17-digit double one unit off, and a cell's f32 said
+# as a double (61.909000396728516) would not be what the file says.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+# Deflate for the tests, which build their workbook packages in memory and hold the core's
+# own inflate to another's. The crate itself inflates with the core and links neither.
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+
+# The remaining tests are separate crates; allocation counters stay process-isolated.
+[[test]]
+name = "column_values"
+
+[[test]]
+name = "corpus_delimited"
+
+[[test]]
+name = "corpus_workbook"
+
+[[test]]
+name = "delimited_reader"
+
+[[test]]
+name = "header"
+
+[[test]]
+name = "header_first"
+
+[[test]]
+name = "kernel_allocation_free"
+
+[[test]]
+name = "kernel_workbook_allocation_free"
+
+[[test]]
+name = "reader_allocation_free"
+
+[[test]]
+name = "stream_progress"
+
+[[bench]]
+name = "delimited_benchmarks"
+harness = false
+
+[[bench]]
+name = "workbook_benchmarks"
+harness = false
+
+# A cfg only `check-core.sh` sets: `hypertabular_canary` compiles in an export that can
+# panic, so the no-panic proof can be watched refusing it.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(hypertabular_canary)'] }
+
+# The same profile HyperCast ships with, for the same measured reasons.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+# A profiler needs the symbols the release profile strips.
+[profile.bench]
+strip = false
+
+# The profile the static libraries are built with: release, plus panics that abort.
+[profile.staticlib]
+inherits = "release"
+panic = "abort"

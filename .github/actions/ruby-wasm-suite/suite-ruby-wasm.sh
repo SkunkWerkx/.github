@@ -83,14 +83,52 @@ pack() {
   echo "$root/ruby/pkg/$(cd "$root/ruby/pkg" && ls "$gem_name"-*.gem)"
 }
 
+# >>> companion-pins
+# The pinned companion (companion-pins), only with .companions/env, which fetch-companions alone
+# writes: it placed the companion's ruby-wasm-<abi> archive in the pin (checked against
+# SHA256SUMS) and gave the smoke Gemfile `gem '<companion>-wasm', path:` this unpacked gem. Each
+# link packs that gem from the pin as the companion's release does (`rake wasm:gem[<abi>]`) and
+# unpacks it there; between the smoke Gemfile's install and rbwasm, companion_origin.py proves
+# Bundler took it and that it carries the staged archive, so rbwasm never links RubyGems' copy.
+companions="$root/.companions/env"
+forge_scripts="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts" && pwd)"
+companion_wasm() {
+  local prefix name pin version packed dest
+  [ -f "$companions" ] || return 0
+  while IFS='=' read -r prefix pin; do
+    prefix="${prefix%_RUBY_REQ}"
+    name="$(echo "$prefix" | tr '[:upper:]' '[:lower:]')"
+    pin="$root/$pin"
+    version="$(sed -n "s/^${prefix}_VERSION=//p" "$companions")"
+    [ -f "$pin/ext/${name}_native/$abi/${name}_native.a" ] || {
+      echo "::error::$pin/ext/${name}_native/$abi/${name}_native.a is missing: fetch-companions placed no ruby-wasm-$abi archive for $name" >&2
+      exit 1
+    }
+    (cd "$pin" && BUNDLE_GEMFILE="$pin/Gemfile" bundle install --quiet && rm -f pkg/"$name"-wasm-*.gem &&
+      BUNDLE_GEMFILE="$pin/Gemfile" bundle exec rake "wasm:gem[$abi]") </dev/null >&2
+    packed="$pin/pkg/$name-wasm-$version.gem"
+    dest="$root/.companions/$name-wasm"
+    rm -rf "$dest"
+    gem unpack "$packed" --target "$dest" </dev/null >&2
+    gem spec "$packed" --ruby </dev/null >"$dest/$name-wasm-$version/$name-wasm.gemspec"
+    echo "$name-wasm $version: packed from $pin, unpacked at $dest/$name-wasm-$version" >&2
+  done < <(grep '^[A-Z][A-Z0-9_]*_RUBY_REQ=' "$companions")
+}
+# <<< companion-pins
 # rbwasm over the smoke Gemfile, which takes the {crate}-wasm gem from WASM_GEM_DIR.
 link() {
   local gem_dir="$1" wasm="$2"
+  # >>> companion-pins
+  companion_wasm
+  # <<< companion-pins
   (
     cd "$smoke"
     export BUNDLE_GEMFILE="$PWD/Gemfile" WASM_GEM_NAME="$gem_name" WASM_GEM_DIR="$gem_dir"
     rm -f Gemfile.lock
     bundle install
+    # >>> companion-pins
+    if [ -f "$companions" ]; then python3 "$forge_scripts/companion_origin.py" ruby-wasm --root "$root" --dir "${SMOKE:-ruby/wasm-smoke}"; fi
+    # <<< companion-pins
     bundle exec rbwasm build --ruby-version "$abi" --target wasm32-unknown-wasip1 --remake -o "$wasm"
   )
 }

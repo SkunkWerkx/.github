@@ -1,0 +1,84 @@
+{
+  "crate": "hypercast",
+  "version": "1.1.0",
+  "repo": "SkunkWerkx/HyperCast",
+  "recorded": "2026-11-01",
+  "responses": {
+    "https://api.github.com/repos/SkunkWerkx/hypercast": {
+      "status": 200,
+      "body": "{\"full_name\":\"SkunkWerkx/HyperCast\"}"
+    },
+    "https://index.crates.io/hy/pe/hypercast": {
+      "status": 200,
+      "body": "{\"name\":\"hypercast\",\"vers\":\"0.0.1\",\"yanked\":false}\n{\"name\":\"hypercast\",\"vers\":\"0.0.2\",\"yanked\":false}\n{\"name\":\"hypercast\",\"vers\":\"0.1.0\",\"yanked\":false}\n{\"name\":\"hypercast\",\"vers\":\"0.2.0\",\"yanked\":false}\n{\"name\":\"hypercast\",\"vers\":\"0.3.0\",\"yanked\":false}\n{\"name\":\"hypercast\",\"vers\":\"0.4.0\",\"yanked\":false}\n{\"name\":\"hypercast\",\"vers\":\"0.6.0\",\"yanked\":false}\n{\"name\":\"hypercast\",\"vers\":\"0.6.1\",\"yanked\":false}\n{\"name\":\"hypercast\",\"vers\":\"0.7.0\",\"yanked\":false}\n{\"name\":\"hypercast\",\"vers\":\"0.8.0\",\"yanked\":false}\n{\"name\":\"hypercast\",\"vers\":\"0.9.0\",\"yanked\":false}\n{\"name\":\"hypercast\",\"vers\":\"1.0.0\",\"yanked\":false}"
+    },
+    "https://api.nuget.org/v3-flatcontainer/hypercast/index.json": {
+      "status": 200,
+      "body": "{\"versions\":[\"0.0.1\",\"0.0.2\",\"0.1.0\",\"0.2.0\",\"0.3.0\",\"0.4.0\",\"0.6.0\",\"0.6.1\",\"0.7.0\",\"0.8.0\",\"0.9.0\",\"1.0.0\"]}"
+    },
+    "https://repo1.maven.org/maven2/io/github/skunkwerkx/hypercast/maven-metadata.xml": {
+      "status": 200,
+      "body": "<metadata><versioning><versions><version>0.0.1</version><version>0.0.2</version><version>0.1.0</version><version>0.2.0</version><version>0.3.0</version><version>0.4.0</version><version>0.6.0</version><version>0.6.1</version><version>0.7.0</version><version>0.8.0</version><version>0.9.0</version><version>1.0.0</version></versions></versioning></metadata>"
+    },
+    "https://pypi.org/pypi/hypercast/1.1.0/json": {
+      "status": 404,
+      "body": ""
+    },
+    "https://rubygems.org/api/v1/versions/hypercast.json": {
+      "status": 200,
+      "body": "[{\"number\":\"1.0.0\",\"platform\":\"ruby\"},{\"number\":\"1.0.0\",\"platform\":\"x86_64-linux-musl\"},{\"number\":\"1.0.0\",\"platform\":\"x86_64-linux-gnu\"},{\"number\":\"1.0.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"1.0.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"1.0.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"1.0.0\",\"platform\":\"aarch64-linux-musl\"},{\"number\":\"1.0.0\",\"platform\":\"aarch64-linux-gnu\"},{\"number\":\"0.9.0\",\"platform\":\"ruby\"},{\"number\":\"0.9.0\",\"platform\":\"x86_64-linux-musl\"},{\"number\":\"0.9.0\",\"platform\":\"x86_64-linux-gnu\"},{\"number\":\"0.9.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.9.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.9.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.9.0\",\"platform\":\"aarch64-linux-musl\"},{\"number\":\"0.9.0\",\"platform\":\"aarch64-linux-gnu\"},{\"number\":\"0.8.0\",\"platform\":\"ruby\"},{\"number\":\"0.8.0\",\"platform\":\"x86_64-linux-musl\"},{\"number\":\"0.8.0\",\"platform\":\"x86_64-linux-gnu\"},{\"number\":\"0.8.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.8.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.8.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.8.0\",\"platform\":\"aarch64-linux-musl\"},{\"number\":\"0.8.0\",\"platform\":\"aarch64-linux-gnu\"},{\"number\":\"0.7.0\",\"platform\":\"ruby\"},{\"number\":\"0.7.0\",\"platform\":\"x86_64-linux-musl\"},{\"number\":\"0.7.0\",\"platform\":\"x86_64-linux-gnu\"},{\"number\":\"0.7.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.7.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.7.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.7.0\",\"platform\":\"aarch64-linux-musl\"},{\"number\":\"0.7.0\",\"platform\":\"aarch64-linux-gnu\"},{\"number\":\"0.6.1\",\"platform\":\"ruby\"},{\"number\":\"0.6.1\",\"platform\":\"x86_64-linux-musl\"},{\"number\":\"0.6.1\",\"platform\":\"x86_64-linux-gnu\"},{\"number\":\"0.6.1\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.6.1\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.6.1\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.6.1\",\"platform\":\"aarch64-linux-musl\"},{\"number\":\"0.6.1\",\"platform\":\"aarch64-linux-gnu\"},{\"number\":\"0.6.0\",\"platform\":\"ruby\"},{\"number\":\"0.6.0\",\"platform\":\"x86_64-linux-musl\"},{\"number\":\"0.6.0\",\"platform\":\"x86_64-linux-gnu\"},{\"number\":\"0.6.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.6.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.6.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.6.0\",\"platform\":\"aarch64-linux-musl\"},{\"number\":\"0.6.0\",\"platform\":\"aarch64-linux-gnu\"},{\"number\":\"0.4.0\",\"platform\":\"ruby\"},{\"number\":\"0.4.0\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.4.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.4.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.4.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.4.0\",\"platform\":\"aarch64-linux\"},{\"number\":\"0.3.0\",\"platform\":\"ruby\"},{\"number\":\"0.3.0\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.3.0\",\"platform\":\"x86_64-darwin\"},{\"number\":\"0.3.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.3.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.3.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.3.0\",\"platform\":\"aarch64-linux\"},{\"number\":\"0.2.0\",\"platform\":\"ruby\"},{\"number\":\"0.2.0\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.2.0\",\"platform\":\"x86_64-darwin\"},{\"number\":\"0.2.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.2.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.2.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.2.0\",\"platform\":\"aarch64-linux\"},{\"number\":\"0.1.0\",\"platform\":\"ruby\"},{\"number\":\"0.1.0\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.1.0\",\"platform\":\"x86_64-darwin\"},{\"number\":\"0.1.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.1.0\",\"platform\":\"aarch64-linux\"},{\"number\":\"0.0.2\",\"platform\":\"ruby\"},{\"number\":\"0.0.2\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.0.2\",\"platform\":\"x86_64-darwin\"},{\"number\":\"0.0.2\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.0.2\",\"platform\":\"aarch64-linux\"},{\"number\":\"0.0.1\",\"platform\":\"ruby\"},{\"number\":\"0.0.1\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.0.1\",\"platform\":\"x86_64-darwin\"},{\"number\":\"0.0.1\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.0.1\",\"platform\":\"aarch64-linux\"}]"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhypercast": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hypercast\",\"versions\":{\"0.0.0-stage\":{},\"0.0.1\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhypercast-linux-x64-gnu": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hypercast-linux-x64-gnu\",\"versions\":{\"0.0.0-stage\":{},\"0.0.1\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhypercast-linux-arm64-gnu": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hypercast-linux-arm64-gnu\",\"versions\":{\"0.0.0-stage\":{},\"0.0.1\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhypercast-linux-x64-musl": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hypercast-linux-x64-musl\",\"versions\":{\"0.0.0-stage\":{},\"0.0.1\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhypercast-linux-arm64-musl": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hypercast-linux-arm64-musl\",\"versions\":{\"0.0.0-stage\":{},\"0.0.1\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhypercast-darwin-x64": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hypercast-darwin-x64\",\"versions\":{\"0.0.0-stage\":{},\"0.0.1\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhypercast-darwin-arm64": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hypercast-darwin-arm64\",\"versions\":{\"0.0.0-stage\":{},\"0.0.1\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhypercast-win32-x64-msvc": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hypercast-win32-x64-msvc\",\"versions\":{\"0.0.0-stage\":{},\"0.0.1\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhypercast-win32-arm64-msvc": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hypercast-win32-arm64-msvc\",\"versions\":{\"0.0.0-stage\":{},\"0.0.1\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhypercast-wasm32-wasip1": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hypercast-wasm32-wasip1\",\"versions\":{\"0.0.0-stage\":{},\"0.0.1\":{}}}"
+    },
+    "https://proxy.golang.org/github.com/!skunk!werkx/!hyper!cast/go/@v/v1.1.0.info": {
+      "status": 404,
+      "body": ""
+    },
+    "https://repo.packagist.org/p2/skunkwerkx/hypercast.json": {
+      "status": 200,
+      "body": "{\"packages\":{\"skunkwerkx/hypercast\":[{\"version\":\"v1.0.0\"},{\"version\":\"v0.9.0\"},{\"version\":\"v0.8.0\"},{\"version\":\"v0.7.0\"},{\"version\":\"v0.6.1\"},{\"version\":\"v0.6.0\"},{\"version\":\"v0.4.0\"},{\"version\":\"v0.3.0\"},{\"version\":\"v0.2.0\"},{\"version\":\"v0.1.0\"}]}}"
+    },
+    "https://api.github.com/repos/SkunkWerkx/HyperCast/releases/tags/v1.1.0": {
+      "status": 404,
+      "body": ""
+    }
+  }
+}

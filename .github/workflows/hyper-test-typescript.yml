@@ -96,6 +96,17 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
 
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the Cargo patch and the npm
+      # wiring (HyperCast packed with this leg's addon, typescript/'s dependency and lock pointed at
+      # that tarball), each proven, before the addon builds and before `npm ci`. After the setups,
+      # whose cargo and npm the wiring runs.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-typescript.yml:test:${{ matrix.rid }}
+
       # The addon built for this leg's own target — every runner here is native, so napi's
       # --platform picks the host triple — then the suite on Node and on Bun. The addon is its
       # own cdylib in typescript/, path-depending on rust/ and building into typescript/target,
@@ -123,6 +134,14 @@ jobs:
           objdump -T typescript/*.node | grep -o 'GLIBC_[0-9.]*' | sort -V | uniq || true
           echo "newest: $(objdump -T typescript/*.node | grep -o 'GLIBC_[0-9.]*' | sort -V | uniq | tail -1)"
           echo "::endgroup::"
+
+      # After the last install, in the directory both suites run in: Node resolves the companion
+      # from typescript/node_modules, whose addon is the pinned one.
+      - name: The suites take the pinned companion
+        if: steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py npm --root . --dir typescript --installed'
 
       - name: Test TypeScript bindings on Node
         working-directory: typescript
@@ -186,6 +205,20 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .hyperforge
           persist-credentials: false
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the Cargo patch and the npm
+      # wiring on the host (HyperCast packed with this rid's musl addon), proven, which
+      # suite-musl.sh's containers then rewire with /work paths and prove inside (companion_cargo,
+      # companion_npm). The host's cargo and npm come first: the wiring runs them.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node_version }}
+      - name: Fetch the companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-typescript.yml:test-musl:${{ matrix.rid }}
+
       # The core: suite-musl.sh requires it beside the suite, and the addon's cross-backend
       # checks load nothing else.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -275,6 +308,16 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
 
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # the release guard alone in a release dispatch, and otherwise the Cargo patch and the npm
+      # wiring (HyperCast packed with the osx-x64 addon), each proven, before the addon is
+      # cross-built and before `npm ci`.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-typescript.yml:test-osx-x64:osx-x64
+
       - name: Cross-build the TypeScript addon for x86_64
         run: |
           set -euo pipefail
@@ -288,6 +331,13 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
           architecture: x64
+
+      # Under the x64 Node that runs the suite, after the last install.
+      - name: The suite takes the pinned companion
+        if: steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py npm --root . --dir typescript --installed'
 
       - name: Test TypeScript bindings on x64 Node, under Rosetta
         working-directory: typescript

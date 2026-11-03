@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "resolved": "https://registry.npmjs.org/@skunkwerkx/hypercast/-/hypercast-0.0.1.tgz",
+  "integrity": "sha512-pSPUuHyIu0dvXjWNe5bYLIKh3cO2c/mGT15JVLwKHsxas//Gk6GIBfYsFOJDG/gVeVAtEpbVynoOS4Y02u8ATg==",
+  "dev": true,
+  "license": "MIT"
+}

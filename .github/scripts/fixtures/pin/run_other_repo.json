@@ -1,0 +1,1 @@
+{"conclusion":"success","display_title":"A dispatch must say what it is for: purpose is required","event":"pull_request","head_sha":"367c76baf40164409d2c57b65bf4b94e958f32eb","id":41366901359,"name":"CI — build native, build wasm, test every binding","path":".github/workflows/ci.yml","repository":{"full_name":"SkunkWerkx/HyperUuid"},"status":"completed"}

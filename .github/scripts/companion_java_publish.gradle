@@ -1,0 +1,11 @@
+// For companion_wire.py java's `publishToMavenLocal` of the pinned source into the job-local
+// repository: signing not required. The pinned build signs every publication (vanniktech's
+// signAllPublications), which needs a key a consumer's job never holds; a job-local repository
+// is read by that job alone, and the origin check proves its jar by SHA-256 instead.
+gradle.projectsEvaluated {
+    allprojects {
+        plugins.withId('signing') {
+            extensions.getByName('signing').required = false
+        }
+    }
+}

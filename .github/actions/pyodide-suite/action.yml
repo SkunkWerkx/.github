@@ -25,9 +25,17 @@ inputs:
     required: false
     default: python/tests
   dependency_wheels:
-    description: "Directory of Pyodide wheels the one under test depends on, installed first in the browser pass, which cannot reach PyPI; empty for none"
+    description: "Directory of Pyodide wheels the one under test depends on, installed first in the browser pass, which cannot reach PyPI, and with dependency_sums in the Node pass too; empty for none"
     required: false
     default: ""
+  dependency_sums:
+    description: "A pinned companion's SHA256SUMS (companion-pins): every wheel it lists must be among dependency_wheels with that hash, is hashed again inside the interpreter before micropip installs it, and must be what micropip reports installed afterwards; empty for none"
+    required: false
+    default: ""
+  companions_root:
+    description: "The consumer's checkout as fetch-companions took it (its `root`), relative to the workspace: each pass refuses a .companions/env there that pins a Pyodide wheel dependency_sums does not carry"
+    required: false
+    default: "."
   chrome:
     description: "Chrome or Chromium to run the browser pass in; empty finds the one on PATH (the Ubuntu runner image ships google-chrome)"
     required: false
@@ -51,6 +59,11 @@ runs:
         PYODIDE_VERSION: ${{ inputs.pyodide_version }}
         WHEEL_DIR: ${{ inputs.wheel_dir }}
         TESTS_DIR: ${{ inputs.tests_dir }}
+        # Without a pin, micropip resolves the dependencies from PyPI here, as it always has;
+        # with one, the pinned wheel is installed first, and proven (dependency_sums).
+        PYODIDE_SUITE_DEPS: ${{ inputs.dependency_sums != '' && inputs.dependency_wheels || '' }}
+        PYODIDE_SUITE_SUMS: ${{ inputs.dependency_sums }}
+        PYODIDE_SUITE_COMPANIONS: ${{ inputs.companions_root }}
       run: |
         set -euo pipefail
         shopt -s nullglob
@@ -64,7 +77,8 @@ runs:
         tests=$(realpath "$TESTS_DIR")
         work="$RUNNER_TEMP/pyodide-suite"
         mkdir -p "$work"
-        cp "$GITHUB_ACTION_PATH/suite-pyodide.mjs" "$GITHUB_ACTION_PATH/browser-pyodide.mjs" "$work/"
+        cp "$GITHUB_ACTION_PATH/suite-pyodide.mjs" "$GITHUB_ACTION_PATH/browser-pyodide.mjs" \
+          "$GITHUB_ACTION_PATH/companion-guard.mjs" "$work/"
         cd "$work"
         npm install --no-save --no-audit --no-fund "pyodide@$PYODIDE_VERSION" puppeteer-core
         node suite-pyodide.mjs "$CRATE" "$VERSION" "$wheel" "$tests"
@@ -85,6 +99,8 @@ runs:
         VERSION: ${{ inputs.version }}
         CHROME_PATH: ${{ inputs.chrome }}
         PYODIDE_SUITE_DEPS: ${{ inputs.dependency_wheels }}
+        PYODIDE_SUITE_SUMS: ${{ inputs.dependency_sums }}
+        PYODIDE_SUITE_COMPANIONS: ${{ inputs.companions_root }}
       run: |
         set -euo pipefail
         cd "$PYODIDE_SUITE_WORK"

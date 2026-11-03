@@ -1,0 +1,13 @@
+ProcessXCFramework @ROOT@/swift/HyperTabularCoreApple.xcframework @PRODUCTS@/Debug-iphonesimulator/libhypertabular.a ios simulator
+    cd @ROOT@/swift
+    builtin-process-xcframework --xcframework @ROOT@/swift/HyperTabularCoreApple.xcframework --platform ios --environment simulator --target-path @PRODUCTS@/Debug-iphonesimulator
+
+ProcessXCFramework @ROOT@/DerivedData/SourcePackages/artifacts/hypercast/HyperCastCoreApple/HyperCastCoreApple.xcframework @PRODUCTS@/Debug-iphonesimulator/libhypercast.a ios simulator
+    cd @ROOT@/swift
+    builtin-process-xcframework --xcframework @ROOT@/DerivedData/SourcePackages/artifacts/hypercast/HyperCastCoreApple/HyperCastCoreApple.xcframework --platform ios --environment simulator --target-path @PRODUCTS@/Debug-iphonesimulator
+
+Ld @PRODUCTS@/Debug-iphonesimulator/HyperTabularTests.xctest/HyperTabularTests normal (in target 'HyperTabularTests' from project 'HyperTabular')
+    cd @ROOT@/swift
+    /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang -Xlinker -reproducible -target arm64-apple-ios16.0-simulator -bundle -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk -L@PRODUCTS@/Debug-iphonesimulator -F@PRODUCTS@/Debug-iphonesimulator -filelist @PRODUCTS@/HyperTabularTests.LinkFileList -lhypertabular -lhypercast -framework XCTest -o @PRODUCTS@/Debug-iphonesimulator/HyperTabularTests.xctest/HyperTabularTests
+
+** TEST BUILD SUCCEEDED **

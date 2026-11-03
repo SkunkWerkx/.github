@@ -1,0 +1,15 @@
+name=hypercast
+version=1.0.0
+ruby=4.0.9
+abi=4.0
+rid=osx-arm64
+backend=native
+pure=
+source=@ROOT@/.companions/hypercast/ruby/lib/hypercast.rb
+extension=@ROOT@/.companions/hypercast/ruby/lib/hypercast/4.0/hypercast_native.bundle
+extension_sha256=9cd4ac42c21c930f94defd4951172d9d1a3ca3b3b06e300bfe03275e38d15936
+library=
+library_sha256=
+observed=
+mapped=
+gem=@ROOT@/.companions/hypercast/ruby

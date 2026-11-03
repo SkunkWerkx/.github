@@ -1,0 +1,131 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- TargetFrameworks (net10.0;net11.0), LangVersion preview, and CS8509-as-error come from
+       csharp/Directory.Build.props — the native-union settings shared by every project here. -->
+  <PropertyGroup>
+    <PackageId>HyperCast</PackageId>
+    <!-- The committed version prepare-release.yml bumps — the same single mechanical sweep
+         that keeps every binding's manifest in lockstep with rust/Cargo.toml. -->
+    <Version>1.0.0</Version>
+    <!-- Windows filesystems are case-insensitive: the managed assembly's default filename
+         (HyperCast.dll) and the native library's (hypercast.dll, from
+         [LibraryImport("hypercast")]'s auto-resolution) differ only by case, so one silently
+         overwrites the other in the shared output directory — the exact trap HyperUuid
+         already documented and renamed its way out of. Same rename here. -->
+    <AssemblyName>HyperCast.Managed</AssemblyName>
+    <RootNamespace>HyperCast</RootNamespace>
+    <Description>Allocation-free scalar parsing — booleans, numerics, UUIDs, temporals — as a discriminated-union Verdict (value or reason + offending span, never an exception), AOT/trim-friendly P/Invoke bindings straight into a native Rust core (libhypercast). No runtime bridge, no reflection.</Description>
+    <Authors>Brian Buvinghausen</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/SkunkWerkx/HyperCast</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/SkunkWerkx/HyperCast</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>parsing;verdict;union;rfc3339;pinvoke;native-aot</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Source-generated LibraryImport P/Invoke only, no reflection anywhere in this assembly:
+         opts into (and fails the build on) the trim and Native AOT analyzers. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <!-- Deterministic, source-linked package builds with a companion symbol package —
+         HyperUuid's publish-readiness block, verbatim in spirit. -->
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <!-- Ships the .xml doc file inside the .nupkg (NuGet's own PackageId.xml convention) so
+         IntelliSense/Rider/etc. show every method's real doc comment for a consumer, not just
+         its signature. Every P/Invoke declaration here is private, so CS1591 (missing XML
+         comment on a publicly visible member) only ever fires on this binding's real public
+         surface — which is exactly what TreatWarningsAsErrors is here to enforce: an
+         undocumented public member fails the build instead of silently shipping undocumented. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- One source, two TFMs: pack fails if net11.0 ever exposes API net10.0 lacks, or the
+         two lib/ groups drift apart. Match and Switch on Verdict<T> are on both for that
+         reason. -->
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <EnableStrictModeForCompatibleFrameworksInPackage>true</EnableStrictModeForCompatibleFrameworksInPackage>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <SupportedPlatform Include="browser" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shows up as the package page's description on GitHub Packages/NuGet — sourced from
+         csharp/README.md (this project's own, not the repo root's) so the exact same content
+         that lives in the repo also ships inside the .nupkg. -->
+    <None Include="../README.md" Pack="true" PackagePath="\" />
+    <!-- MSBuild item globs reach outside the project directory freely, so this one takes the
+         repo root's LICENSE directly — no local copy needed, unlike the gem and the wheel,
+         whose packers both refuse a parent path. PackageLicenseExpression above stays the
+         machine-readable license (nuget.org renders the page from it); this ships the actual
+         text alongside it, which the expression alone doesn't do. -->
+    <None Include="../../LICENSE" Pack="true" PackagePath="\" />
+    <!-- Standard NuGet RID-specific native asset layout — populated by CI before packing
+         (hyper-pack-nuget.yml arranges runtimes/{rid}/native/ from the ci.yml artifacts): the
+         six desktop RIDs, the two musl ones (linux-musl-x64, linux-musl-arm64) and the two
+         Android ones (android-arm64, android-x64). -->
+    <None Include="runtimes/**" Pack="true" PackagePath="runtimes" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The same files flattened into the output root, where an in-repo ProjectReference
+         probes (the runtimes/{rid}/native/ lookup only exists for a consumed package). Two
+         spellings of the one copy, because flattening is only safe for a single RID: once
+         more than one is staged (the pack job stages all of them, and a dev box can easily
+         hold a glibc and a musl build side by side), libhypercast.so from linux-x64,
+         linux-arm64 and both musl RIDs all flatten to the same output filename and whichever
+         copies last wins. So when this SDK's own RID is among the staged ones, only that one
+         is flattened — on Alpine the SDK's RID is linux-musl-x64, so the musl build is the one
+         that lands; everything-flattened stays the fallback for a leg whose SDK RID differs
+         from the one RID it staged. -->
+    <None Include="runtimes/$(NETCoreSdkRuntimeIdentifier)/native/*"
+          Condition="Exists('runtimes/$(NETCoreSdkRuntimeIdentifier)/native')"
+          Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="runtimes/**/native/*"
+          Condition="!Exists('runtimes/$(NETCoreSdkRuntimeIdentifier)/native')"
+          Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Auto-imported into every consuming project via NuGet's build/{tfm}/{PackageId}.targets
+         convention, and into projects that reach the package through another project via
+         buildTransitive/{tfm}/ — see the file itself for why browser-wasm needs it and no other RID does.
+         One piece: the NativeFileReference that actually hands the staticlib to the linker
+         (restore never populates @(NativeLibrary) from a plain PackageReference's
+         nativeassets folder); the SDK's generated pinvoke table then links every door by
+         symbol, so LibraryImport("*") needs no export list. HyperUuid learned it the hard
+         way; HyperCast's v0.0.1 shipped without this file and a real Blazor consumer failed
+         at wasm-ld. -->
+    <None Include="build/**" Pack="true" PackagePath="build" />
+    <None Include="buildTransitive/**" Pack="true" PackagePath="buildTransitive" />
+    <!-- The core as a static library, one per RID: for a Native AOT publish to link in
+         instead of loading the shared library, and for an iOS or Mac Catalyst app, which
+         can only link it. build/net10.0/HyperCast.targets has the wiring and the reasons.
+         Staged here before packing, like runtimes/, and not committed. -->
+    <None Include="staticlibs/**" Pack="true" PackagePath="staticlibs" />
+    <!-- Local dev loop: when the Rust core has been built in-repo (`cargo cdylib` in
+         rust/), copy that fresh native library straight to the output so tests and
+         benchmarks run against it without any packaging step. CI's runtimes/ layout above
+         takes over for real packages; both patterns copy to the output root, where native
+         library resolution always probes.
+
+         Only when this SDK's own RID has NOT been placed under runtimes/ explicitly. Both
+         items link to the same output filename, and PreserveNewest lets the newer one win —
+         which in CI is the wrong one: the forge builds the PyO3 extension (the cdylib
+         with the python feature on) into the same rust/target/release/ BEFORE the C# leg
+         runs, so this copy overwrote the correctly placed library with an extension whose
+         Py* imports are unresolved outside CPython (DllNotFoundException: undefined symbol
+         PyExc_SystemError, on every Linux leg of the first collapsed-job run). Explicit
+         placement is the signal that someone else already staged the right bytes. The RID
+         test also keeps the two C libraries apart: on Alpine the SDK's RID is
+         linux-musl-x64, so a staged musl build is never displaced by whatever sits in
+         rust/target/release. -->
+    <None Include="../../rust/target/release/libhypercast.so"
+          Condition="Exists('../../rust/target/release/libhypercast.so') And !Exists('runtimes/$(NETCoreSdkRuntimeIdentifier)/native/libhypercast.so')"
+          Link="libhypercast.so" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="../../rust/target/release/libhypercast.dylib"
+          Condition="Exists('../../rust/target/release/libhypercast.dylib') And !Exists('runtimes/$(NETCoreSdkRuntimeIdentifier)/native/libhypercast.dylib')"
+          Link="libhypercast.dylib" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <None Include="../../rust/target/release/hypercast.dll"
+          Condition="Exists('../../rust/target/release/hypercast.dll') And !Exists('runtimes/$(NETCoreSdkRuntimeIdentifier)/native/hypercast.dll')"
+          Link="hypercast.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+
+</Project>

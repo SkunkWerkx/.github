@@ -26,6 +26,8 @@
 #    extension it resolves the rb_* symbols from the process that loads it.
 #  * The source is copied into the container, never built in place (root-owned files in the
 #    caller's checkout, and a collision with the glibc build's rust/target).
+#  * A pinned companion (.companions/env from fetch-companions) is patched in with /work
+#    paths and its origin proven inside the build container (companion_container.sh).
 #
 # Two containers, like the Python wheel's: the first has a compiler, a Rust toolchain and
 # libclang (rb-sys generates its bindings with bindgen); the second is the image exactly as
@@ -51,9 +53,10 @@ out_dir=$(cd "$6" && pwd)
 image="ruby:$abi-alpine"
 platform_args=()
 [ -n "${DOCKER_PLATFORM:-}" ] && platform_args=(--platform "$DOCKER_PLATFORM")
+companion_sh=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts" && pwd)/companion_container.sh
 
 docker run --rm "${platform_args[@]}" \
-  -v "$repo_root:/src:ro" -v "$out_dir:/out" \
+  -v "$repo_root:/src:ro" -v "$out_dir:/out" -v "$companion_sh:/companion.sh:ro" \
   -e CRATE="$crate" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   "$image" sh -euc '
     apk add --no-cache build-base curl clang-dev >/dev/null
@@ -64,6 +67,8 @@ docker run --rm "${platform_args[@]}" \
     mkdir /work
     (cd /src && tar cf - --exclude=./rust/target ./rust) | tar xf - -C /work
     cd /work/rust
+    . /companion.sh
+    companion_cargo /src /work /work/rust
 
     mkdir /unwind
     echo "GROUP ( $(gcc -print-file-name=libgcc_eh.a) $(gcc -print-file-name=libgcc.a) )" > /unwind/libgcc_s.so
@@ -97,9 +102,12 @@ docker run --rm "${platform_args[@]}" \
 # resolve fiddle from rubygems.org and compile it, and this image has no compiler.
 # The gem's own runtime dependencies (HyperTabular's on hypercast), from its gemspec, since
 # Bundler is not used: each a plain `gem install`, --conservative so that one an image
-# already has (its default or bundled fiddle) is kept rather than rebuilt from source.
+# already has (its default or bundled fiddle) is kept rather than rebuilt from source. A
+# pinned companion is the exception: companion_ruby puts the pin on RUBYLIB, the loop skips
+# it, and after the last install it proves the pin's files are what this Ruby loads.
 docker run --rm "${platform_args[@]}" \
   -v "$repo_root:/src:ro" -v "$lib_dir:/musl:ro" -v "$out_dir:/ext:ro" \
+  -v "$companion_sh:/companion.sh:ro" -v "$(dirname "$companion_sh"):/forge:ro" \
   -e CRATE="$crate" -e ABI="$abi" -e RID="$rid" \
   "$image" sh -euc '
     mkdir -p /work/rust
@@ -111,15 +119,18 @@ docker run --rm "${platform_args[@]}" \
     mkdir -p "lib/$CRATE/native/$RID" "lib/$CRATE/$ABI"
     cp "/musl/lib$CRATE.so" "lib/$CRATE/native/$RID/"
     cp "/ext/${CRATE}_native.so" "lib/$CRATE/$ABI/"
+    . /companion.sh
+    companion_ruby /src /work /forge wire
     rm -f Gemfile Gemfile.lock
     gem install rspec -v "~> 3.13" --no-document --silent
-    ruby -e "Gem::Specification.load(Dir[%q(*.gemspec)].first).runtime_dependencies.each { |d| system(%q(gem), %q(install), d.name, %q(-v), d.requirement.to_s, %q(--conservative), %q(--no-document), %q(--silent)) or abort(%(could not install #{d.name} #{d.requirement})) }"
+    ruby -e "Gem::Specification.load(Dir[%q(*.gemspec)].first).runtime_dependencies.each { |d| next if d.name == ENV[%q(HYPER_COMPANION_GEM)]; system(%q(gem), %q(install), d.name, %q(-v), d.requirement.to_s, %q(--conservative), %q(--no-document), %q(--silent)) or abort(%(could not install #{d.name} #{d.requirement})) }"
     ruby -Ilib -e "
       require ENV[%q(CRATE)]
       mod = Object.const_get(Object.constants.find { |c| c.to_s.downcase == ENV[%q(CRATE)] })
       puts %(== #{RUBY_DESCRIPTION}: BACKEND=#{mod::BACKEND})
       exit(mod::BACKEND == :native ? 0 : 1)
     " || { echo "::error::the Magnus extension did not load on Ruby $ABI"; exit 1; }
+    companion_ruby /src /work /forge origin
     rspec
   '
 

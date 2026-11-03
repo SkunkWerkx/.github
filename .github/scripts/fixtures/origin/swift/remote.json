@@ -1,0 +1,26 @@
+{
+  "identity": "swift",
+  "name": "HyperTabular",
+  "url": "@ROOT@/swift",
+  "version": "unspecified",
+  "path": "@ROOT@/swift",
+  "traits": [
+    "default"
+  ],
+  "dependencies": [
+    {
+      "identity": "hypercast",
+      "name": "HyperCast",
+      "url": "https://github.com/SkunkWerkx/HyperCast",
+      "version": "1.0.0",
+      "path": "@ROOT@/swift/.build/checkouts/HyperCast",
+      "traits": [
+        "default"
+      ],
+      "dependencies": [
+
+      ]
+    }
+  ]
+}
+

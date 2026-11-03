@@ -1,0 +1,5 @@
+{
+  "version": 2,
+  "contentHash": "@CONTENT_HASH@",
+  "source": "@ROOT@/.companions/nuget"
+}

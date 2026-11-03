@@ -1,0 +1,13 @@
+{
+ "conclusion": "success",
+ "display_title": "CI purpose=board",
+ "event": "workflow_dispatch",
+ "head_sha": "fcc0eccfd8229fc2f5dc5e0e0eb5768f424e966e",
+ "id": 41400000001,
+ "name": "CI \u2014 build native, build wasm, test every binding",
+ "path": ".github/workflows/ci.yml",
+ "repository": {
+  "full_name": "SkunkWerkx/HyperCast"
+ },
+ "status": "completed"
+}

@@ -1,0 +1,80 @@
+{
+  "crate": "hyperuuid",
+  "version": "1.1.0",
+  "repo": "SkunkWerkx/HyperUuid",
+  "recorded": "2026-11-01",
+  "responses": {
+    "https://index.crates.io/hy/pe/hyperuuid": {
+      "status": 200,
+      "body": "{\"name\":\"hyperuuid\",\"vers\":\"0.0.1\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"0.0.2\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"0.0.12\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"0.1.0\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"0.1.1\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"0.2.0\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"0.2.1\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"0.3.0\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"0.4.0\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"0.5.0\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"0.6.0\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"0.6.1\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"0.7.0\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"0.8.0\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"0.9.0\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"1.0.0\",\"yanked\":false}\n{\"name\":\"hyperuuid\",\"vers\":\"1.1.0\",\"yanked\":false}"
+    },
+    "https://api.nuget.org/v3-flatcontainer/hyperuuid/index.json": {
+      "status": 200,
+      "body": "{\"versions\":[\"0.0.1\",\"0.0.2\",\"0.0.3\",\"0.0.4\",\"0.0.5\",\"0.0.6\",\"0.0.12\",\"0.1.0\",\"0.1.1\",\"0.2.0\",\"0.2.1\",\"0.3.0\",\"0.4.0\",\"0.5.0\",\"0.6.0\",\"0.6.1\",\"0.7.0\",\"0.8.0\",\"0.9.0\",\"1.0.0\",\"1.1.0\"]}"
+    },
+    "https://repo1.maven.org/maven2/io/github/skunkwerkx/hyperuuid/maven-metadata.xml": {
+      "status": 200,
+      "body": "<metadata><versioning><versions><version>0.0.1</version><version>0.0.12</version><version>0.1.0</version><version>0.1.1</version><version>0.2.1</version><version>0.3.0</version><version>0.4.0</version><version>0.5.0</version><version>0.6.0</version><version>0.6.1</version><version>0.7.0</version><version>0.8.0</version><version>0.9.0</version><version>1.0.0</version><version>1.1.0</version></versions></versioning></metadata>"
+    },
+    "https://pypi.org/pypi/hyperuuid/1.1.0/json": {
+      "status": 200,
+      "body": "{\"info\":{\"version\":\"1.1.0\",\"yanked\":false}}"
+    },
+    "https://rubygems.org/api/v1/versions/hyperuuid.json": {
+      "status": 200,
+      "body": "[{\"number\":\"1.1.0\",\"platform\":\"ruby\"},{\"number\":\"1.1.0\",\"platform\":\"x86_64-linux-musl\"},{\"number\":\"1.1.0\",\"platform\":\"x86_64-linux-gnu\"},{\"number\":\"1.1.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"1.1.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"1.1.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"1.1.0\",\"platform\":\"aarch64-linux-musl\"},{\"number\":\"1.1.0\",\"platform\":\"aarch64-linux-gnu\"},{\"number\":\"1.0.0\",\"platform\":\"ruby\"},{\"number\":\"1.0.0\",\"platform\":\"x86_64-linux-musl\"},{\"number\":\"1.0.0\",\"platform\":\"x86_64-linux-gnu\"},{\"number\":\"1.0.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"1.0.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"1.0.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"1.0.0\",\"platform\":\"aarch64-linux-musl\"},{\"number\":\"1.0.0\",\"platform\":\"aarch64-linux-gnu\"},{\"number\":\"0.9.0\",\"platform\":\"ruby\"},{\"number\":\"0.9.0\",\"platform\":\"x86_64-linux-musl\"},{\"number\":\"0.9.0\",\"platform\":\"x86_64-linux-gnu\"},{\"number\":\"0.9.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.9.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.9.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.9.0\",\"platform\":\"aarch64-linux-musl\"},{\"number\":\"0.9.0\",\"platform\":\"aarch64-linux-gnu\"},{\"number\":\"0.8.0\",\"platform\":\"ruby\"},{\"number\":\"0.8.0\",\"platform\":\"x86_64-linux-musl\"},{\"number\":\"0.8.0\",\"platform\":\"x86_64-linux-gnu\"},{\"number\":\"0.8.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.8.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.8.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.8.0\",\"platform\":\"aarch64-linux-musl\"},{\"number\":\"0.8.0\",\"platform\":\"aarch64-linux-gnu\"},{\"number\":\"0.7.0\",\"platform\":\"ruby\"},{\"number\":\"0.7.0\",\"platform\":\"x86_64-linux-musl\"},{\"number\":\"0.7.0\",\"platform\":\"x86_64-linux-gnu\"},{\"number\":\"0.7.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.7.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.7.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.7.0\",\"platform\":\"aarch64-linux-musl\"},{\"number\":\"0.7.0\",\"platform\":\"aarch64-linux-gnu\"},{\"number\":\"0.6.1\",\"platform\":\"ruby\"},{\"number\":\"0.6.1\",\"platform\":\"x86_64-linux-musl\"},{\"number\":\"0.6.1\",\"platform\":\"x86_64-linux-gnu\"},{\"number\":\"0.6.1\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.6.1\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.6.1\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.6.1\",\"platform\":\"aarch64-linux-musl\"},{\"number\":\"0.6.1\",\"platform\":\"aarch64-linux-gnu\"},{\"number\":\"0.6.0\",\"platform\":\"ruby\"},{\"number\":\"0.6.0\",\"platform\":\"x86_64-linux-musl\"},{\"number\":\"0.6.0\",\"platform\":\"x86_64-linux-gnu\"},{\"number\":\"0.6.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.6.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.6.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.6.0\",\"platform\":\"aarch64-linux-musl\"},{\"number\":\"0.6.0\",\"platform\":\"aarch64-linux-gnu\"},{\"number\":\"0.5.0\",\"platform\":\"ruby\"},{\"number\":\"0.5.0\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.5.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.5.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.5.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.5.0\",\"platform\":\"aarch64-linux\"},{\"number\":\"0.4.0\",\"platform\":\"ruby\"},{\"number\":\"0.4.0\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.4.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.4.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.4.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.4.0\",\"platform\":\"aarch64-linux\"},{\"number\":\"0.3.0\",\"platform\":\"ruby\"},{\"number\":\"0.3.0\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.3.0\",\"platform\":\"x86_64-darwin\"},{\"number\":\"0.3.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.3.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.3.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.3.0\",\"platform\":\"aarch64-linux\"},{\"number\":\"0.2.1\",\"platform\":\"ruby\"},{\"number\":\"0.2.1\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.2.1\",\"platform\":\"x86_64-darwin\"},{\"number\":\"0.2.1\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.2.1\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.2.1\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.2.1\",\"platform\":\"aarch64-linux\"},{\"number\":\"0.2.0\",\"platform\":\"ruby\"},{\"number\":\"0.2.0\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.2.0\",\"platform\":\"x86_64-darwin\"},{\"number\":\"0.2.0\",\"platform\":\"x64-mingw-ucrt\"},{\"number\":\"0.2.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.2.0\",\"platform\":\"aarch64-mingw-ucrt\"},{\"number\":\"0.2.0\",\"platform\":\"aarch64-linux\"},{\"number\":\"0.1.1\",\"platform\":\"ruby\"},{\"number\":\"0.1.1\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.1.1\",\"platform\":\"x86_64-darwin\"},{\"number\":\"0.1.1\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.1.1\",\"platform\":\"aarch64-linux\"},{\"number\":\"0.1.0\",\"platform\":\"ruby\"},{\"number\":\"0.1.0\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.1.0\",\"platform\":\"x86_64-darwin\"},{\"number\":\"0.1.0\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.1.0\",\"platform\":\"aarch64-linux\"},{\"number\":\"0.0.12\",\"platform\":\"ruby\"},{\"number\":\"0.0.12\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.0.12\",\"platform\":\"x86_64-darwin\"},{\"number\":\"0.0.12\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.0.12\",\"platform\":\"aarch64-linux\"},{\"number\":\"0.0.1\",\"platform\":\"ruby\"},{\"number\":\"0.0.1\",\"platform\":\"x86_64-linux\"},{\"number\":\"0.0.1\",\"platform\":\"x86_64-darwin\"},{\"number\":\"0.0.1\",\"platform\":\"arm64-darwin\"},{\"number\":\"0.0.1\",\"platform\":\"aarch64-linux\"}]"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhyperuuid": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hyperuuid\",\"versions\":{\"1.1.0\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhyperuuid-linux-x64-gnu": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hyperuuid-linux-x64-gnu\",\"versions\":{\"1.1.0\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhyperuuid-linux-arm64-gnu": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hyperuuid-linux-arm64-gnu\",\"versions\":{\"1.1.0\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhyperuuid-linux-x64-musl": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hyperuuid-linux-x64-musl\",\"versions\":{\"1.1.0\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhyperuuid-linux-arm64-musl": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hyperuuid-linux-arm64-musl\",\"versions\":{\"1.1.0\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhyperuuid-darwin-x64": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hyperuuid-darwin-x64\",\"versions\":{\"1.1.0\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhyperuuid-darwin-arm64": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hyperuuid-darwin-arm64\",\"versions\":{\"1.1.0\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhyperuuid-win32-x64-msvc": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hyperuuid-win32-x64-msvc\",\"versions\":{\"1.1.0\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhyperuuid-win32-arm64-msvc": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hyperuuid-win32-arm64-msvc\",\"versions\":{\"1.1.0\":{}}}"
+    },
+    "https://registry.npmjs.org/@skunkwerkx%2fhyperuuid-wasm32-wasip1": {
+      "status": 200,
+      "body": "{\"name\":\"@skunkwerkx/hyperuuid-wasm32-wasip1\",\"versions\":{\"1.1.0\":{}}}"
+    },
+    "https://proxy.golang.org/github.com/!skunk!werkx/!hyper!uuid/go/@v/v1.1.0.info": {
+      "status": 200,
+      "body": "{\"Version\":\"v1.1.0\"}"
+    },
+    "https://repo.packagist.org/p2/skunkwerkx/hyperuuid.json": {
+      "status": 200,
+      "body": "{\"packages\":{\"skunkwerkx/hyperuuid\":[{\"version\":\"v1.1.0\"},{\"version\":\"v1.0.0\"},{\"version\":\"v0.9.0\"},{\"version\":\"v0.8.0\"},{\"version\":\"v0.7.0\"},{\"version\":\"v0.6.1\"},{\"version\":\"v0.6.0\"},{\"version\":\"v0.5.0\"},{\"version\":\"v0.4.0\"},{\"version\":\"v0.3.0\"},{\"version\":\"v0.2.1\"},{\"version\":\"v0.2.0\"},{\"version\":\"v0.1.1\"},{\"version\":\"v0.1.0\"}]}}"
+    },
+    "https://api.github.com/repos/SkunkWerkx/HyperUuid/releases/tags/v1.1.0": {
+      "status": 200,
+      "body": "{\"tag_name\":\"v1.1.0\",\"assets\":[{\"name\":\"hyperuuid-1.1.0-android-arm64.tar.gz\"},{\"name\":\"hyperuuid-1.1.0-android-x64.tar.gz\"},{\"name\":\"hyperuuid-1.1.0-ios-arm64.tar.gz\"},{\"name\":\"hyperuuid-1.1.0-iossimulator-arm64.tar.gz\"},{\"name\":\"hyperuuid-1.1.0-linux-arm64.tar.gz\"},{\"name\":\"hyperuuid-1.1.0-linux-musl-arm64.tar.gz\"},{\"name\":\"hyperuuid-1.1.0-linux-musl-x64.tar.gz\"},{\"name\":\"hyperuuid-1.1.0-linux-x64.tar.gz\"},{\"name\":\"hyperuuid-1.1.0-maccatalyst-arm64.tar.gz\"},{\"name\":\"hyperuuid-1.1.0-maccatalyst-x64.tar.gz\"},{\"name\":\"hyperuuid-1.1.0-osx-arm64.tar.gz\"},{\"name\":\"hyperuuid-1.1.0-osx-x64.tar.gz\"},{\"name\":\"hyperuuid-1.1.0-wasi-wasm32.tar.gz\"},{\"name\":\"hyperuuid-1.1.0-win-arm64.zip\"},{\"name\":\"hyperuuid-1.1.0-win-x64.zip\"},{\"name\":\"HyperUuidCore.artifactbundle.zip\"},{\"name\":\"HyperUuidCoreApple.xcframework.zip\"},{\"name\":\"inventory.json\"},{\"name\":\"php_hyperuuid-v1.1.0-8.3-nts-vs16-x86_64.zip\"},{\"name\":\"php_hyperuuid-v1.1.0-8.4-nts-vs17-x86_64.zip\"},{\"name\":\"php_hyperuuid-v1.1.0-8.5-nts-vs17-x86_64.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.3-arm64-darwin-bsdlibc-nts.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.3-arm64-linux-glibc-nts.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.3-arm64-linux-musl-nts.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.3-x86_64-linux-glibc-nts.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.3-x86_64-linux-musl-nts.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.4-arm64-darwin-bsdlibc-nts.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.4-arm64-linux-glibc-nts.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.4-arm64-linux-musl-nts.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.4-x86_64-linux-glibc-nts.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.4-x86_64-linux-musl-nts.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.5-arm64-darwin-bsdlibc-nts.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.5-arm64-linux-glibc-nts.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.5-arm64-linux-musl-nts.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.5-x86_64-linux-glibc-nts.zip\"},{\"name\":\"php_hyperuuid-v1.1.0_php8.5-x86_64-linux-musl-nts.zip\"}]}"
+    }
+  }
+}

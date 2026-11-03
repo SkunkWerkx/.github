@@ -28,8 +28,10 @@ def verifying(inventory):
     groups = {e['path'].split('/')[0] for e in files if e.get('location') == 'packages'}
     registries = ['NuGet', 'RubyGems', 'PyPI', 'crates.io', 'Maven Central'] + ['npm'] * ('npm' in groups)
     packages = f"({', '.join(registries[:-1])} and {registries[-1]}), "
+    # The finalizer attaches it, so a release can install it by url:: while CRAN reviews it.
     if 'cran' in groups:
-        packages += 'a CRAN source tarball the maintainer submits by hand, '
+        packages += ('a CRAN source tarball, attached below for `url::` installs while CRAN reviews it\n'
+                     'and submitted to CRAN by hand, ')
     # The napi-rs addons are built and attested by the Forge in CI like the native
     # libraries, and npm records its own provenance at publish time beside PyPI's PEP 740.
     npm = 'npm' in groups

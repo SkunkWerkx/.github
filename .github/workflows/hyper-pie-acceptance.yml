@@ -93,6 +93,55 @@ permissions:
   contents: read
 
 jobs:
+  # The list of companions PIE installs first. A consumer's `companions` block
+  # (hyper_config.py) is the list when there is one, and the `companions` input must then
+  # equal it or be empty. Called from a consumer's release.yml, the block is read from the
+  # consumer's checkout, sparse to that one file; dispatched by hand in the Forge there is no
+  # consumer, so the input is the list.
+  companions:
+    runs-on: ubuntu-26.04
+    outputs:
+      companions: ${{ steps.companions.outputs.companions }}
+    steps:
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      - name: Check out the consumer's .github/hyper.json
+        if: github.repository != job.workflow_repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: consumer
+          sparse-checkout: .github/hyper.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: The companions PIE installs first
+        id: companions
+        shell: bash
+        env:
+          PIE_COMPANIONS: ${{ inputs.companions }}
+        run: |
+          set -euo pipefail
+          if [ -f consumer/.github/hyper.json ]; then
+            python3 .hyperforge/.github/scripts/hyper_config.py check-pie-companions --root consumer --packages="$PIE_COMPANIONS"
+            python3 .hyperforge/.github/scripts/hyper_config.py effective-pie-companions --root consumer --packages="$PIE_COMPANIONS"
+          else
+            echo "companions=$PIE_COMPANIONS" >> "$GITHUB_OUTPUT"
+            echo "companions=$PIE_COMPANIONS (no consumer checkout: the input is the list)"
+          fi
+
   legs:
     runs-on: ubuntu-26.04
     outputs:
@@ -131,7 +180,7 @@ jobs:
           echo "$matrix" | jq -r '.include[] | "\(.rid) PHP \(.minor)"'
 
   install:
-    needs: legs
+    needs: [legs, companions]
     name: ${{ matrix.rid }} PHP ${{ matrix.minor }}
     strategy:
       fail-fast: false
@@ -148,7 +197,7 @@ jobs:
       EXTENSION: ${{ inputs.extension }}
       PACKAGE_VERSION: ${{ inputs.package_version }}
       REPOSITORY: ${{ inputs.repository }}
-      COMPANIONS: ${{ inputs.companions }}
+      COMPANIONS: ${{ needs.companions.outputs.companions }}
     steps:
       - name: Validate Forge workflow revision
         shell: bash

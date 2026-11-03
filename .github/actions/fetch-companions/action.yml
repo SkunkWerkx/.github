@@ -1,0 +1,156 @@
+name: Fetch the companions
+description: >
+  Gives one leg of a consumer's board its companions (the companion-pins spec,
+  `fetch-companions`). Run it once per job, after the consumer's checkout (whose clean would
+  remove .companions/) and before anything resolves a companion. With no `companions` block in
+  .github/hyper.json it does nothing and reads nothing else. In release mode (hyper_mode.py, from
+  the event) it only guards: any companion override or .companions/ fails the leg, naming it.
+  In companion mode it downloads this run's companion-<name> artifact (the companions job's
+  mirror, hyper-companions.yml) with the run's own token, requires its pin.json to equal the
+  block, checks the companion's source out at the pinned commit into .companions/<name>/,
+  copies only this leg's artifacts (companion_map.py) into .companions/<name>-artifacts/ and
+  verifies them against the mirror's SHA256SUMS, writes .companions/env, then wires each
+  ecosystem and proves its origin (companion_wire.py, companion_origin.py). Every script is
+  companion_fetch.py's, run by the one Python 3.11+ plan.sh resolves (the `python` output), which
+  a leg's own companion steps run too: on a Windows runner python3 may be missing or the
+  WindowsApps alias.
+
+inputs:
+  leg:
+    description: "This leg, `<workflow>:<job>[:<rid>][:key=value...]`: the calling Forge workflow's file name, the job, the matrix rid, and the matrix values that choose artifacts (`abi=`, `minor=`, `shard=`; companion_map.parse_leg)"
+    required: true
+  ecosystems:
+    description: "Space-separated ecosystems to wire in place of the leg's own (companion_map.ecosystems_for); empty takes the leg's. A job whose suites need toolchains that can't all be on PATH at once fetches once per pass, each naming its ecosystems, together the leg's: a later pass keeps what an earlier one wired"
+    required: false
+    default: ''
+  root:
+    description: "The consumer's checkout, relative to the workspace, where .github/hyper.json is read and .companions/ is written: `.` for a job that checks the consumer out at the workspace root, a subdirectory for one that checks it out there"
+    required: false
+    default: '.'
+
+outputs:
+  active:
+    description: "'true' when this leg took the pinned companion (companion mode with a block), else 'false'"
+    value: ${{ steps.active.outputs.active || 'false' }}
+  commit:
+    description: "The pin's commit when active is 'true', else '': what a leg's cache keys carry in companion mode, so no cache crosses modes or pins"
+    value: ${{ steps.active.outputs.commit }}
+  python:
+    description: "The Python 3.11+ every step of this action ran (plan.sh: python3, python or `py -3`, never the WindowsApps alias), by path; '' only when there is none and no block. A leg's companion steps run their scripts with it"
+    value: ${{ steps.plan.outputs.python }}
+  mode:
+    description: "'' without a companions block; with one, the run's mode (hyper_mode.py, from the event): `companion` or `release`, where a leg resolves the companion from its registries (R: from its GitHub Release, companion_gate.py --r-package)"
+    value: ${{ steps.mode.outputs.companion_mode }}
+
+runs:
+  using: composite
+  steps:
+    # Without a block this is the only step, and it parses nothing but the block. It resolves the
+    # Python every later step runs (plan.sh); without one, a block-less leg still passes.
+    - name: The companions this leg takes
+      id: plan
+      shell: bash
+      env:
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+        ROOT: ${{ inputs.root }}
+        LEG: ${{ inputs.leg }}
+        ECOSYSTEMS: ${{ inputs.ecosystems }}
+      run: bash "$GITHUB_ACTION_PATH/plan.sh"
+
+    # Refuses a dispatch whose purpose is neither board nor release.
+    - name: The mode this run is in
+      id: mode
+      if: steps.plan.outputs.has_block == 'true'
+      shell: bash
+      env:
+        PYTHON: ${{ steps.plan.outputs.python }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: '"$PYTHON" "$FORGE_SCRIPTS/hyper_mode.py"'
+
+    - name: No companion override or .companions/ in release mode
+      if: steps.plan.outputs.has_block == 'true' && steps.mode.outputs.companion_mode == 'release'
+      shell: bash
+      env:
+        PYTHON: ${{ steps.plan.outputs.python }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+        ROOT: ${{ inputs.root }}
+      run: '"$PYTHON" "$FORGE_SCRIPTS/companion_fetch.py" guard --root "$ROOT"'
+
+    # This run's own artifact: no token is passed, so the job's GITHUB_TOKEN reads it. A run
+    # without one (ci.yml doesn't call hyper-companions.yml) is reported by the next step.
+    - name: Download this run's companion mirror
+      id: download
+      if: steps.plan.outputs.has_block == 'true' && steps.mode.outputs.companion_mode == 'companion'
+      continue-on-error: true
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: companion-${{ steps.plan.outputs.name }}
+        path: ${{ runner.temp }}/companion-${{ steps.plan.outputs.name }}
+
+    - name: The mirror is the pin this repository names
+      if: steps.plan.outputs.has_block == 'true' && steps.mode.outputs.companion_mode == 'companion'
+      shell: bash
+      env:
+        PYTHON: ${{ steps.plan.outputs.python }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+        ROOT: ${{ inputs.root }}
+        DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+        MIRROR: ${{ runner.temp }}/companion-${{ steps.plan.outputs.name }}
+      run: '"$PYTHON" "$FORGE_SCRIPTS/companion_fetch.py" confirm --root "$ROOT" --dir "$MIRROR" --outcome "$DOWNLOAD_OUTCOME"'
+
+    # Not cleaned: a job's second pass checks out the same commit over the first pass's tree,
+    # whose untracked files (the C# payload, the Swift bundle) that pass's wiring laid in.
+    - name: Check out the companion's source at the pin
+      if: steps.plan.outputs.has_block == 'true' && steps.mode.outputs.companion_mode == 'companion'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: ${{ steps.plan.outputs.repo }}
+        ref: ${{ steps.plan.outputs.commit }}
+        path: ${{ inputs.root }}/.companions/${{ steps.plan.outputs.name }}
+        clean: false
+        persist-credentials: false
+
+    - name: Stage and verify this leg's artifacts
+      if: steps.plan.outputs.has_block == 'true' && steps.mode.outputs.companion_mode == 'companion'
+      shell: bash
+      env:
+        PYTHON: ${{ steps.plan.outputs.python }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+        ROOT: ${{ inputs.root }}
+        LEG: ${{ inputs.leg }}
+        MIRROR: ${{ runner.temp }}/companion-${{ steps.plan.outputs.name }}
+      run: '"$PYTHON" "$FORGE_SCRIPTS/companion_fetch.py" stage --root "$ROOT" --leg="$LEG" --dir "$MIRROR"'
+
+    - name: Write .companions/env
+      if: steps.plan.outputs.has_block == 'true' && steps.mode.outputs.companion_mode == 'companion'
+      shell: bash
+      env:
+        PYTHON: ${{ steps.plan.outputs.python }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+        ROOT: ${{ inputs.root }}
+        ECOSYSTEMS: ${{ steps.plan.outputs.ecosystems }}
+      run: '"$PYTHON" "$FORGE_SCRIPTS/companion_fetch.py" env --root "$ROOT" --ecosystems="$ECOSYSTEMS"'
+
+    # An ecosystem without its wiring (companion_wire.py, companion_origin.py) fails the leg, never a
+    # silent pass.
+    - name: Wire each ecosystem and prove its origin
+      if: steps.plan.outputs.has_block == 'true' && steps.mode.outputs.companion_mode == 'companion'
+      shell: bash
+      env:
+        PYTHON: ${{ steps.plan.outputs.python }}
+        FORGE_SCRIPTS: ${{ github.action_path }}/../../scripts
+        ROOT: ${{ inputs.root }}
+        ECOSYSTEMS: ${{ steps.plan.outputs.ecosystems }}
+      run: '"$PYTHON" "$FORGE_SCRIPTS/companion_fetch.py" wire --root "$ROOT" --ecosystems="$ECOSYSTEMS"'
+
+    # The pin's commit beside active, for the leg's cache keys: a cache restored in companion mode
+    # carries the pin it was saved under, and never one a release-mode or pin-less run restores.
+    - name: This leg is wired
+      id: active
+      if: steps.plan.outputs.has_block == 'true' && steps.mode.outputs.companion_mode == 'companion'
+      shell: bash
+      env:
+        COMMIT: ${{ steps.plan.outputs.commit }}
+      run: |
+        echo "active=true" >> "$GITHUB_OUTPUT"
+        echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,161 @@
+name: HyperForge — companions, mirrored from their pinned runs or gated on the registries
+
+# A consumer whose .github/hyper.json pins companions (HyperTabular pins HyperCast) calls this
+# once from its ci.yml, as the job `companions`, passing the one secret below; every job that
+# calls a Forge board workflow needs it. A repository without companions doesn't call it.
+#
+# The job has no job-level `if:` and is never skipped: a skipped need fails GitHub's implicit
+# success() and would skip every dependant whatever its own `if:` admits. Its steps choose, by
+# the run's companion mode (hyper_mode.py), which is read from the event: inside a called
+# workflow the reusable workflow's own inputs are empty, so every condition is hyper_mode's
+# MODE_RELEASE over the caller's event, or its negation.
+#
+#   * release mode (a dispatch with purpose=release): assert there is no companion override and
+#     no .companions/ in the checkout (companion_fetch.py guard), then companion_gate.py: the
+#     version every manifest requires must be live on every registry but CRAN. Nothing is
+#     minted or downloaded, so a release never sees a pin.
+#   * companion mode (every other event, purpose=board included): mint a token from the
+#     companion GitHub App, read-only on Actions and scoped to the companion repositories;
+#     check every pin with companion_pin.py through it; download every artifact any leg takes
+#     (companion_map.all_artifacts) from the pinned run; seal them with SHA256SUMS and
+#     pin.json; upload them into this run as companion-<name>, which fetch-companions reads
+#     with the run's own token. No leg talks to the companion's run.
+#
+# The App's ID is the org variable HYPER_COMPANION_APP_ID and its key the secret
+# HYPER_COMPANION_APP_KEY, kept twice under that name: an org Actions secret, and an org
+# Dependabot secret, because Dependabot's pull requests get only Dependabot secrets. A fork's
+# pull request gets neither, and fails here at once: nothing falls back to a registry.
+on:
+  workflow_call:
+    secrets:
+      HYPER_COMPANION_APP_KEY:
+        description: "The companion GitHub App's private key: an org Actions secret, and an org Dependabot secret of the same name. Unused in release mode."
+        required: false
+
+jobs:
+  companions:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the consumer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      # Logs companion_mode, and refuses a dispatch whose purpose is neither board nor release.
+      - name: The mode this run is in
+        id: mode
+        run: python3 .hyperforge/.github/scripts/hyper_mode.py
+
+      # companion_fetch.release_guard, the same guard fetch-companions runs in every release-mode
+      # leg: a committed override (a Cargo patch, a Go replace, a file: or path requirement, a
+      # companion feed) or a .companions/ fails the release before anything is built.
+      - name: No companion override or .companions/ in release mode
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.purpose == 'release'
+        run: python3 .hyperforge/.github/scripts/companion_fetch.py guard --root .
+
+      # GH_TOKEN only lifts the GitHub API's anonymous rate limit for the Release probe.
+      - name: The companions are live on every registry but CRAN
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.purpose == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .hyperforge/.github/scripts/companion_gate.py --root .
+
+      - name: The App key is here
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.purpose == 'release') }}
+        env:
+          FORK: ${{ github.event.pull_request.head.repo.fork }}
+          HAS_KEY: ${{ secrets.HYPER_COMPANION_APP_KEY != '' }}
+          APP_ID: ${{ vars.HYPER_COMPANION_APP_ID }}
+        run: |
+          if [ "$FORK" = true ]; then
+            cat <<'MESSAGE'
+          ::error::A pull request from a fork gets no secrets, so this board can't fetch the companion artifacts. A maintainer re-runs it from a branch in this repository; nothing falls back to a registry.
+          MESSAGE
+            exit 1
+          fi
+          if [ "$HAS_KEY" != true ] || [ -z "$APP_ID" ]; then
+            cat <<'MESSAGE'
+          ::error::set `HYPER_COMPANION_APP_KEY` (an Actions secret, and a Dependabot secret for Dependabot's PRs) and the variable `HYPER_COMPANION_APP_ID`
+          MESSAGE
+            exit 1
+          fi
+
+      - name: The companions this run mirrors
+        id: plan
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.purpose == 'release') }}
+        run: python3 .hyperforge/.github/scripts/companion_mirror.py plan --root .
+
+      # Read on Actions alone: the pins' runs and their artifacts. A failure is reported by the
+      # next step, which names the repositories the App's installation must include.
+      # `client-id` is fed from HYPER_COMPANION_APP_ID: the action signs its JWT with that value
+      # as `iss`, and GitHub accepts either the App ID or the client ID there. That the variable
+      # reaches Dependabot's runs is proven live (the companion-pins plan's control 7).
+      - name: Mint a read-only token for the companion repositories
+        id: token
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.purpose == 'release') }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.HYPER_COMPANION_APP_ID }}
+          private-key: ${{ secrets.HYPER_COMPANION_APP_KEY }}
+          owner: SkunkWerkx
+          repositories: ${{ steps.plan.outputs.repositories }}
+          permission-actions: read
+
+      - name: Check every pin
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.purpose == 'release') }}
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          TOKEN_OUTCOME: ${{ steps.token.outcome }}
+          REPOSITORIES: ${{ steps.plan.outputs.repositories }}
+        run: |
+          if [ "$TOKEN_OUTCOME" != success ]; then
+            echo "::error::minting the companion token failed: the App's installation on SkunkWerkx must include $REPOSITORIES, and HYPER_COMPANION_APP_ID and HYPER_COMPANION_APP_KEY must be that App's"
+            exit 1
+          fi
+          python3 .hyperforge/.github/scripts/companion_pin.py --check --root .
+
+      # An expired (90 days) or absent artifact is reported by the seal step, with what to do.
+      - name: Download the pinned run's artifacts
+        id: download
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.purpose == 'release') }}
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ steps.token.outputs.token }}
+          repository: ${{ steps.plan.outputs.repo }}
+          run-id: ${{ steps.plan.outputs.run }}
+          pattern: ${{ steps.plan.outputs.pattern }}
+          path: ${{ runner.temp }}/companions/${{ steps.plan.outputs.name }}
+
+      - name: Seal the mirror
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.purpose == 'release') }}
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+          NAME: ${{ steps.plan.outputs.name }}
+        run: python3 .hyperforge/.github/scripts/companion_mirror.py seal --root . --dir "$RUNNER_TEMP/companions/$NAME" --outcome "$DOWNLOAD_OUTCOME"
+
+      - name: Upload the mirror
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.purpose == 'release') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: companion-${{ steps.plan.outputs.name }}
+          path: ${{ runner.temp }}/companions/${{ steps.plan.outputs.name }}
+          if-no-files-found: error

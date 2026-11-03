@@ -1,9 +1,10 @@
 """A run's companion mode, from the event that triggered it.
 
 A consumer's ci.yml is a caller, so a reusable workflow sees an empty `inputs.purpose`; the
-dispatch input is read from the event instead. A dispatch with `purpose=release` pins the
-companion repos to their released versions; every other event (and `purpose=board`) tracks
-their masters. A dispatch whose purpose is missing or unknown is refused, never guessed.
+dispatch input is read from the event instead. A dispatch with `purpose=release` is release
+mode: companions resolve from their registries at the versions the manifests require. Every
+other event (and `purpose=board`) is companion mode: the pinned commit and its run. A dispatch
+whose purpose is missing or unknown is refused, never guessed.
 """
 import json
 import os

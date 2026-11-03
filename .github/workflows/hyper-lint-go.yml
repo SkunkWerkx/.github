@@ -46,6 +46,19 @@ jobs:
     runs-on: ubuntu-26.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: inputs.lint_go
         with:
@@ -53,6 +66,19 @@ jobs:
           # go-version-file only says where the Go version is read from; the module cache needs
           # cache-dependency-path pointed at go.sum or setup-go searches the repository root.
           cache-dependency-path: go/go.sum
+      # Stable, for the fetch's wiring (cargo update on the runner, never the image's cargo);
+      # the core regeneration below installs its own pinned toolchain.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: inputs.lint_go
+      # The pinned companion (companion-pins): nothing without a `companions` block in
+      # hyper.json, the release guard alone in a release dispatch, and otherwise the Go
+      # replace and the Cargo patch (the core regeneration builds the crate), proven.
+      - name: Fetch the companions
+        if: inputs.lint_go
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-lint-go.yml:lint
+
       # gofmt walks directories, not modules, so this covers internal/wasm2go as well.
       - name: gofmt
         if: inputs.lint_go
