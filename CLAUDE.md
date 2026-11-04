@@ -169,6 +169,14 @@ companion pin" and "Release order"). What that asks of a change here:
   never runs there bare.
 - Only `hyper-companions.yml` declares `HYPER_COMPANION_APP_KEY`.
 
+## Bun and npm
+
+Bun installs and runs scripts on every TypeScript leg; npm is confined to publishing (`npm_package.py`'s
+`npm pkg set` and `npm pack`, `publish-npm`) and a consumer's npm scenarios. Every install site and
+the wiring still accept a `package-lock.json` (`if [ -f bun.lock ]`, `bun_lock.present`), so the Forge
+could merge before the consumers moved and a pinned companion commit from before the move still packs.
+Drop that branch, with its tests, once every consumer's master and pin carry `bun.lock`.
+
 ## Fail fast: the newest binding runs first
 
 This rule is `hyper-build-native.yml`'s alone: the per-binding family has nothing to order,

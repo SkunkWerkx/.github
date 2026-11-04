@@ -3,7 +3,7 @@
 //
 //     node suite-pyodide.mjs <crate> <version> <wheel> <tests-dir>
 //
-// Run from a directory where `pyodide` is installed (`npm install pyodide@<version>`): ESM
+// Run from a directory where `pyodide` is installed (`bun add pyodide@<version>`): ESM
 // resolves the import from the script's own location, so action.yml copies this file there.
 // Pyodide fetches micropip and pytest from its CDN on first use. Exits non-zero if the
 // wheel does not install, does not load the native backend, reports a different core

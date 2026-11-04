@@ -16,8 +16,12 @@ Two operations, both on a copy of the package directory, never on the checkout:
 The WASI package's manifest comes from `napi create-npm-dirs`, which still reaches the registry:
 the CLI resolves `@napi-rs/wasm-runtime` to a `~` range on the newest release it finds there,
 so a pack on a later day would name a runtime the suite never ran against. The three runtime
-dependencies are therefore rewritten to the exact versions in the committed `package-lock.json`,
-the ones the forced-WASI suite was proven with, and the tarball is refused unless they match.
+dependencies are therefore rewritten to the exact versions in the committed lock (`bun.lock`, or
+`package-lock.json` for a package not yet on Bun, a pinned companion's commit among them), the ones
+the forced-WASI suite was proven with, and the tarball is refused unless they match.
+
+npm stays for what a publish needs (`npm pkg set` and `npm pack`, whose tarball is what `npm publish`
+pushes); the dev dependencies come from the lock's own package manager.
 
 `--allow-missing-natives` is for a developer machine with one native built: absent natives are
 skipped, the root still pins all eight, and the output is never for release (the action never
@@ -32,6 +36,7 @@ import subprocess
 import sys
 import tempfile
 
+import bun_lock
 import hyper_config
 from release_package_metadata import NPM_SCOPE, WASI_RUNTIME, npm_all_names, npm_filename, npm_tarball, npm_wasi_name
 
@@ -44,8 +49,8 @@ WASI_NODE_ENGINES = '^22.14.0 || >=23.6.0'
 
 
 def default_runner(cmd, cwd):
-    """Run `cmd` in `cwd`, failing loudly. `npm` and `napi` resolve through PATH and the staged
-    copy's node_modules/.bin (so `.cmd` shims resolve on Windows too)."""
+    """Run `cmd` in `cwd`, failing loudly. `bun`, `npm` and `napi` resolve through PATH and the
+    staged copy's node_modules/.bin (so `.exe` and `.cmd` shims resolve on Windows too)."""
     search = str(Path(cwd) / 'node_modules' / '.bin') + os.pathsep + os.environ.get('PATH', '')
     executable = shutil.which(cmd[0], path=search) or cmd[0]
     subprocess.run([executable, *cmd[1:]], cwd=cwd, check=True)
@@ -60,7 +65,13 @@ def write_manifest(directory, manifest):
 
 
 def lockfile_versions(package_dir, names):
-    """The exact version `package-lock.json` resolved each of `names` to."""
+    """The exact version the package's lock resolved each of `names` to."""
+    if bun_lock.present(package_dir):
+        versions = {name: bun_lock.version(package_dir, name) for name in names}
+        for name, version in versions.items():
+            if not version:
+                raise ValueError(f'{bun_lock.LOCK} does not resolve {name}: install it as a devDependency')
+        return versions
     lock = json.loads((Path(package_dir) / 'package-lock.json').read_text(encoding='utf-8'))
     packages = lock.get('packages', {})
     versions = {}
@@ -73,8 +84,8 @@ def lockfile_versions(package_dir, names):
 
 
 def stage(package_dir, work, runner=default_runner):
-    """Copy the package directory to `work` (without node_modules and target, which `npm ci`
-    and nothing else restore) and install its dev dependencies. The committed manifest must
+    """Copy the package directory to `work` (without node_modules and target, which the lock's
+    install and nothing else restore) and install its dev dependencies. The committed manifest must
     carry no dependencies of either kind: they are injected here, into the copy."""
     package_dir, work = Path(package_dir), Path(work)
     manifest = read_manifest(package_dir)
@@ -89,7 +100,10 @@ def stage(package_dir, work, runner=default_runner):
         shutil.rmtree(work)
     shutil.copytree(package_dir, work, symlinks=True,
                     ignore=shutil.ignore_patterns('node_modules', 'target', 'npm'))
-    runner(['npm', 'ci', '--ignore-scripts'], work)
+    if bun_lock.present(work):
+        runner(['bun', 'install', '--frozen-lockfile', '--ignore-scripts'], work)
+    else:
+        runner(['npm', 'ci', '--ignore-scripts'], work)
 
 
 def artifact_files(artifact_dir):

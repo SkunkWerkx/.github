@@ -125,6 +125,12 @@ KINDS = {
                         {}, {}, [], 'go.work has a replace'),
     'go.work use': ({'go/go.work': 'go 1.26\nuse (\n\t.\n\t../.companions/hypercast/go\n)\n'}, {}, {}, [], 'uses'),
     'go.work use of a sibling': ({'go.work': 'go 1.26\nuse ../HyperCast/go\n'}, {}, {}, [], 'uses'),
+    'bun lock resolved from a tarball': ({'typescript/bun.lock': '{"packages": {"@skunkwerkx/hypercast": '
+                                          '["@skunkwerkx/hypercast@../x.tgz", {}, "sha512-a"],},}'},
+                                         {}, {}, [], 'bun.lock resolves'),
+    'bun lock link': ({'typescript/bun.lock': '{"packages": {"@skunkwerkx/hypercast": '
+                       '["@skunkwerkx/hypercast@link:@skunkwerkx/hypercast", {}],},}'}, {}, {}, [], 'bun.lock resolves'),
+    'bun lock unreadable': ({'typescript/bun.lock': '{"packages": ['}, {}, {}, [], 'cannot be parsed as a Bun lock'),
     'npm file dependency': ({'typescript/package.json': json.dumps(
         {'devDependencies': {'@skunkwerkx/hypercast': 'file:../.companions/hypercast.tgz'}})}, {}, {}, [], 'file:'),
     'npm file platform package': ({'typescript/browser-smoke/package.json': json.dumps(

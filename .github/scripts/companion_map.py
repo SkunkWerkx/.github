@@ -180,7 +180,7 @@ JOBS = {
     ('hyper-lint-java.yml', 'lint'): ('rust',),
     ('hyper-lint-r.yml', 'lint'): ('r',),
     ('hyper-lint-ruby.yml', 'lint'): ('ruby-lint',),
-    # `npm ci` installs the companion's package, so the runner's addon goes into the tarball.
+    # The install takes the companion's package, so the runner's addon goes into the tarball.
     ('hyper-lint-typescript.yml', 'lint'): ('npm',),
     ('hyper-test-c.yml', 'smoke'): ('c',),
     ('hyper-test-c.yml', 'smoke-apple-mobile'): ('c',),

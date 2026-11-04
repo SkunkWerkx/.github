@@ -5,7 +5,7 @@ name: HyperForge — prepare a release
 # the Ruby VERSION constant, plus typescript/package.json, and r/DESCRIPTION with the R
 # wrapper crate's exact pin on the core, where those directories exist), regenerates
 # rust/Cargo.lock's self-referential entry (cargo package
-# --locked fails on a stale one), typescript/package-lock.json (npm, lock only), the
+# --locked fails on a stale one), typescript/bun.lock (Bun, lock only), the
 # lockfile of every companion crate present (rust/fuzz, rust/browser-test, typescript,
 # java/jni: nothing else regenerates them; HyperCast's fuzz lockfile once sat at 0.1.0
 # through three releases, and HyperUuid's JNI lockfile at 1.0.0 into the 1.1.0 preparation) and the napi-rs wrappers typescript/binding.js and binding.d.ts (napi bakes
@@ -81,6 +81,10 @@ jobs:
         if: hashFiles('typescript/package.json') != ''
         with:
           node-version: '26'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: hashFiles('typescript/package.json') != ''
+        with:
+          bun-version: latest
 
       - name: Bump every committed manifest to the version
         env:
@@ -93,8 +97,13 @@ jobs:
           # Regenerates Cargo.lock's own self-referential package entry to match the bump
           # above; cargo package --locked (prepare-crate-package, at the tag) fails on a mismatch.
           cargo check --manifest-path rust/Cargo.toml
-          # The npm lock carries the package's own version too; lock only, no install scripts.
-          if [ -f typescript/package.json ]; then (cd typescript && npm install --package-lock-only --ignore-scripts); fi
+          # The lock, regenerated without install scripts: a package-lock.json carries the package's
+          # own version, and either lock follows a dependency the bump moved.
+          if [ -f typescript/bun.lock ]; then
+            (cd typescript && bun install --lockfile-only --ignore-scripts)
+          elif [ -f typescript/package.json ]; then
+            (cd typescript && npm install --package-lock-only --ignore-scripts)
+          fi
           # Companion crates that path-depend on the core carry their own lockfiles, which
           # nothing else regenerates. Each is updated only if this repository has it.
           for companion in rust/fuzz rust/browser-test typescript java/jni; do
@@ -119,7 +128,7 @@ jobs:
       # The addon it compiles (typescript/*.node) is gitignored and never committed.
       - name: Regenerate the napi-rs wrappers at the version
         if: hashFiles('typescript/package.json') != ''
-        run: (cd typescript && npm ci --ignore-scripts && npm run build)
+        run: (cd typescript && { if [ -f bun.lock ]; then bun install --frozen-lockfile --ignore-scripts; else npm ci --ignore-scripts; fi; } && bun run build)
 
       # The Go core is translated from the crate, and the crate's version is baked into its
       # <crate>_version: after the bump, regenerate so the committed core reports the new
@@ -154,7 +163,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           python3 "$FORGE_SCRIPTS/hyper_config.py" version-files | cut -f1 | xargs git add rust/Cargo.lock
-          for lock in rust/fuzz/Cargo.lock rust/browser-test/Cargo.lock typescript/package-lock.json typescript/Cargo.lock java/jni/Cargo.lock; do
+          for lock in rust/fuzz/Cargo.lock rust/browser-test/Cargo.lock typescript/bun.lock typescript/package-lock.json typescript/Cargo.lock java/jni/Cargo.lock; do
             if [ -f "$lock" ]; then git add "$lock"; fi
           done
           if [ -f typescript/package.json ]; then git add typescript/binding.js typescript/binding.d.ts; fi

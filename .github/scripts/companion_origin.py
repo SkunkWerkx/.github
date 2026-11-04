@@ -21,7 +21,7 @@ and raises OriginError naming the binding, the origin found and the origin expec
   pyodide
         The requirement as for python, and each pinned Pyodide wheel's bytes as SHA256SUMS
         lists them. pyodide-suite proves the rest inside each interpreter.
-  npm   Each consumer's package-lock.json resolves every companion package it requires from
+  npm   Each consumer's lock (bun.lock, or package-lock.json) resolves every companion package it requires from
         the `file:` tarball the wiring packed, with that tarball's integrity (npm pack's); the
         tarball holds the leg's addon (or WASI payload) byte for byte as SHA256SUMS lists it.
         --installed, after the install and before the suite: Node resolves the package from
@@ -100,6 +100,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bun_lock  # noqa: E402
 import companion_fetch  # noqa: E402
 import companion_wire  # noqa: E402
 
@@ -317,10 +318,11 @@ def _tar_files(tarball):
         return None
 
 
-def _installed_is_the_tarball(binding, expected, directory, target, dep, version, members):
+def _installed_is_the_tarball(binding, expected, directory, target, dep, version, members, ignored=frozenset()):
     """node_modules/<dep> is the tarball whole: its package.json names dep at the pin's version,
     and its files (a nested node_modules aside) are the tarball's package/ members, byte for byte,
-    none missing and none added."""
+    none missing and none added. `ignored` names what the installer itself leaves at the package's
+    top (Bun's .bun-tag, which records the tarball it installed)."""
     def shown(path):
         return path.relative_to(directory).as_posix()
     try:
@@ -332,7 +334,8 @@ def _installed_is_the_tarball(binding, expected, directory, target, dep, version
         raise OriginError(binding, f'{found.get("name")} {found.get("version")} installed '
                                    f'({shown(target / "package.json")})', expected)
     installed = {p.relative_to(target).as_posix(): p for p in sorted(target.rglob('*'))
-                 if p.is_file() and 'node_modules' not in p.relative_to(target).parts}
+                 if p.is_file() and 'node_modules' not in p.relative_to(target).parts
+                 and p.relative_to(target).as_posix() not in ignored}
     packed = {m[len('package/'):]: data for m, data in members.items() if m.startswith('package/')}
     for relative, path in installed.items():
         if relative not in packed:
@@ -350,7 +353,7 @@ NODE_RESOLVE = "require.resolve(process.argv[1] + '/package.json')"
 
 def origin_npm(root, env, sums, run=subprocess.run, installed=False, only=None):
     """Every consumer's lock resolves each companion package it requires from the tarball the
-    wiring packed (`file:`), with that tarball's integrity, as `npm pack --json` reported it; the
+    wiring packed (`file:`), with that tarball's integrity; the
     tarball holds the leg's payload, byte for byte as SHA256SUMS lists it (a tarball packed from
     the committed whitelist holds no addon). With `installed` (after the install, before the
     suite), Node resolves the package from that consumer's own node_modules, whose payload files
@@ -374,9 +377,10 @@ def origin_npm(root, env, sums, run=subprocess.run, installed=False, only=None):
             tarball = root / wired['tarball']
             expected = (f'{dep} {version} from file:{wired["tarball"]} (the pinned package packed with this leg\'s '
                         f'artifacts), integrity {wired["integrity"]}')
-            entry = companion_wire._npm_lock_entry(directory, dep) if (directory / 'package-lock.json').is_file() else None
+            lock_name = companion_wire._npm_lock_name(directory)
+            entry = companion_wire._npm_lock_entry(directory, dep) if (directory / lock_name).is_file() else None
             if not entry:
-                raise OriginError(binding, f'no node_modules/{dep} entry in package-lock.json', expected)
+                raise OriginError(binding, f'no node_modules/{dep} entry in {lock_name}', expected)
             resolved = str(entry.get('resolved') or '')
             if not resolved.startswith('file:'):
                 raise OriginError(binding, f'{dep} {entry.get("version")} from {resolved or "nowhere"} (a registry)',
@@ -411,8 +415,9 @@ def origin_npm(root, env, sums, run=subprocess.run, installed=False, only=None):
                     if digest != sums.get(relative):
                         raise OriginError(binding, f'{file.relative_to(directory).as_posix()} with sha256 {digest}, '
                                                    f'not SHA256SUMS\' {sums.get(relative) or "absent"}', expected)
-                _installed_is_the_tarball(binding, expected, directory, target, dep, version, members)
-            print(f'{binding}: {dep} {entry.get("version")} from {resolved}, integrity {actual}'
+                _installed_is_the_tarball(binding, expected, directory, target, dep, version, members,
+                                          ignored={'.bun-tag'} if lock_name == bun_lock.LOCK else frozenset())
+            print(f'{binding}: {dep} {entry.get("version") or version} from {resolved}, integrity {actual}'
                   + (f'; installed in node_modules with the pinned {", ".join(Path(p).name for p in wired["payload"])}'
                      if installed or target.exists() else ''))
             checked += 1
@@ -426,8 +431,8 @@ def origin_npm_installs(root, env, installs, expect=()):
     install from the job's own registry the set the wiring packed: every companion package a
     lock resolves has the integrity of the pinned set's tarball. At least one must, and each
     directory named in `expect` (a scenario's consumer directory under `installs`) must hold a
-    package-lock.json resolving one: a scenario that installed without a lock, or with another
-    package manager, would otherwise go unchecked."""
+    bun.lock or package-lock.json resolving one: a scenario that installed without a lock would
+    otherwise go unchecked."""
     name, _, manifest = companion_wire.pinned_npm(root, env)
     root = Path(root).resolve()
     record = _npm_record(root, name, 'npm', 'the pinned set')
@@ -437,20 +442,25 @@ def origin_npm_installs(root, env, installs, expect=()):
         raise OriginError('npm', 'no set packed for the registry (the leg stages fewer than every addon)', expected)
     checked = 0
     proven = set()
-    for lock in sorted(Path(installs).rglob('package-lock.json')):
+    locks = sorted(p for name in ('package-lock.json', bun_lock.LOCK) for p in Path(installs).rglob(name))
+    for lock in locks:
         if 'node_modules' in lock.parts:
             continue
         binding = f'npm ({_relative(root, lock.parent)}/)'
-        packages = (json.loads(lock.read_text(encoding='utf-8')).get('packages') or {})
-        for key, entry in sorted(packages.items()):
-            dep = key.rsplit('node_modules/', 1)[-1]
-            if not key or dep not in registry and not dep.startswith(manifest['name'] + '-'):
+        if lock.name == bun_lock.LOCK:
+            found = [(dep, ver, resolved, integrity)
+                     for _, dep, ver, resolved, integrity in bun_lock.entries(bun_lock.read(lock.parent))]
+        else:
+            packages = json.loads(lock.read_text(encoding='utf-8')).get('packages') or {}
+            found = [(key.rsplit('node_modules/', 1)[-1], entry.get('version'), entry.get('resolved'), entry.get('integrity'))
+                     for key, entry in sorted(packages.items()) if key]
+        for dep, ver, resolved, integrity in found:
+            if dep not in registry and not dep.startswith(manifest['name'] + '-'):
                 continue
             wanted = (registry.get(dep) or {}).get('integrity')
-            if entry.get('integrity') != wanted:
-                raise OriginError(binding, f'{dep} {entry.get("version")} from {entry.get("resolved")} with integrity '
-                                           f'{entry.get("integrity")}', expected)
-            print(f'{binding}: {dep} {entry.get("version")} from {entry.get("resolved")}, the pinned set\'s integrity')
+            if integrity != wanted:
+                raise OriginError(binding, f'{dep} {ver} from {resolved} with integrity {integrity}', expected)
+            print(f'{binding}: {dep} {ver} from {resolved or "the registry"}, the pinned set\'s integrity')
             checked += 1
             proven.add(lock.parent.resolve())
     if not checked:
@@ -458,7 +468,7 @@ def origin_npm_installs(root, env, installs, expect=()):
     for scenario in expect:
         directory = (Path(installs) / scenario).resolve()
         if not any(p == directory or directory in p.parents for p in proven):
-            raise OriginError(f'npm ({_relative(root, directory)}/)', 'no package-lock.json resolving a companion '
+            raise OriginError(f'npm ({_relative(root, directory)}/)', 'no bun.lock or package-lock.json resolving a companion '
                               'package (a scenario that installed without a lock, or not at all)', expected)
 
 

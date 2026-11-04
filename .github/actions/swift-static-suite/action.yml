@@ -4,7 +4,7 @@ description: >
   checks named against the static libraries in swift/{Project}Core.artifactbundle — the
   binding's own suite on glibc or WebAssembly, and swift/StaticSmokeTest on glibc, musl
   (Swift's static Linux SDK) or WebAssembly, the last also in headless Chrome through a WASI
-  shim (browser/index.html; the host needs npm, python3 and google-chrome).
+  shim (browser/index.html; the host needs Bun, python3 and google-chrome).
   hyper-build-native.yml calls this once for the current Swift and once for the declared floor.
 
 inputs:

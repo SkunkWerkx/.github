@@ -17,7 +17,7 @@
 # module and copies it out, and the host serves it on 127.0.0.1 beside browser/index.html,
 # which runs it with @bjorn3/browser_wasi_shim (installed from npm at the version pinned
 # below) and prints its output and exit code into the page. Chrome dumps the page and the
-# check fails unless it ends `EXIT 0`. The host needs npm, python3 and google-chrome
+# check fails unless it ends `EXIT 0`. The host needs Bun, python3 and google-chrome
 # ($CHROME overrides the browser). The module is the same one wasmkit runs — a plain
 # wasm32-wasip1 command whose only imports are wasi_snapshot_preview1, randomness
 # included (random_get, from crypto.getRandomValues in the shim).
@@ -81,7 +81,7 @@ companion_sh=$(cd "$here/../../scripts" && pwd)/companion_container.sh
 out=""
 if $need_browser; then
   chrome="${CHROME:-google-chrome}"
-  for tool in npm python3 "$chrome"; do
+  for tool in bun python3 "$chrome"; do
     command -v "$tool" >/dev/null || { echo "error: browser-wasm needs $tool on the host" >&2; exit 1; }
   done
   out="$(mktemp -d)"
@@ -200,7 +200,7 @@ if $need_browser; then
   mkdir -p "$site"
   cp "$here/browser/index.html" "$site/"
   mv "$out/smoke.wasm" "$site/smoke.wasm"
-  (cd "$site" && npm install --no-save --no-audit --no-fund --silent "$browser_wasi_shim")
+  (cd "$site" && bun add --no-save --silent "$browser_wasi_shim")
   echo "smoke.wasm: $(wc -c < "$site/smoke.wasm") bytes"
   port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
   (cd "$site" && exec python3 -m http.server "$port" --bind 127.0.0.1 >/dev/null 2>&1) &

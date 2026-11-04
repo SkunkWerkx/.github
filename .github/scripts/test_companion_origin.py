@@ -520,6 +520,63 @@ class OriginNpmTests(unittest.TestCase):
         self.assertIn(f'node_modules/{PACKAGE} without the tarball\'s package/index.js',
                       installed_with(lambda d: (d / 'index.js').unlink()))
 
+    def as_bun(self, resolved=None, integrity=None):
+        """The wired consumer as Bun locks it: the tarball's absolute path and its integrity."""
+        self.lock.unlink(missing_ok=True)
+        path = str(self.tarball) if resolved is None else resolved
+        (self.root / 'typescript' / 'bun.lock').write_text(
+            '{"packages": {' + json.dumps(PACKAGE) + ': ' +
+            json.dumps([f'{PACKAGE}@{path}', {}, integrity or self.integrity]) + ',},}\n')
+
+    def test_origin_bun_lock_pinned_passes(self):
+        self.as_bun()
+        self.origin(only='typescript')
+
+    def test_origin_bun_lock_registry_copy_is_rejected(self):
+        self.lock.unlink()
+        (self.root / 'typescript' / 'bun.lock').write_text(
+            '{"packages": {' + json.dumps(PACKAGE) + ': ' +
+            json.dumps([f'{PACKAGE}@0.0.1', '', {}, 'sha512-placeholder']) + ',},}\n')
+        self.assertIn('0.0.1 from nowhere (a registry)', self.rejected(only='typescript').found)
+
+    def test_origin_bun_lock_another_tarball_or_integrity_is_rejected(self):
+        self.as_bun(resolved='/elsewhere/x.tgz')
+        self.assertIn('from file:/elsewhere/x.tgz', self.rejected(only='typescript').found)
+        self.as_bun(integrity='sha512-other')
+        self.assertIn('with integrity sha512-other in the lock', self.rejected(only='typescript').found)
+
+    def test_origin_no_bun_lock_entry_is_rejected(self):
+        self.lock.unlink()
+        (self.root / 'typescript' / 'bun.lock').write_text('{"packages": {},}\n')
+        self.assertIn(f'no node_modules/{PACKAGE} entry in bun.lock', self.rejected(only='typescript').found)
+
+    def test_bun_tag_passes_only_beside_a_bun_lock_and_only_at_the_top(self):
+        installed = npm_install(self.root / 'typescript', self.tarball)
+        (installed / '.bun-tag').write_text('tag')
+        # Beside an npm lock nothing wrote it.
+        self.assertIn('.bun-tag, which the tarball does not hold', self.rejected(installed=True, only='typescript').found)
+        self.as_bun()
+        self.origin(installed=True, only='typescript')
+        (installed / 'sub').mkdir()
+        (installed / 'sub' / '.bun-tag').write_text('tag')
+        self.assertIn('sub/.bun-tag, which the tarball does not hold', self.rejected(installed=True, only='typescript').found)
+
+    def test_origin_npm_registry_installs_read_a_bun_lock(self):
+        registry = {PACKAGE: {'tarball': 'x', 'integrity': 'sha512-good'}}
+        record = companion_wire.npm_dir(self.root, 'hypercast') / companion_wire.NPM_RECORD
+        data = json.loads(record.read_text())
+        data['registry'] = registry
+        record.write_text(json.dumps(data))
+        work = self.root / 'work'
+        (work / 'bun-install').mkdir(parents=True)
+        lock = work / 'bun-install' / 'bun.lock'
+        lock.write_text('{"packages": {' + json.dumps(PACKAGE) + ': ' + json.dumps([f'{PACKAGE}@1.0.0', '', {}, 'sha512-good']) + ',},}')
+        companion_origin.origin_npm_installs(self.root, NPM_ENV, work, expect=['bun-install'])
+        lock.write_text('{"packages": {' + json.dumps(PACKAGE) + ': ' + json.dumps([f'{PACKAGE}@1.0.0', '', {}, 'sha512-bad']) + ',},}')
+        with self.assertRaises(companion_origin.OriginError) as caught:
+            companion_origin.origin_npm_installs(self.root, NPM_ENV, work, expect=['bun-install'])
+        self.assertIn('with integrity sha512-bad', caught.exception.found)
+
     def test_origin_npm_another_tarball_is_rejected(self):
         shutil.copyfile(self.tarball, self.root / 'elsewhere.tgz')
         self.entry(resolved='file:../elsewhere.tgz')
@@ -582,10 +639,10 @@ class OriginNpmTests(unittest.TestCase):
         with self.assertRaises(companion_origin.OriginError) as caught:
             companion_origin.origin_npm_installs(self.root, NPM_ENV, work, expect=['plain', 'consumer two'])
         self.assertEqual(caught.exception.binding, 'npm (typescript/consumer-tests/work/consumer two/)')
-        self.assertIn('no package-lock.json resolving a companion package', caught.exception.found)
+        self.assertIn('no bun.lock or package-lock.json resolving a companion package', caught.exception.found)
         with self.assertRaises(companion_origin.OriginError) as caught:
             companion_origin.origin_npm_installs(self.root, NPM_ENV, work, expect=['floor'])
-        self.assertIn('no package-lock.json resolving a companion package', caught.exception.found)
+        self.assertIn('no bun.lock or package-lock.json resolving a companion package', caught.exception.found)
         # The CLI takes the names comma-separated.
         (self.root / '.companions' / 'env').write_text(''.join(f'{k}={v}\n' for k, v in NPM_ENV.items()))
         cli = ['npm', '--root', str(self.root), '--installs', str(work), '--expect']

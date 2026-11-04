@@ -767,8 +767,9 @@ class PrepareReleaseContracts(unittest.TestCase):
                         self.text.index('Bump every committed manifest'))
 
     def test_npm_lock_is_regenerated_only_when_package_json_exists(self):
-        self.assertIn('if [ -f typescript/package.json ]; then (cd typescript && '
-                      'npm install --package-lock-only --ignore-scripts); fi', self.text)
+        self.assertIn('if [ -f typescript/bun.lock ]; then\n            (cd typescript && bun install --lockfile-only --ignore-scripts)\n'
+                      '          elif [ -f typescript/package.json ]; then\n'
+                      '            (cd typescript && npm install --package-lock-only --ignore-scripts)', self.text)
 
     def test_r_wrapper_lock_is_neither_staged_nor_regenerated_nor_committed(self):
         # r/tools/vendor.sh --stage derives r/src/rust/Cargo.lock from rust/Cargo.lock
@@ -789,7 +790,7 @@ class PrepareReleaseContracts(unittest.TestCase):
 
     def test_commit_step_adds_the_new_locks_under_the_existence_guard(self):
         self.assertIn('for lock in rust/fuzz/Cargo.lock rust/browser-test/Cargo.lock '
-                      'typescript/package-lock.json typescript/Cargo.lock java/jni/Cargo.lock; do\n'
+                      'typescript/bun.lock typescript/package-lock.json typescript/Cargo.lock java/jni/Cargo.lock; do\n'
                       '            if [ -f "$lock" ]; then git add "$lock"; fi', self.text)
 
     def test_napi_wrappers_are_rebuilt_after_the_bump_and_committed(self):
@@ -801,7 +802,7 @@ class PrepareReleaseContracts(unittest.TestCase):
         bump = names.index('Bump every committed manifest to the version')
         commit = names.index('Commit and push if anything actually changed')
         build = [i for i, s in enumerate(steps)
-                 if '(cd typescript && npm ci --ignore-scripts && npm run build)' in s.get('run', '')]
+                 if 'bun install --frozen-lockfile --ignore-scripts' in s.get('run', '') and 'bun run build' in s.get('run', '')]
         self.assertEqual(len(build), 1)
         step = steps[build[0]]
         self.assertEqual(step['if'], "hashFiles('typescript/package.json') != ''")
@@ -913,9 +914,9 @@ class GoTranslatedCoreContracts(unittest.TestCase):
         node = next(s for s in steps if str(s.get('uses', '')).startswith('actions/setup-node@'))
         self.assertEqual(node['with']['node-version'], '${{ inputs.node_version }}')
         text = '\n'.join(self.describe(s) for s in steps)
-        for needle in ('npm run build:wasi',
+        for needle in ('bun run build:wasi',
                        'git diff --exit-code -- typescript/index.js typescript/index.d.ts typescript/binding.js typescript/binding.d.ts',
-                       'ls -l "typescript/$CRATE.wasm32-wasip1.wasm"', 'NAPI_RS_FORCE_WASI=error npm test', 'npm run typecheck',
+                       'ls -l "typescript/$CRATE.wasm32-wasip1.wasm"', 'NAPI_RS_FORCE_WASI=error bun run test', 'bun run typecheck',
                        'cp "typescript/$CRATE.wasm32-wasip1.wasm" typescript/"$CRATE".wasip1* node-wasm32-wasip1/',
                        'npm_package.py" pack-wasi --package typescript --artifact node-wasm32-wasip1 --out npm-wasi',
                        'typescript/browser-smoke', 'npm install --no-save', 'python3 -m http.server 8092 --bind 127.0.0.1',
@@ -1034,13 +1035,17 @@ class BuildNativeContracts(unittest.TestCase):
                 self.assertIn(self.BASE, step['if'])
                 self.assertIn('inputs.node', step['if'])
         for step in node:
-            if step.get('id') != 'node_addon' and 'setup-node' not in step.get('uses', ''):
+            # Bun comes before the build, which installs with it.
+            if step.get('id') != 'node_addon' and not re.search('setup-(node|bun)', step.get('uses', '')):
                 with self.subTest(after_build=step.get('name') or step.get('uses')):
                     self.assertIn("steps.node_addon.conclusion == 'success'", step['if'])
-        bun = [s for s in node if 'setup-bun' in self.describe(s) or 'test:bun' in self.describe(s)]
-        self.assertEqual(len(bun), 2)
-        for step in bun:
-            self.assertIn("matrix.rid != 'win-arm64'", step['if'])
+        # Bun the package manager runs on every leg; Bun's runtime skips Windows ARM64.
+        setup = [s for s in node if 'setup-bun' in self.describe(s)]
+        self.assertEqual(len(setup), 1)
+        self.assertNotIn("matrix.rid != 'win-arm64'", setup[0]['if'])
+        suite = [s for s in node if 'test:bun' in self.describe(s)]
+        self.assertEqual(len(suite), 1)
+        self.assertIn("matrix.rid != 'win-arm64'", suite[0]['if'])
         upload = next(s for s in node if s.get('uses', '').startswith('actions/upload-artifact@'))
         self.assertEqual(upload['with']['name'], 'node-${{ matrix.rid }}')
         self.assertEqual(upload['with']['path'], 'typescript/*.node')
@@ -1075,7 +1080,7 @@ class BuildNativeContracts(unittest.TestCase):
         for job in self.jobs.values():
             for step in job.get('steps', []):
                 run = step.get('run', '')
-                for match in re.finditer(r'npm run build|napi build', run):
+                for match in re.finditer(r'bun run build|napi build', run):
                     builds += 1
                     self.assertIn(self.WRAPPERS, run[match.end():], run)
         self.assertEqual(builds, 2)
@@ -1085,7 +1090,7 @@ class BuildNativeContracts(unittest.TestCase):
     def test_osx_x64_cross_builds_the_addon_and_tests_it_under_rosetta(self):
         steps = self.steps('build-native-osx-x64')
         text = '\n'.join(self.describe(s) for s in steps)
-        self.assertIn('npx napi build --release --platform --target x86_64-apple-darwin '
+        self.assertIn('bunx napi build --release --platform --target x86_64-apple-darwin '
                       '--js binding.js --dts binding.d.ts', text)
         self.assertIn('lipo -archs', text.split('napi build', 1)[1])
         x64 = [s for s in steps if s.get('uses', '').startswith('actions/setup-node@')
@@ -1116,10 +1121,11 @@ class BuildNativeContracts(unittest.TestCase):
         arm = self.suite.split('\n  node)\n', 1)[1].split('\n    ;;\n', 1)[0]
         self.assertIn('node:${NODE_VERSION:-26}-alpine', arm)
         self.assertIn('-C target-feature=-crt-static -L native=/unwind', arm)
-        # `npm ci`, then the pinned companion's proof (a no-op without one), then the build and suite.
-        self.assertIn('npm ci || exit 1\n      companion_npm /src /work /forge /work/typescript origin --installed\n'
-                      '      npm run build && npm test || exit 1', arm)
-        after = arm.split('npm run build', 1)[1]
+        # The install, then the pinned companion's proof (a no-op without one), then the build and suite.
+        self.assertIn('else npm ci; fi; } || exit 1\n      companion_npm /src /work /forge /work/typescript origin --installed\n'
+                      '      bun run build && bun run test || exit 1', arm)
+        self.assertIn('bun install --frozen-lockfile', arm)
+        after = arm.split('bun run build', 1)[1]
         self.assertIn('for wrapper in index.js index.d.ts binding.js binding.d.ts; do\n'
                       '        cmp "$wrapper" "/src/typescript/$wrapper" || '
                       '{ echo "::error::napi build rewrote typescript/$wrapper"; exit 1; }\n'
@@ -1175,7 +1181,7 @@ class CheckCoreLintContracts(unittest.TestCase):
                 self.assertEqual(inputs[name]['type'], 'boolean')
                 self.assertEqual(workflow['jobs'][job]['if'], f'inputs.{name}')
         node = ' '.join(str(s) for s in workflow['jobs']['lint-node']['steps'])
-        for value in ('npm ci', 'npm run lint', 'cargo fmt --check',
+        for value in ('bun install --frozen-lockfile', 'bun run lint', 'cargo fmt --check',
                       'cargo clippy --release -- -D warnings'):
             self.assertIn(value, node)
         r_steps = workflow['jobs']['lint-r']['steps']

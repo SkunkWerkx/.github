@@ -942,7 +942,7 @@ class FetchStepTests(unittest.TestCase):
                         self.assertEqual(step['env']['PYODIDE_SUITE_DEPS'], expected)
         self.assertEqual(seen, set(deps))
 
-    # Each npm leg: the steps that install the consumer (npm ci, npm install), the proof after
+    # Each npm leg: the steps that install the consumer (Bun's install or npm's), the proof after
     # the last of them, and the suite the proof precedes, by step name.
     NPM_ORDER = {
         ('hyper-test-typescript.yml', 'test'): (
@@ -952,12 +952,12 @@ class FetchStepTests(unittest.TestCase):
             ('Cross-build the TypeScript addon for x86_64',), 'The suite takes the pinned companion',
             'Test TypeScript bindings on x64 Node, under Rosetta', '--dir typescript --installed'),
         ('hyper-lint-typescript.yml', 'lint'): (
-            ('npm ci',), 'npm ci took the pinned companion', 'npm run lint', '--dir typescript --installed'),
+            ('Install the dev dependencies',), 'The install took the pinned companion', 'bun run lint', '--dir typescript --installed'),
         ('hyper-build-wasm.yml', 'build-node-wasi'): (
             ('Build the WASI module and its loaders',), 'The suite takes the pinned companion',
             'The conformance suite against the WASI module, native refused', '--dir typescript --installed'),
     }
-    NPM_INSTALL = re.compile(r'\bnpm (ci|install)\b')
+    NPM_INSTALL = re.compile(r'\bbun install\b')
 
     def test_npm_legs_set_up_node_first_and_prove_the_origin_after_the_last_install(self):
         import companion_map
@@ -970,10 +970,11 @@ class FetchStepTests(unittest.TestCase):
                 steps = yaml_lite.load((WORKFLOWS / workflow).read_text())['jobs'][job_name]['steps']
                 index = next(i for i, s in enumerate(steps) if s.get('uses') == FETCH_USES)
                 fetch = steps[index]
-                # The wiring runs npm (pack, install --package-lock-only): the job's own Node is set
-                # up first, under no narrower condition than the fetch.
-                nodes = [s for s in steps[:index] if str(s.get('uses', '')).startswith('actions/setup-node@')]
-                self.assertTrue(nodes and nodes[0].get('if') in (None, fetch.get('if')), 'no Node before the fetch')
+                # The wiring runs Bun under Node's scripts (pm pack, install --lockfile-only): the
+                # job's own Node and Bun are set up first, under no narrower condition than the fetch.
+                for setup in ('actions/setup-node@', 'oven-sh/setup-bun@'):
+                    found = [s for s in steps[:index] if str(s.get('uses', '')).startswith(setup)]
+                    self.assertTrue(found and found[0].get('if') in (None, fetch.get('if')), f'no {setup} before the fetch')
                 if job_name == 'test-musl':
                     continue  # the containers prove it: suite-musl.sh, below
                 self.assertEqual(fetch.get('id'), 'companions')
@@ -1004,48 +1005,48 @@ class FetchStepTests(unittest.TestCase):
         page = names.index('The page took the pinned companion')
         self.assertEqual(page, names.index('The package bundled into a page, in headless Chrome') + 1)
         self.assertIn('--dir typescript/browser-smoke --installed', steps[page]['run'])
-        # The musl suite: the build container wires before `npm ci` and proves after it, before the
+        # The musl suite: the build container wires before the install and proves after it, before the
         # build and the suite; Bun's installs the tarball itself and proves it before `bun run test:bun`.
         text = (WORKFLOWS.parent / 'actions' / 'musl-suite' / 'suite-musl.sh').read_text()
         at = 0
         for needle in ('companion_cargo /src /work /work/rust /work/typescript',
-                       'companion_npm /src /work /forge /work/typescript wire', 'npm ci || exit 1',
+                       'companion_npm /src /work /forge /work/typescript wire', 'bun install --frozen-lockfile',
                        'companion_npm /src /work /forge /work/typescript origin --installed',
-                       'npm run build && npm test || exit 1',
+                       'bun run build && bun run test || exit 1',
                        'companion_npm /src /work /forge /work/typescript unpack', 'bun run test:bun'):
             at = text.index(needle, at) + len(needle)
         node = text[text.index('\n  node)'):text.index('\n  ruby)')]
         self.assertEqual(node.count('-v "$forge_scripts:/forge:ro"'), 2)
         self.assertEqual(len(self.NPM_INSTALL.findall(node)), 1)
 
-    # HEAD 666a621's commands in each npm leg, by step: without a pin, every step but the fetch
+    # The commands in each npm leg as of the move to Bun, by step: without a pin, every step but the fetch
     # and the steps gated on its `active` output runs exactly these (sha256 of `run`, first 16
     # hex digits). The lint job's Validate step came with the Rust wiring (Task 9).
     HEAD_RUNS = {
         ('hyper-test-typescript.yml', 'test'): {
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
-            'Build the TypeScript (napi-rs) addon': '515b3f603dbe7a6e',
+            'Build the TypeScript (napi-rs) addon': '12c3425533ee7f05',
             'glibc the TypeScript addon references (printed, never fails)': '20a027e529cef154',
-            'Test TypeScript bindings on Node': '2023031b4e8ebede',
-            'Test TypeScript bindings on Bun': 'b4bf8cb9c39c3ee1'},
+            'Test TypeScript bindings on Node': '3c777d6ebebb16d6',
+            'Test TypeScript bindings on Bun': '93bfb696b5da1c8f'},
         ('hyper-test-typescript.yml', 'test-musl'): {
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
             'Node on Alpine — the declared floors': 'c0e4e6fcb88abe27'},
         ('hyper-test-typescript.yml', 'test-osx-x64'): {
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
-            'Cross-build the TypeScript addon for x86_64': 'db400deedfeedc3c',
-            'Test TypeScript bindings on x64 Node, under Rosetta': 'd1f3c723c01bd405'},
+            'Cross-build the TypeScript addon for x86_64': '3c807dec176f53a8',
+            'Test TypeScript bindings on x64 Node, under Rosetta': '02ecae9f264443f4'},
         ('hyper-lint-typescript.yml', 'lint'): {
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
-            'npm ci': '9db3f780def6105e', 'npm run lint': '326d9800e732eb9d',
+            'Install the dev dependencies': '64d8acd5dbc01be7', 'bun run lint': 'f1e294de75598104',
             'cargo fmt --check': '194fabc0129ce4a9', 'cargo clippy': 'e89ad37e84720f8f'},
         ('hyper-build-wasm.yml', 'build-node-wasi'): {
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
-            'Build the WASI module and its loaders': 'c7b681cada2e5d78',
-            'The conformance suite against the WASI module, native refused': '249b08603e3c40f4',
+            'Build the WASI module and its loaders': '66ad3edb5359f520',
+            'The conformance suite against the WASI module, native refused': 'ed396eedd6a18486',
             'Collect the module and its loaders': '3399c30676c03abb',
             'Pack the WASI package as the release does': '1c38a3a4e930f5fa',
-            'The package bundled into a page, in headless Chrome': '7ea6a953339f3c55'},
+            'The package bundled into a page, in headless Chrome': '116296d8ce0903cf'},
     }
 
     def test_without_a_pin_the_npm_legs_run_heads_commands(self):
@@ -1270,7 +1271,7 @@ class FetchStepTests(unittest.TestCase):
                     at = found + len(needle)
 
     # suite-ruby-wasm.sh at HEAD: what is left of it once its companion-pins regions go.
-    SUITE_RUBY_WASM_HEAD = '03ae0a0ecaf6c18625072a1b4239c2d3c1ef530442e76d8fe1cb6efeae13d370'
+    SUITE_RUBY_WASM_HEAD = 'b41b0c31e5a7ac96095808a253020f718538378d69e33d9a41b4bd89c495b38b'
     REGION = re.compile(r'^[ \t]*# >>> companion-pins\n.*?^[ \t]*# <<< companion-pins\n', re.M | re.S)
 
     def test_without_a_pin_suite_ruby_wasm_is_heads(self):
@@ -1430,9 +1431,9 @@ class FetchStepTests(unittest.TestCase):
                  'pip install -q --root-user-action=ignore pytest /wheels/*.whl'),
                 ('actions/musl-suite/suite-musl.sh', 'companion_python /src /forge python3 origin', 'pytest -q'),
                 ('actions/musl-suite/suite-musl.sh', 'companion_cargo /src /work /work/rust /work/typescript',
-                 'npm run build && npm test'),
+                 'bun run build && bun run test'),
                 ('actions/musl-suite/suite-musl.sh', 'companion_npm /src /work /forge /work/typescript wire',
-                 'npm ci || exit 1')):
+                 'bun install --frozen-lockfile')):
             with self.subTest(script=script):
                 text = (github / script).read_text()
                 self.assertEqual(text.count(call), 1)
@@ -2703,6 +2704,39 @@ class CompanionNpmContainerTests(unittest.TestCase):
         result = self.npm('origin', '--installed')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('installed in node_modules with the pinned hypercast.darwin-arm64.node', result.stdout)
+
+    @unittest.skipUnless(shutil.which('bun'), 'needs Bun')
+    def test_bun_lock_wires_installs_and_proves_inside_with_real_bun(self):
+        import subprocess
+        (self.dir / 'package-lock.json').unlink()
+        (self.dir / 'bun.lock').write_text('{"lockfileVersion": 1, "workspaces": {"": {}}, "packages": {},}\n')
+        result = self.npm('wire')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f'npm ({self.dir}): {PACKAGE} 1.0.0 from file:', result.stdout)
+        lock = (self.dir / 'bun.lock').read_text()
+        self.assertIn(str(self.work / '.companions' / 'hypercast-npm' / 'skunkwerkx-hypercast-1.0.0.tgz'), lock)
+        installed = subprocess.run([shutil.which('bun'), 'install', '--frozen-lockfile'], cwd=self.dir, env=self.environ,
+                                   capture_output=True, text=True)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        # Bun's .bun-tag is there, and the proof takes it.
+        self.assertTrue((self.dir / 'node_modules' / PACKAGE / '.bun-tag').is_file())
+        result = self.npm('origin', '--installed')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('installed in node_modules with the pinned hypercast.darwin-arm64.node', result.stdout)
+        # Anything else added is not the tarball; nor is a tag where Bun does not write one.
+        (self.dir / 'node_modules' / PACKAGE / 'sub').mkdir()
+        (self.dir / 'node_modules' / PACKAGE / 'sub' / '.bun-tag').write_text('x')
+        result = self.npm('origin', '--installed')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('sub/.bun-tag, which the tarball does not hold', result.stdout)
+        shutil.rmtree(self.dir / 'node_modules' / PACKAGE / 'sub')
+        # A lock whose integrity is not the tarball's.
+        tampered = re.sub(r'(hypercast-1\.0\.0\.tgz", \{[^}]*\}, ")sha512-[^"]+', r'\1sha512-tampered', lock)
+        self.assertNotEqual(tampered, lock)
+        (self.dir / 'bun.lock').write_text(tampered)
+        result = self.npm('origin')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('with integrity', result.stdout)
 
     def test_npm_unwired_copy_does_not_install(self):
         # The host's spec names a host path the container lacks: without the rewire, npm ci fails

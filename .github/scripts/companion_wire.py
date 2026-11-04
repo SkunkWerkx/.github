@@ -30,7 +30,9 @@ companion_origin's.
         `files` list adding the leg's node-* artifacts (the committed whitelist excludes every
         addon), its package.json restored; each consumer's direct dependency on it rewritten to
         `file:<that tarball>` and its peer to the pin's exact version (no `overrides`: npm
-        refuses one for a direct dependency), then `npm install --package-lock-only`. The WASI
+        refuses one for a direct dependency), then the lock regenerated: `bun install
+        --lockfile-only` beside a bun.lock, `npm install --package-lock-only` beside a
+        package-lock.json (and `bun pm pack` or `npm pack` for the tarball likewise). The WASI
         package, where a consumer names it, is packed by npm_package.pack_wasi; on a leg staging
         every addon (the consumer tests) the release's whole set by npm_package.pack, for the
         job's own registry, named to later steps as <NAME>_TARBALLS through $GITHUB_ENV.
@@ -110,6 +112,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bun_lock  # noqa: E402
 from companion_fetch import ENV, SKIP_DIRS, WORKDIR, _go_module, _pep503, find_bash  # noqa: E402
 
 
@@ -632,7 +635,8 @@ def npm_integrity(path):
 
 
 def _npm_run(argv, cwd=None, **kwargs):
-    """subprocess.run with npm found the way npm_package.default_runner finds it (npm.cmd on Windows)."""
+    """subprocess.run with Bun or npm found the way npm_package.default_runner finds them (bun.exe
+    and npm.cmd on Windows)."""
     import shutil
     return subprocess.run([shutil.which(argv[0]) or argv[0], *argv[1:]], cwd=cwd, **kwargs)
 
@@ -707,10 +711,11 @@ def _npm_manifests(root, packages):
     return found
 
 
-def _pack_with_payload(source, manifest, payload, out, run):
-    """`npm pack` of the pinned package with a job-local `files` list that adds the payload, which
-    the committed whitelist leaves out; the package.json is restored byte for byte and the
-    payload's copies removed whatever happens. The tarball, and npm's integrity for it."""
+def _pack_with_payload(source, manifest, payload, out, run, bun=False):
+    """`bun pm pack` (or `npm pack`, for a consumer not yet on Bun) of the pinned package with a
+    job-local `files` list that adds the payload, which the committed whitelist leaves out; the
+    package.json is restored byte for byte and the payload's copies removed whatever happens. The
+    tarball, whose integrity npm_integrity gives."""
     import shutil
     manifest_path = source / 'package.json'
     original = manifest_path.read_bytes()
@@ -728,12 +733,15 @@ def _pack_with_payload(source, manifest, payload, out, run):
             copied.append(source / path.name)
         manifest_path.write_text(json.dumps(local, indent=2) + '\n', encoding='utf-8')
         out.mkdir(parents=True, exist_ok=True)
-        result = run(['npm', 'pack', '--json', '--ignore-scripts', '--pack-destination', str(out)], cwd=source,
-                     capture_output=True, text=True, check=True)
+        command = (['bun', 'pm', 'pack', '--quiet', '--ignore-scripts', '--destination', str(out)] if bun else
+                   ['npm', 'pack', '--json', '--ignore-scripts', '--pack-destination', str(out)])
+        result = run(command, cwd=source, capture_output=True, text=True, check=True)
     finally:
         manifest_path.write_bytes(original)
         for path in copied:
             path.unlink(missing_ok=True)
+    if bun:
+        return _bun_packed(result.stdout, names, out)
     try:
         report = json.loads(result.stdout)[0]
         tarball, packed = out / report['filename'], {f['path'] for f in report['files']}
@@ -746,6 +754,22 @@ def _pack_with_payload(source, manifest, payload, out, run):
     if report.get('integrity') != npm_integrity(tarball):
         raise ValueError(f'{tarball.name}: npm pack reported integrity {report.get("integrity")}, the file has '
                          f'{npm_integrity(tarball)}')
+    return tarball
+
+
+def _bun_packed(stdout, names, out):
+    """The tarball `bun pm pack --quiet` named, which must hold every payload file."""
+    import tarfile
+    lines = str(stdout).strip().splitlines()
+    tarball = out / Path(lines[-1].strip()).name if lines else None
+    if tarball is None or not tarball.is_file():
+        raise ValueError(f'bun pm pack named no tarball: {str(stdout).strip()[-300:]}')
+    with tarfile.open(tarball) as archive:
+        packed = {m[len('package/'):] for m in archive.getnames() if m.startswith('package/')}
+    missing = [n for n in names if n not in packed]
+    if missing:
+        raise ValueError(f'bun pm pack left {", ".join(missing)} out of {tarball.name}: the job-local files list did not '
+                         'take, and the package would load no addon')
     return tarball
 
 
@@ -781,7 +805,18 @@ def _rewrite_npm(path, data, wanted):
     return expected
 
 
+def _npm_lock_name(directory):
+    """The lock a consumer directory holds: Bun's where it has one."""
+    return bun_lock.LOCK if bun_lock.present(directory) else 'package-lock.json'
+
+
 def _npm_lock_entry(directory, package):
+    """`package` in the directory's lock, in the shape npm's holds it (bun_lock.entry)."""
+    if bun_lock.present(directory):
+        try:
+            return bun_lock.entry(directory, package)
+        except (OSError, ValueError, TypeError, IndexError) as error:
+            raise ValueError(f'{directory / bun_lock.LOCK} cannot be read as a Bun lock: {error}') from None
     lock = directory / 'package-lock.json'
     try:
         packages = json.loads(lock.read_text(encoding='utf-8')).get('packages') or {}
@@ -794,7 +829,8 @@ def wire_npm(root, env, run=_npm_run, environ=None):
     """The pinned package packed with this leg's artifacts (a job-local files list, since the
     committed whitelist excludes every addon), and each consumer's direct dependency on it
     rewritten to `file:<that tarball>`, its peer to the pin's exact version, and its lock
-    regenerated (`npm install --package-lock-only`) to resolve the tarball. A consumer naming the
+    regenerated (`bun install --lockfile-only`, or npm's for a package-lock.json) to resolve the
+    tarball. A consumer naming the
     WASI package gets it packed by npm_package.pack_wasi as a release packs it; on the consumer
     tests' leg, which stages every addon, the whole set the release publishes is packed for the
     job's own registry, and <NAME>_TARBALLS names it to the job's later steps ($GITHUB_ENV)."""
@@ -831,7 +867,8 @@ def wire_npm(root, env, run=_npm_run, environ=None):
             raise ValueError(f'{path} has an overrides entry for {package}: npm refuses an override of a direct '
                              'dependency (EOVERRIDE); the wiring rewrites the dependency itself')
     out.mkdir(parents=True, exist_ok=True)
-    tarballs = {package: (_pack_with_payload(source, manifest, payload, out, run), payload)}
+    bun = any(bun_lock.present(path.parent) for path, _, _ in consumers)
+    tarballs = {package: (_pack_with_payload(source, manifest, payload, out, run, bun), payload)}
     wasi_files = [p for p in payload if cfg.node_wasi and p.parent.name == f'node-{cfg.node_wasi}']
     record = {'packages': {}}
     if _complete_set(cfg, payload):
@@ -873,14 +910,15 @@ def wire_npm(root, env, run=_npm_run, environ=None):
         _rewrite_npm(path, data, wanted)
         for (section, dep), spec in sorted(wanted.items()):
             print(f'{relative}: {section} {dep} = {spec}', flush=True)
-        run(['npm', 'install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'], cwd=path.parent,
-            check=True)
+        relock = (['bun', 'install', '--lockfile-only', '--ignore-scripts'] if bun_lock.present(path.parent) else
+                  ['npm', 'install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'])
+        run(relock, cwd=path.parent, check=True)
         for dep in sorted({dep for (section, dep) in entries if section != NPM_PEER}):
             entry = _npm_lock_entry(path.parent, dep) or {}
             resolved = str(entry.get('resolved', ''))
             target = (path.parent / resolved[len('file:'):]).resolve() if resolved.startswith('file:') else None
             if target != tarballs[dep][0].resolve() or entry.get('integrity') != npm_integrity(tarballs[dep][0]):
-                raise ValueError(f'{path.parent.relative_to(root).as_posix()}/package-lock.json resolves {dep} from '
+                raise ValueError(f'{path.parent.relative_to(root).as_posix()}/{_npm_lock_name(path.parent)} resolves {dep} from '
                                  f'{resolved or "nothing"} ({entry.get("integrity")}), not the pinned '
                                  f'{tarballs[dep][0].relative_to(root).as_posix()}: the rewrite was not used')
     (out / NPM_RECORD).write_text(json.dumps(record, indent=2, sort_keys=True) + '\n', encoding='utf-8')

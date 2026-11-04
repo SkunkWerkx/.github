@@ -282,9 +282,11 @@ case "$binding" in
   # A pinned companion (.companions/env): the build container takes the Cargo patch for both
   # workspaces (companion_cargo) and points typescript/'s dependency at the /work copy of the
   # tarball the host packed with this rid's addon (companion_npm wire, which regenerates and
-  # proves the lock); after `npm ci`, and before the build and the suite, the installed package
-  # is proven to be that tarball's. Bun's image has no npm: companion_npm unpack installs the
-  # same tarball into node_modules and proves it, before `bun run test:bun`.
+  # proves the lock); after the install, and before the build and the suite, the installed
+  # package is proven to be that tarball's. Node's image has no Bun, so it takes the musl build
+  # from Bun's latest release, as `oven/bun:alpine` below floats on it. Bun's
+  # image installs nothing: companion_npm unpack puts the same tarball into node_modules and
+  # proves it, before `bun run test:bun`.
   node)
     addon=$(mktemp -d)
     trap 'rm -rf "$addon"' EXIT
@@ -296,6 +298,11 @@ case "$binding" in
       . "$HOME/.cargo/env"
       echo "== node $(node --version), $(rustc -vV | sed -n "s/^host: //p"), Alpine $(cat /etc/alpine-release), $RID"
       (cd /src && tar --exclude=target --exclude=node_modules --exclude="*.node" -cf - rust typescript) | tar -C /work -xf -
+      apk add --no-cache unzip >/dev/null
+      case "$(uname -m)" in aarch64) bun_arch=aarch64 ;; *) bun_arch=x64 ;; esac
+      curl --proto "=https" --tlsv1.2 -sSfL -o /tmp/bun.zip "https://github.com/oven-sh/bun/releases/latest/download/bun-linux-$bun_arch-musl.zip"
+      unzip -q -j /tmp/bun.zip -d /usr/local/bin
+      echo "== bun $(bun --version)"
       . /companion.sh
       companion_cargo /src /work /work/rust /work/typescript
       companion_npm /src /work /forge /work/typescript wire
@@ -304,9 +311,9 @@ case "$binding" in
       export RUSTFLAGS="-C target-feature=-crt-static -L native=/unwind"
       export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=gcc CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=gcc
       cd /work/typescript
-      npm ci || exit 1
+      { if [ -f bun.lock ]; then bun install --frozen-lockfile; else npm ci; fi; } || exit 1
       companion_npm /src /work /forge /work/typescript origin --installed
-      npm run build && npm test || exit 1
+      bun run build && bun run test || exit 1
       for wrapper in index.js index.d.ts binding.js binding.d.ts; do
         cmp "$wrapper" "/src/typescript/$wrapper" || { echo "::error::napi build rewrote typescript/$wrapper"; exit 1; }
       done
@@ -332,8 +339,8 @@ case "$binding" in
       companion_npm /src /work /forge /work/typescript unpack
       cd /work/typescript
       echo "== bun $(bun --version), Alpine $(cat /etc/alpine-release), $RID"
-      # The package script test:bun, as the hosted legs run it through npm: its flags, a
-      # timeout among them, hold here too.
+      # The package script test:bun, as the hosted legs run it: its flags, a timeout among them,
+      # hold here too.
       bun run test:bun
     '
     cp "$addon"/*.node "$lib_dir/"

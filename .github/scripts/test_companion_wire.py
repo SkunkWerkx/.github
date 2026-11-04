@@ -748,6 +748,72 @@ def tar_members(tarball):
         return {m.name: archive.extractfile(m).read() for m in archive.getmembers() if m.isfile()}
 
 
+class FakeBun:
+    """Bun as the wiring runs it: `pm pack --quiet` packs as npm_pack does and prints the tarball;
+    `install --lockfile-only` writes each `file:` dependency as Bun does (the absolute path, the
+    tarball's integrity), or leaves the lock alone with `takes=False`."""
+    def __init__(self, takes=True):
+        self.calls, self.takes = [], takes
+
+    def __call__(self, argv, cwd=None, check=False, capture_output=False, text=False, **_):
+        argv = list(map(str, argv))
+        self.calls.append(argv)
+        assert argv[0] == 'bun', argv
+        if argv[1:3] == ['pm', 'pack']:
+            out = Path(argv[argv.index('--destination') + 1])
+            report = npm_pack(cwd, out)
+            return subprocess.CompletedProcess(argv, 0, str(out / report[0]['filename']) + '\n', '')
+        assert argv[1:3] == ['install', '--lockfile-only'], argv
+        if self.takes:
+            manifest = json.loads((Path(cwd) / 'package.json').read_text())
+            packages = {}
+            for section in ('dependencies', 'devDependencies', 'optionalDependencies'):
+                for name, spec in (manifest.get(section) or {}).items():
+                    if spec.startswith('file:'):
+                        packages[name] = [f'{name}@{spec[5:]}', {}, npm_integrity(spec[5:])]
+            (Path(cwd) / 'bun.lock').write_text(json.dumps({'packages': packages}, indent=2) + '\n')
+        return subprocess.CompletedProcess(argv, 0, '', '')
+
+
+class WireBunTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        quiet(self)
+        self.root = npm_stage(checkout(Path(self.tmp.name) / 'consumer', 'npm'), ADDON)
+        for directory in (self.root / 'typescript', self.root / 'typescript' / 'browser-smoke'):
+            (directory / 'package-lock.json').unlink()
+            (directory / 'bun.lock').write_text('{"packages": {},}\n')
+
+    def wire(self, bun):
+        with mock.patch('npm_package.pack_wasi', fake_pack_wasi):
+            companion_wire.wire_npm(self.root, NPM_ENV, run=bun, environ={})
+
+    def test_a_bun_lock_packs_and_relocks_with_bun(self):
+        bun = FakeBun()
+        self.wire(bun)
+        self.assertEqual(bun.calls[0][:3], ['bun', 'pm', 'pack'])
+        self.assertIn(['bun', 'install', '--lockfile-only', '--ignore-scripts'], bun.calls)
+        entry = companion_wire._npm_lock_entry(self.root / 'typescript', PACKAGE)
+        self.assertEqual(entry['resolved'], f'file:{(self.root / TARBALL).as_posix()}')
+        self.assertEqual(entry['integrity'], npm_integrity(self.root / TARBALL))
+
+    def test_a_lock_that_ignores_the_rewrite_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'typescript/bun.lock resolves .* from nothing'):
+            self.wire(FakeBun(takes=False))
+
+    def test_a_pack_without_the_payload_is_rejected(self):
+        class Whitelist(FakeBun):
+            def __call__(self, argv, cwd=None, **kwargs):
+                if list(map(str, argv))[1:3] == ['pm', 'pack']:
+                    data = json.loads((Path(cwd) / 'package.json').read_text())
+                    data['files'] = [f for f in data['files'] if not f.endswith('.node')]
+                    (Path(cwd) / 'package.json').write_text(json.dumps(data))
+                return super().__call__(argv, cwd=cwd, **kwargs)
+        with self.assertRaisesRegex(ValueError, 'bun pm pack left .*\\.node out of'):
+            self.wire(Whitelist())
+
+
 class WireNpmTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

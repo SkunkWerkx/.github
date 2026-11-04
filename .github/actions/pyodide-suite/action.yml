@@ -47,6 +47,9 @@ runs:
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: "26"
+    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version: latest
 
     # The scripts live beside this action and are generic over the crate, so every Hyper*
     # repo runs the same ones. They are copied next to their own node_modules because ESM
@@ -80,7 +83,7 @@ runs:
         cp "$GITHUB_ACTION_PATH/suite-pyodide.mjs" "$GITHUB_ACTION_PATH/browser-pyodide.mjs" \
           "$GITHUB_ACTION_PATH/companion-guard.mjs" "$work/"
         cd "$work"
-        npm install --no-save --no-audit --no-fund "pyodide@$PYODIDE_VERSION" puppeteer-core
+        bun add --no-save --no-summary "pyodide@$PYODIDE_VERSION" puppeteer-core
         node suite-pyodide.mjs "$CRATE" "$VERSION" "$wheel" "$tests"
         {
           echo "PYODIDE_SUITE_WORK=$work"

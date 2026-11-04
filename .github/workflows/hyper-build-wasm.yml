@@ -107,7 +107,7 @@ on:
       ruby_wasm_smoke:
         description: >
           Path to the Ruby binding's ruby.wasm smoke directory (e.g. ruby/wasm-smoke): a
-          Gemfile for `rbwasm build`, test.rb, node-test.mjs, index.html and an npm lockfile
+          Gemfile for `rbwasm build`, test.rb, node-test.mjs, index.html and a bun.lock
           for @ruby/wasm-wasi. Given, the Magnus extension is built from this commit for
           wasm32-wasip1 once per entry in ruby_wasm_abis, attested and uploaded as
           ruby-wasm-{abi} (the archives the {crate}-wasm gem carries), and the gem packed
@@ -144,7 +144,7 @@ on:
         type: boolean
         default: false
       node_version:
-        description: "The Node.js that builds, tests and packs the WASI module (npm and the napi CLI)"
+        description: "The Node.js that builds, tests and packs the WASI module (npm's pack and the napi CLI)"
         required: false
         type: string
         default: "26"
@@ -200,6 +200,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node_version }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
 
       # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
       # the release guard alone in a release dispatch, and otherwise the Cargo patch and the npm
@@ -216,8 +219,8 @@ jobs:
         working-directory: typescript
         run: |
           set -euo pipefail
-          npm ci
-          npm run build:wasi
+          if [ -f bun.lock ]; then bun install --frozen-lockfile; else npm ci; fi
+          bun run build:wasi
           cd "$GITHUB_WORKSPACE"
           ls -l "typescript/$CRATE.wasm32-wasip1.wasm" typescript/"$CRATE".wasip1*
           git diff --exit-code -- typescript/index.js typescript/index.d.ts typescript/binding.js typescript/binding.d.ts
@@ -233,8 +236,8 @@ jobs:
         working-directory: typescript
         run: |
           set -euo pipefail
-          NAPI_RS_FORCE_WASI=error npm test
-          npm run typecheck
+          NAPI_RS_FORCE_WASI=error bun run test
+          bun run typecheck
 
       - name: Collect the module and its loaders
         run: |
@@ -252,7 +255,15 @@ jobs:
       - name: The package bundled into a page, in headless Chrome
         run: |
           set -euo pipefail
-          (cd typescript/browser-smoke && npm ci && npm install --no-save "$GITHUB_WORKSPACE"/npm-wasi/*.tgz && npm run build)
+          (
+            cd typescript/browser-smoke
+            if [ -f bun.lock ]; then
+              bun install --frozen-lockfile && bun add --no-save "$GITHUB_WORKSPACE"/npm-wasi/*.tgz
+            else
+              npm ci && npm install --no-save "$GITHUB_WORKSPACE"/npm-wasi/*.tgz
+            fi
+            bun run build
+          )
           (cd typescript/browser-smoke/dist && exec python3 -m http.server 8092 --bind 127.0.0.1 >/dev/null 2>&1) &
           server=$!
           sleep 1
@@ -797,6 +808,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "26"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

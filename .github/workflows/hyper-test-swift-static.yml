@@ -85,6 +85,12 @@ jobs:
       # browser-wasm on x64 only, where the runner image's Chrome is the one the other
       # browser checks (hyper-build-wasm.yml) already run on; the module is the same bytes
       # on either architecture.
+      # The browser check installs its WASI shim on the host.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: matrix.os == 'ubuntu-26.04'
+        with:
+          bun-version: latest
+
       - name: Swift ${{ inputs.swift_version }} — glibc consumer, musl, WebAssembly and the browser
         uses: ./.hyperforge/.github/actions/swift-static-suite
         with:

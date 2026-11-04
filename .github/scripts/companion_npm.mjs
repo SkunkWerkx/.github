@@ -7,16 +7,17 @@
 //
 //   companion_npm.mjs wire <work> <package-dir>
 //       Each dependency the host pointed at a pinned tarball (`file:` a host path, absent here)
-//       pointed at the <work> copy, the lock regenerated (npm install --package-lock-only), then
-//       the lock proven as `origin` does.
+//       pointed at the <work> copy, the lock regenerated (bun install --lockfile-only beside a
+//       bun.lock, npm install --package-lock-only beside a package-lock.json), then the lock proven
+//       as `origin` does.
 //   companion_npm.mjs origin <work> <package-dir> [--installed]
 //       The lock resolves each wired package from its <work> tarball (`file:`), with the
-//       integrity the host's `npm pack` reported and the file has; the tarball holds the leg's
-//       payload byte for byte as SHA256SUMS lists it. --installed, after `npm ci` and before the
+//       integrity the host's pack gave it and the file has; the tarball holds the leg's
+//       payload byte for byte as SHA256SUMS lists it. --installed, after the install and before the
 //       suite: the package resolves from <package-dir>/node_modules, whose payload is the pin's
 //       and whose package.json and files are the tarball's, whole.
 //   companion_npm.mjs unpack <work> <package-dir>
-//       For an image with no npm (Bun's): each wired package's tarball, its integrity checked,
+//       For an image that runs a suite without installing (Bun's): each wired package's tarball, its integrity checked,
 //       unpacked into <package-dir>/node_modules, then proven as --installed does.
 //
 // Every failure prints `::error::npm (<package-dir>): found <origin>, expected <origin>` and
@@ -118,11 +119,29 @@ const proveTarball = (dep) => {
   return tarball
 }
 
+// Bun's text lock: JSON with trailing commas. A value is [`name@version`, registry, metadata,
+// integrity], or [`name@path`, metadata, integrity] for a tarball.
+const usesBun = existsSync(join(dir, 'bun.lock'))
+const parseBunLock = (text) => JSON.parse(text.replace(/("(?:[^"\\]|\\.)*")|,(\s*[}\]])/g, (all, string, close) => string ?? close))
+const lockEntry = (dep) => {
+  const lockPath = join(dir, usesBun ? 'bun.lock' : 'package-lock.json')
+  if (!existsSync(lockPath)) return undefined
+  if (!usesBun) return (readJson(lockPath).packages ?? {})[`node_modules/${dep}`]
+  const value = (parseBunLock(readFileSync(lockPath, 'utf8')).packages ?? {})[dep]
+  if (!value) return undefined
+  const spec = value[0].slice(value[0].indexOf('@', 1) + 1)
+  const isPath = /^(file:|\.{0,2}\/|[A-Za-z]:[\\/])/.test(spec)
+  return {
+    version: isPath ? version : spec,
+    resolved: isPath ? `file:${spec.replace(/^file:/, '')}` : typeof value[1] === 'string' && value[1] ? value[1] : 'the registry',
+    integrity: value.find((item, index) => index > 0 && typeof item === 'string' && item.startsWith('sha')),
+  }
+}
+
 const proveLock = (dep) => {
   const tarball = proveTarball(dep)
-  const lockPath = join(dir, 'package-lock.json')
-  const entry = existsSync(lockPath) ? (readJson(lockPath).packages ?? {})[`node_modules/${dep}`] : undefined
-  if (!entry) throw new OriginError(`no node_modules/${dep} entry in package-lock.json`)
+  const entry = lockEntry(dep)
+  if (!entry) throw new OriginError(`no node_modules/${dep} entry in ${usesBun ? 'bun.lock' : 'package-lock.json'}`)
   const resolved = String(entry.resolved ?? '')
   if (!resolved.startsWith('file:')) throw new OriginError(`${dep} ${entry.version} from ${resolved || 'nowhere'} (a registry)`)
   if (resolve(dir, resolved.slice('file:'.length)) !== tarball) throw new OriginError(`${dep} ${entry.version} from ${resolved}`)
@@ -156,7 +175,8 @@ const proveWhole = (dep, target) => {
     execFileSync('tar', ['-xzf', join(work, record.packages[dep].tarball), '-C', unpacked])
     const packedRoot = join(unpacked, 'package')
     const packed = new Set(filesUnder(packedRoot))
-    const present = filesUnder(target)
+    // Bun leaves .bun-tag at the package's top, recording the tarball it installed.
+    const present = filesUnder(target).filter((rel) => !(usesBun && rel === '.bun-tag'))
     for (const rel of present) {
       if (!packed.has(rel)) throw new OriginError(`${relative(dir, join(target, rel))}, which the tarball does not hold`)
       if (!readFileSync(join(target, rel)).equals(readFileSync(join(packedRoot, rel)))) {
@@ -207,10 +227,14 @@ try {
     }
     writeFileSync(join(dir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`)
     console.log(`${binding}: ${wired.map((dep) => `${dep} = file:${join(work, record.packages[dep].tarball)}`).join(', ')}`)
-    execFileSync('npm', ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'], {
-      cwd: dir,
-      stdio: 'inherit',
-    })
+    if (usesBun) {
+      execFileSync('bun', ['install', '--lockfile-only', '--ignore-scripts'], { cwd: dir, stdio: 'inherit' })
+    } else {
+      execFileSync('npm', ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'], {
+        cwd: dir,
+        stdio: 'inherit',
+      })
+    }
   }
   for (const dep of wired) {
     current = dep

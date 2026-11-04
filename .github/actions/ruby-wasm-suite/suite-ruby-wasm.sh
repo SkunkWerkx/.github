@@ -153,7 +153,7 @@ for stage in "$@"; do
       echo "ruby.wasm: $(wc -c <"$smoke/ruby.wasm") bytes"
       ;;
     node)
-      (cd "$smoke" && npm ci && node node-test.mjs ruby.wasm)
+      (cd "$smoke" && { if [ -f bun.lock ]; then bun install --frozen-lockfile; else npm ci; fi; } && node node-test.mjs ruby.wasm)
       ;;
     browser)
       site="$out/site"

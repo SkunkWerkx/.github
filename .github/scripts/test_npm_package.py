@@ -59,7 +59,7 @@ class FakeNpm:
                 if (cwd / name).is_file():
                     entries.append((f'package/{name}', (cwd / name).read_bytes()))
             write_tar(out / npm_filename(manifest['name'], manifest['version']), entries)
-        elif tool.startswith('npm') and cmd[1] == 'ci':
+        elif (tool.startswith('npm') and cmd[1] == 'ci') or cmd[:2] == ['bun', 'install']:
             pass
         else:
             raise AssertionError(f'unexpected command {cmd}')
@@ -188,6 +188,29 @@ class NpmPackageTests(unittest.TestCase):
             npm_package.check_tarballs([*paths, extra], 'hypercast', '0.10.0', CFG, WASI_RUNTIME_PINS)
         with self.assertRaisesRegex(ValueError, 'differ'):
             npm_package.check_tarballs(paths, 'hypercast', '0.10.0', CFG, {**WASI_RUNTIME_PINS, '@emnapi/core': '1.5.1'})
+
+    def test_lockfile_versions_reads_a_bun_lock_first(self):
+        (self.package / 'bun.lock').write_text('{"packages": {'
+                                               '"@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.0.0", "", {}, "sha512-a"],'
+                                               '"@emnapi/core": ["@emnapi/core@1.5.0", "", {}, "sha512-b"],'
+                                               '"@emnapi/runtime": ["@emnapi/runtime@1.5.0", "", {}, "sha512-c"],},}')
+        self.assertEqual(npm_package.lockfile_versions(self.package, WASI_RUNTIME), WASI_RUNTIME_PINS)
+        with self.assertRaisesRegex(ValueError, 'bun.lock does not resolve left-pad'):
+            npm_package.lockfile_versions(self.package, ('left-pad',))
+
+    def test_a_bun_lock_stages_with_bun_and_still_packs_with_npm(self):
+        (self.package / 'bun.lock').write_text('{"packages": {'
+                                               '"@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.0.0", "", {}, "sha512-a"],'
+                                               '"@emnapi/core": ["@emnapi/core@1.5.0", "", {}, "sha512-b"],'
+                                               '"@emnapi/runtime": ["@emnapi/runtime@1.5.0", "", {}, "sha512-c"],},}')
+        fake = FakeNpm()
+        code = npm_package.main(['pack-wasi', '--package', str(self.package), '--artifact', str(self.wasi_artifact),
+                                 '--out', str(self.out), '--root', str(self.tmp), '--work', str(self.tmp / 'work')],
+                                runner=fake, cfg=CFG)
+        self.assertEqual(code, 0)
+        self.assertEqual(list(fake.commands[0][0]), ['bun', 'install', '--frozen-lockfile', '--ignore-scripts'])
+        self.assertEqual(Path(fake.commands[2][0][0]).name.split('.')[0], 'npm')
+        self.assertEqual(fake.commands[2][0][1], 'pack')
 
     def test_pack_wasi_cli_stages_creates_dirs_and_packs_the_wasi_dir_only(self):
         fake = FakeNpm()

@@ -40,6 +40,7 @@ import tempfile
 # Only the standard library and hyper_config load at import, so a block-less leg's `plan` runs
 # on any python3 hyper_config runs on; tomllib (3.11) and companion_map load where used.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bun_lock  # noqa: E402
 import hyper_config  # noqa: E402
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -289,6 +290,19 @@ def _npm_findings(root, scope, name):
             if package.fullmatch(dep) and isinstance(entry, dict) and (
                     entry.get('link') is True or str(entry.get('resolved', '')).startswith('file:')):
                 yield f'{_rel(root, path)} resolves {dep} from a path (file:)'
+    yield from _bun_findings(root, package)
+
+
+def _bun_findings(root, package):
+    for path in _walk(root, [bun_lock.LOCK]):
+        try:
+            entries = list(bun_lock.entries(bun_lock.read(path.parent)))
+        except (ValueError, TypeError, IndexError):
+            yield f'{_rel(root, path)} cannot be parsed as a Bun lock, so it could hide an override'
+            continue
+        for _, dep, _, resolved, _ in entries:
+            if package.fullmatch(dep) and resolved.startswith(('file:', 'link:')):
+                yield f'{_rel(root, path)} resolves {dep} from a path ({resolved.split(":", 1)[0]}:)'
 
 
 def _python_findings(root, name):

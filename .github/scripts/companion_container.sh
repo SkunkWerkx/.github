@@ -31,11 +31,12 @@
 #       The tarballs the host packed (.companions/<name>-npm/, with its wired.json) and the leg's
 #       artifacts copied under <work>, then <scripts>/companion_npm.mjs under the image's Node (or
 #       Bun, in an image without Node). `wire` points <package-dir>'s dependencies at the <work>
-#       tarballs (the host's `file:` names a host path), regenerates its lock with
-#       `npm install --package-lock-only` and proves it; `origin` proves the lock (the `file:`
-#       tarball, its integrity, the leg's payload inside), and after `npm ci` with --installed
-#       the package Node resolves from <package-dir>/node_modules; `unpack`, for an image with
-#       no npm (Bun's), installs each wired tarball there itself and proves it.
+#       tarballs (the host's `file:` names a host path), regenerates its lock (`bun install
+#       --lockfile-only`, or npm's beside a package-lock.json) and proves it; `origin` proves the
+#       lock (the `file:` tarball, its integrity, the leg's payload inside), and after the install
+#       with --installed the package Node resolves from <package-dir>/node_modules; `unpack`, for
+#       an image that runs a suite without installing (Bun's), installs each wired tarball there
+#       itself and proves it.
 #   companion_ruby <src> <work> <scripts> wire|origin
 #       A Ruby image, which runs the suite without Bundler (`gem install` of the gemspec's
 #       runtime dependencies): `wire` copies the pinned gem, with the binaries the host placed
