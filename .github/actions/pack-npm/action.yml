@@ -23,7 +23,7 @@ inputs:
   node_version:
     description: "The Node.js that runs npm and the napi CLI"
     required: false
-    default: "24"
+    default: "26"
 
 runs:
   using: composite

@@ -377,7 +377,7 @@ class NpmAndCranActionTests(unittest.TestCase):
 
     def test_pack_npm_verifies_every_addon_then_packs_ten_tarballs_through_npm_package_py(self):
         action = self.action('pack-npm')
-        self.assertEqual(action['inputs']['node_version']['default'], '24')
+        self.assertEqual(action['inputs']['node_version']['default'], '26')
         for name in ('run_id', 'source_sha', 'token'):
             self.assertIs(action['inputs'][name]['required'], True)
         download = self.uses('pack-npm', 'actions/download-artifact@')
@@ -458,7 +458,7 @@ class NpmAndCranActionTests(unittest.TestCase):
             self.assertIs(action['inputs'][name]['required'], True)
         self.assertEqual(action['inputs']['publish']['default'], 'true')
         self.assertEqual(action['inputs']['publication_run_id']['default'], '')
-        self.assertEqual(action['inputs']['node_version']['default'], '24')
+        self.assertEqual(action['inputs']['node_version']['default'], '26')
         steps = {s.get('name') or s.get('uses'): s for s in self.steps('publish-npm')}
         node = self.uses('publish-npm', 'actions/setup-node@')
         self.assertEqual(node[0]['with']['registry-url'], 'https://registry.npmjs.org')

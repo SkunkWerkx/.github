@@ -34,7 +34,7 @@ inputs:
   node_version:
     description: "The Node.js whose npm publishes (npm 11.5.1 or later exchanges the OIDC token)"
     required: false
-    default: "24"
+    default: "26"
 
 runs:
   using: composite

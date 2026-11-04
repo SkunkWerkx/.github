@@ -762,7 +762,7 @@ class PrepareReleaseContracts(unittest.TestCase):
     def test_node_is_set_up_only_when_a_typescript_package_exists(self):
         self.assertRegex(self.text, r"(?s)- uses: actions/setup-node@[0-9a-f]{40} # v[\d.]+\n"
                          r"\s+if: hashFiles\('typescript/package.json'\) != ''\n"
-                         r"\s+with:\n\s+node-version: '24'")
+                         r"\s+with:\n\s+node-version: '26'")
         self.assertLess(self.text.index('actions/setup-node@'),
                         self.text.index('Bump every committed manifest'))
 
