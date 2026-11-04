@@ -443,6 +443,9 @@ jobs:
             # An optional interop test (HyperTabular's numpy one) whose package this job does
             # not install, as the test-python legs do not.
             if [[ "$line" == *"could not import 'numpy'"* ]]; then continue; fi
+            # HyperCast's test against a real 1.0 core, which only runs when a caller unpacks a 1.0
+            # package for it; this job proves the sdist, and unpacks nothing.
+            if [[ "$line" == *"HYPERCAST_CORE_1_0 names no 1.0 package"* ]]; then continue; fi
             unexpected=1
           done < "$skips"
           if [[ "$unexpected" -ne 0 ]]; then
