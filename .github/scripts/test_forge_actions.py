@@ -378,6 +378,15 @@ class NpmAndCranActionTests(unittest.TestCase):
     def test_pack_npm_verifies_every_addon_then_packs_ten_tarballs_through_npm_package_py(self):
         action = self.action('pack-npm')
         self.assertEqual(action['inputs']['node_version']['default'], '26')
+        self.assertEqual(action['inputs']['bun_version']['default'], 'latest')
+        # npm_package.py stages with `bun install` beside a bun.lock, and the consumers' pack-npm
+        # jobs set up no toolchain of their own: without this step packing dies on a missing bun.
+        steps = self.steps('pack-npm')
+        setup_bun = self.uses('pack-npm', 'oven-sh/setup-bun@')
+        self.assertEqual(len(setup_bun), 1)
+        self.assertEqual(setup_bun[0]['with']['bun-version'], '${{ inputs.bun_version }}')
+        pack = next(s for s in steps if 'npm_package.py' in s.get('run', ''))
+        self.assertLess(steps.index(setup_bun[0]), steps.index(pack))
         for name in ('run_id', 'source_sha', 'token'):
             self.assertIs(action['inputs'][name]['required'], True)
         download = self.uses('pack-npm', 'actions/download-artifact@')
