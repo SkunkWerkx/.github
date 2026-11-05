@@ -1121,7 +1121,7 @@ class FetchStepTests(unittest.TestCase):
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
             'Stage the core where a dev-loop build looks': '0fda8b8ce8153626',
             'Build the JNI library': '16a5a04fe2d76414', 'Place both libraries for the Java suites': '92d3295521c6d0ff',
-            'Test Java (JNI) on the primary JDK and the floor': 'a7513abc7c66dc9c',
+            'Test Java (JNI) on the primary JDK and the floor': 'cedef917b8a99ff7',
             'Place native lib for Java in-repo testing': '663f3b398764f341',
             "Test Java bindings against this platform's native lib": 'd712536c8f777800'},
         ('hyper-test-java.yml', 'test-musl'): {'Validate Forge workflow revision': 'b43ed1cffc80ac65'},
@@ -1129,7 +1129,7 @@ class FetchStepTests(unittest.TestCase):
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
             'Cross-build the JNI library for x86_64': 'c4e2ef0fc7638d4b',
             'Place both libraries for the Java suites': 'e081616a7d48018f',
-            'Test Java (JNI) on an x64 JDK, primary and floor': '798089259f35ec71'},
+            'Test Java (JNI) on an x64 JDK, primary and floor': '118c4e06e1f65ffa'},
         ('hyper-test-csharp.yml', 'test'): {
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
             'Stage the core where a dev-loop build looks': '0fda8b8ce8153626',
