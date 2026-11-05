@@ -248,7 +248,7 @@ build_dir_of() {
     part="${rest%%/*}"
     rest="${rest#*/}"
     prefix="${prefix:+$prefix/}$part"
-    printf '%s\n' "$part" | grep -qE "$build_dirs" || continue
+    printf '%s\n' "$part" | grep -E "$build_dirs" >/dev/null || continue
     git -C "$repo" check-ignore -q -- "$prefix" || continue
     [ -z "$(git --literal-pathspecs -C "$repo" ls-files -- "$prefix" | head -1)" ] || continue
     printf '%s\n' "$prefix"

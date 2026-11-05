@@ -32,6 +32,7 @@ from the same inputs is byte-identical.
   inputs    --artifacts DIR             every library `pack` reads there, one per line, for the
                                         attestation check before it
   pack      --artifacts DIR --out DIR   every archive, from the CI run's downloaded artifacts
+                                        (--skip RID leaves one out, --only RID packs just it)
   assemble  --rid RID --static F [--shared F] --out DIR
                                         one unpacked archive, from local files (a smoke test)
 """
@@ -219,10 +220,14 @@ def inputs(cfg, artifacts):
     return [path for rid in C_RIDS for path in artifact_inputs(cfg, artifacts, rid) if path is not None]
 
 
-def pack(cfg, root, artifacts, out, skip=()):
-    """Every C_RIDS archive but those in skip. A release skips none; a pr-mode CI run skips
-    osx-x64, whose library hyper-build-native.yml builds only in release mode."""
-    unknown = sorted(set(skip) - set(C_RIDS))
+def pack(cfg, root, artifacts, out, skip=(), only=()):
+    """Every C_RIDS archive but those in skip, or just those in only. A release skips none; a
+    pr-mode CI run skips osx-x64, whose library hyper-build-native.yml builds only in release
+    mode. A consumer's Apple mobile job packs its four archives with only, from static-libs
+    alone, so it starts before the native legs finish: the same bytes pack-c packs."""
+    if skip and only:
+        raise ValueError('skip and only are alternatives')
+    unknown = sorted((set(skip) | set(only)) - set(C_RIDS))
     if unknown:
         raise ValueError(f'not a C platform: {", ".join(unknown)}')
     version = swift_release.crate_version(root)
@@ -231,7 +236,7 @@ def pack(cfg, root, artifacts, out, skip=()):
     staging = out / '.trees'
     built = []
     for rid in C_RIDS:
-        if rid in skip:
+        if rid in skip or (only and rid not in only):
             continue
         shared, static = artifact_inputs(cfg, artifacts, rid)
         built.append(pack_tree(assemble(cfg, root, rid, version, static, shared, staging), rid, out))
@@ -250,13 +255,15 @@ def main():
     parser.add_argument('--shared', type=Path, help='assemble: the shared library (none for wasi-wasm32)')
     parser.add_argument('--skip', action='append', default=[], metavar='RID',
                         help='pack: leave this platform out (repeatable; CI in pr mode, never a release)')
+    parser.add_argument('--only', action='append', default=[], metavar='RID',
+                        help='pack: this platform alone (repeatable; never a release)')
     args = parser.parse_args()
     cfg = hyper_config.load(args.root)
     if args.mode == 'inputs':
         for path in inputs(cfg, args.artifacts):
             print(path)
     elif args.mode == 'pack':
-        for path in pack(cfg, args.root, args.artifacts, args.out, args.skip):
+        for path in pack(cfg, args.root, args.artifacts, args.out, args.skip, args.only):
             print(f'{swift_release.sha256(path)}  {path.name}')
     else:
         print(assemble(cfg, args.root, args.rid, swift_release.crate_version(args.root), args.static, args.shared,

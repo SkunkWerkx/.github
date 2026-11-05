@@ -79,22 +79,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-26.04
-            rid: linux-x64
-            lib_name: lib${{ inputs.crate }}.so
-          - os: ubuntu-26.04-arm
-            rid: linux-arm64
-            lib_name: lib${{ inputs.crate }}.so
-          - os: xcode-27
-            rid: osx-arm64
-            lib_name: lib${{ inputs.crate }}.dylib
-          - os: windows-2025-vs2026
-            rid: win-x64
-            lib_name: ${{ inputs.crate }}.dll
-          - os: windows-11-vs2026-arm
-            rid: win-arm64
-            lib_name: ${{ inputs.crate }}.dll
+        # A pull request asks whether the code broke, on linux-x64; the other platforms fan out on
+        # the board and a release. Two lists because `exclude` can't remove an `include` row.
+        include: >-
+          ${{ fromJSON(format(inputs.mode == 'pr'
+          && '[
+          {{"os":"ubuntu-26.04","rid":"linux-x64","lib_name":"lib{0}.so"}}
+          ]'
+          || '[
+          {{"os":"ubuntu-26.04","rid":"linux-x64","lib_name":"lib{0}.so"}},
+          {{"os":"ubuntu-26.04-arm","rid":"linux-arm64","lib_name":"lib{0}.so"}},
+          {{"os":"xcode-27","rid":"osx-arm64","lib_name":"lib{0}.dylib"}},
+          {{"os":"windows-2025-vs2026","rid":"win-x64","lib_name":"{0}.dll"}},
+          {{"os":"windows-11-vs2026-arm","rid":"win-arm64","lib_name":"{0}.dll"}}
+          ]',
+          inputs.crate)) }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -262,7 +261,7 @@ jobs:
           path: aot-publish.log
 
   test-musl:
-    if: inputs.csharp
+    if: inputs.csharp && inputs.mode != 'pr'
     strategy:
       fail-fast: false
       matrix:

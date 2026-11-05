@@ -1086,7 +1086,7 @@ class FetchStepTests(unittest.TestCase):
             'The companions this run builds': '0dc39067430cedef', 'The mode this run is in': 'a464654c90805cac',
             'The companions built from the registry': '41daeff08859aa2c',
             'Fetch PIE, and verify its checksum and attestation': '398dfe2df8a8fa28',
-            "The image's PHP is the leg's minor": '7a4946fd61efd2f0',
+            "The image's PHP is the leg's minor": '69200671d13e4008',
             'PHP from the shivammathur/php tap (macOS)': 'e018aa240b8e768c',
             "The leg's PHP is its thread safety": '5f43d3089c1bfa72', 'Composer (macOS)': '151159ac80bde2d6',
             "Point bindgen at one system LLVM, not at Swift's clang": '6047d04ccc1a8ca6',

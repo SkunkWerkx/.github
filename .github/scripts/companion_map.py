@@ -266,6 +266,25 @@ def _workflows(github):
 
 
 _FROM_JSON = re.compile(r'\$\{\{\s*fromJSON\(\s*(inputs\.[\w-]+)\s*\)\s*\}\}')
+_MODE_ROWS = re.compile(r"\$\{\{\s*fromJSON\(\s*(?P<format>format\(\s*)?inputs\.mode == 'pr'\s*&&\s*'(?P<pr>[^']*)'"
+                        r"\s*\|\|\s*'(?P<release>[^']*)'\s*(?:,\s*inputs\.crate\s*\)\s*)?\)\s*\}\}")
+
+
+def matrix_rows(job, mode='release'):
+    """A job's `include` rows, literal or selected by `inputs.mode`: the `pr` or the `release` list
+    of a `fromJSON(inputs.mode == 'pr' && '[...]' || '[...]')`, with `format`'s escapes undone and
+    its `{0}` back to `${{ inputs.crate }}`. None when the job has neither."""
+    include = ((job.get('strategy') or {}).get('matrix') or {}).get('include')
+    if isinstance(include, list):
+        return include
+    found = _MODE_ROWS.fullmatch(include.strip()) if isinstance(include, str) else None
+    if not found:
+        return None
+    text = found[mode]
+    if found['format']:
+        text = text.replace('{{', '\0').replace('}}', '\1').replace('{0}', '${{ inputs.crate }}')
+        text = text.replace('\0', '{').replace('\1', '}')
+    return json.loads(text)
 
 
 def _entries(workflow, job_name, job, scope=None):
@@ -278,8 +297,9 @@ def _entries(workflow, job_name, job, scope=None):
     matrix = (job.get('strategy') or {}).get('matrix')
     if not isinstance(matrix, dict):
         return [{}]
-    if isinstance(matrix.get('include'), list):
-        return matrix['include']
+    rows = matrix_rows(job)
+    if rows is not None:
+        return rows
     if scope:
         matrix = dict(matrix)
         for key, value in matrix.items():

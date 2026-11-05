@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import unittest
 
+import companion_map
 import yaml_lite
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / 'workflows'
@@ -75,7 +76,7 @@ class TestBindingWorkflowTests(unittest.TestCase):
                 _, workflow = load(binding)
                 self.assertEqual('test-musl' in workflow['jobs'], binding in MUSL)
                 if binding in MUSL:
-                    rows = workflow['jobs']['test-musl']['strategy']['matrix']['include']
+                    rows = companion_map.matrix_rows(workflow['jobs']['test-musl'])
                     self.assertEqual({r['rid'] for r in rows}, {'linux-musl-x64', 'linux-musl-arm64'})
 
     def test_uploads_only_the_bindings_names(self):
@@ -94,7 +95,7 @@ class TestBindingWorkflowTests(unittest.TestCase):
             with self.subTest(binding=binding):
                 text, workflow = load(binding)
                 for job in workflow['jobs'].values():
-                    rows = job.get('strategy', {}).get('matrix', {}).get('include', [])
+                    rows = companion_map.matrix_rows(job) or []
                     labels = {r['os'] for r in rows} if rows else {job['runs-on']}
                     self.assertLessEqual(labels, LABELS, labels - LABELS)
                     if job is workflow['jobs']['test']:
@@ -188,9 +189,9 @@ class GoWorkflowTests(unittest.TestCase):
         self.assertNotIn('download-artifact', text)
         self.assertNotIn('cargo', text)
         test, musl = workflow['jobs']['test'], workflow['jobs']['test-musl']
-        self.assertEqual({r['rid'] for r in test['strategy']['matrix']['include']}, RIDS)
-        self.assertEqual({r['rid'] for r in musl['strategy']['matrix']['include']}, {'linux-musl-x64', 'linux-musl-arm64'})
-        labels = {r['os'] for job in (test, musl) for r in job['strategy']['matrix']['include']}
+        self.assertEqual({r['rid'] for r in companion_map.matrix_rows(test)}, RIDS)
+        self.assertEqual({r['rid'] for r in companion_map.matrix_rows(musl)}, {'linux-musl-x64', 'linux-musl-arm64'})
+        labels = {r['os'] for job in (test, musl) for r in companion_map.matrix_rows(job)}
         self.assertLessEqual(labels, LABELS, labels - LABELS)
         setup = next(s for s in test['steps'] if s.get('uses', '').startswith('actions/setup-go'))
         self.assertIs(setup['with']['cache'], False)
@@ -203,6 +204,45 @@ class GoWorkflowTests(unittest.TestCase):
         inputs = workflow['on']['workflow_call']['inputs']
         self.assertEqual(set(inputs), {'mode', 'crate', 'go_version_file'})
         self.assertEqual(inputs['go_version_file']['default'], 'go/go.mod')
+
+
+
+class PullRequestLegs(unittest.TestCase):
+    """A pull request asks whether the code broke: linux-x64 alone. Every other platform runs on
+    the board and a release, so their lists stay whole."""
+    FILES = ['hyper-core', 'hyper-test-csharp', 'hyper-test-go', 'hyper-test-java', 'hyper-test-python',
+             'hyper-test-r', 'hyper-test-ruby', 'hyper-test-swift', 'hyper-test-typescript']
+
+    def jobs(self, name):
+        path = Path(__file__).resolve().parent.parent / 'workflows' / f'{name}.yml'
+        return yaml_lite.load(path.read_text(encoding='utf-8'))['jobs']
+
+    def test_the_main_job_runs_linux_x64_alone_on_a_pull_request(self):
+        for name in self.FILES:
+            job = self.jobs(name)['core' if name == 'hyper-core' else 'test']
+            with self.subTest(name):
+                self.assertEqual([r['rid'] for r in companion_map.matrix_rows(job, 'pr')], ['linux-x64'])
+
+    def test_a_pull_requests_row_is_the_release_row(self):
+        for name in self.FILES:
+            job = self.jobs(name)['core' if name == 'hyper-core' else 'test']
+            with self.subTest(name):
+                release = {r['rid']: r for r in companion_map.matrix_rows(job, 'release')}
+                self.assertEqual(companion_map.matrix_rows(job, 'pr'), [release['linux-x64']])
+                self.assertGreater(len(release), 1)
+
+    def test_the_crate_name_survives_format(self):
+        row = companion_map.matrix_rows(self.jobs('hyper-test-java')['test'], 'pr')[0]
+        self.assertEqual(row['lib_name'], 'lib${{ inputs.crate }}.so')
+        self.assertEqual(row['jni_lib_name'], 'lib${{ inputs.crate }}_jni.so')
+
+    def test_musl_is_off_on_a_pull_request(self):
+        musl = {'hyper-core': 'core-musl', 'hyper-test-csharp': 'test-musl', 'hyper-test-go': 'test-musl',
+                'hyper-test-java': 'test-musl', 'hyper-test-python': 'test-musl', 'hyper-test-ruby': 'test-musl',
+                'hyper-test-typescript': 'test-musl'}
+        for name, job in musl.items():
+            with self.subTest(name):
+                self.assertIn("inputs.mode != 'pr'", self.jobs(name)[job]['if'])
 
 
 if __name__ == '__main__':

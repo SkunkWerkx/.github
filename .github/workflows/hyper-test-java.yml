@@ -67,32 +67,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-26.04
-            rid: linux-x64
-            lib_name: lib${{ inputs.crate }}.so
-            jni_lib_name: lib${{ inputs.crate }}_jni.so
-            jdk_distribution: temurin
-          - os: ubuntu-26.04-arm
-            rid: linux-arm64
-            lib_name: lib${{ inputs.crate }}.so
-            jni_lib_name: lib${{ inputs.crate }}_jni.so
-            jdk_distribution: temurin
-          - os: xcode-27
-            rid: osx-arm64
-            lib_name: lib${{ inputs.crate }}.dylib
-            jni_lib_name: lib${{ inputs.crate }}_jni.dylib
-            jdk_distribution: temurin
-          - os: windows-2025-vs2026
-            rid: win-x64
-            lib_name: ${{ inputs.crate }}.dll
-            jni_lib_name: ${{ inputs.crate }}_jni.dll
-            jdk_distribution: temurin
-          - os: windows-11-vs2026-arm
-            rid: win-arm64
-            lib_name: ${{ inputs.crate }}.dll
-            jni_lib_name: ${{ inputs.crate }}_jni.dll
-            jdk_distribution: microsoft
+        # A pull request asks whether the code broke, on linux-x64; the other platforms fan out on
+        # the board and a release. Two lists because `exclude` can't remove an `include` row.
+        include: >-
+          ${{ fromJSON(format(inputs.mode == 'pr'
+          && '[
+          {{"os":"ubuntu-26.04","rid":"linux-x64","lib_name":"lib{0}.so","jni_lib_name":"lib{0}_jni.so","jdk_distribution":"temurin"}}
+          ]'
+          || '[
+          {{"os":"ubuntu-26.04","rid":"linux-x64","lib_name":"lib{0}.so","jni_lib_name":"lib{0}_jni.so","jdk_distribution":"temurin"}},
+          {{"os":"ubuntu-26.04-arm","rid":"linux-arm64","lib_name":"lib{0}.so","jni_lib_name":"lib{0}_jni.so","jdk_distribution":"temurin"}},
+          {{"os":"xcode-27","rid":"osx-arm64","lib_name":"lib{0}.dylib","jni_lib_name":"lib{0}_jni.dylib","jdk_distribution":"temurin"}},
+          {{"os":"windows-2025-vs2026","rid":"win-x64","lib_name":"{0}.dll","jni_lib_name":"{0}_jni.dll","jdk_distribution":"temurin"}},
+          {{"os":"windows-11-vs2026-arm","rid":"win-arm64","lib_name":"{0}.dll","jni_lib_name":"{0}_jni.dll","jdk_distribution":"microsoft"}}
+          ]',
+          inputs.crate)) }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -262,7 +251,7 @@ jobs:
           ./gradlew test javadoc --console=plain
 
   test-musl:
-    if: inputs.java
+    if: inputs.java && inputs.mode != 'pr'
     strategy:
       fail-fast: false
       matrix:

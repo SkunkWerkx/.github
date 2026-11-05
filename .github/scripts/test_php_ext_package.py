@@ -298,33 +298,15 @@ class Matrix(unittest.TestCase):
         self.assertEqual(set(triples), {(rid, minor, ts) for rid in self.RIDS for minor in ('8.3', '8.4', '8.5')
                                         for ts in ('nts', 'zts')})
 
-    def test_pr_is_every_platform_on_the_newest_both_ways_plus_the_floor_nts_on_linux_x64_and_win_x64(self):
-        self.assertEqual(self.triples(self.legs('pr')),
-                         [(rid, '8.5', 'nts') for rid in self.RIDS] + [('linux-x64', '8.3', 'nts'), ('win-x64', '8.3', 'nts')]
-                         + [(rid, '8.5', 'zts') for rid in self.RIDS])
-        # A floor that is the newest minor adds no second leg.
-        self.assertEqual(len(self.legs('pr', floor='8.5')), 12)
-        self.assertEqual(len(self.legs('pr', floor='')), 12)
+    def test_a_pull_request_builds_one_leg(self):
+        # A pull request asks whether the binding passes its corpus; platforms wait for the board.
+        for floor in ('8.3', '8.5', ''):
+            legs = php_ext_package.matrix('pr', '8.3 8.4 8.5', floor)['include']
+            self.assertEqual(self.triples(legs), [('linux-x64', '8.5', 'nts')], floor)
+            self.assertEqual([leg['stubs'] for leg in legs], [True])
 
-    def test_matrix_two_paths_in_pr_mode(self):
-        # The PR board's PHP: the glibc path on the newest minor, the Windows path on the floor
-        # (the floor's Windows build takes another toolset), and the thread-safe Windows path on
-        # the newest, the one leg where the crates' own code links differently for ZTS (php8ts);
-        # macOS, arm64 and musl wait for the release board.
-        legs = php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3', 'two-paths')['include']
-        self.assertEqual(self.triples(legs), [('linux-x64', '8.5', 'nts'), ('win-x64', '8.3', 'nts'), ('win-x64', '8.5', 'zts')])
-        self.assertEqual([leg['stubs'] for leg in legs], [True, False, False])
-        self.assertEqual([leg['msvc_toolset'] for leg in legs[1:]], ['14.29', '14.44'])
-        # No floor, or the floor is the newest: the Windows path takes the newest minor.
-        for floor in ('', '8.5'):
-            legs = php_ext_package.matrix('pr', '8.3 8.4 8.5', floor, 'two-paths')['include']
-            self.assertEqual(self.triples(legs), [('linux-x64', '8.5', 'nts'), ('win-x64', '8.5', 'nts'),
-                                                  ('win-x64', '8.5', 'zts')], floor)
-
-    def test_matrix_two_paths_ignored_in_release(self):
-        self.assertEqual(php_ext_package.matrix('release', '8.3 8.4 8.5', '8.3', 'two-paths'),
-                         php_ext_package.matrix('release', '8.3 8.4 8.5', '8.3'))
-        self.assertEqual(len(php_ext_package.matrix('release', '8.3 8.4 8.5', '8.3', 'two-paths')['include']), 36)
+    def test_release_builds_every_leg(self):
+        self.assertEqual(len(php_ext_package.matrix('release', '8.3 8.4 8.5', '8.3')['include']), 36)
 
     def test_each_leg_names_its_artifact_nts_unsuffixed(self):
         # The upload name is a literal in the entry: companion_map resolves names by plain lookup.
@@ -334,17 +316,12 @@ class Matrix(unittest.TestCase):
             self.assertEqual(leg['artifact'], f"php-ext-{leg['rid']}-{leg['minor']}{suffix}")
         self.assertEqual(len({leg['artifact'] for leg in self.legs('release')}), 36)
 
-    def test_matrix_default_unchanged(self):
-        self.assertEqual(php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3', 'newest-plus-floor'),
-                         php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3'))
-        with self.assertRaises(ValueError):
-            php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3', 'everything')
+    def test_matrix_command_prints_the_legs(self):
         import json
         run = lambda *args: subprocess.run(['python3', str(SCRIPTS / 'php_ext_package.py'), *args],
                                            check=True, capture_output=True, text=True).stdout
-        self.assertEqual(json.loads(run('matrix', '--mode', 'pr', '--versions', '8.3 8.4 8.5', '--floor', '8.3',
-                                        '--pr-legs', 'two-paths')),
-                         php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3', 'two-paths'))
+        self.assertEqual(json.loads(run('matrix', '--mode', 'pr', '--versions', '8.3 8.4 8.5', '--floor', '8.3')),
+                         php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3'))
 
     def test_the_stub_diff_runs_on_linux_x64_newest_nts_only(self):
         for mode in ('pr', 'release'):
@@ -352,7 +329,7 @@ class Matrix(unittest.TestCase):
             self.assertEqual(stubs, [('linux-x64', '8.5', 'nts')], mode)
 
     def test_each_leg_names_its_runner_and_kind(self):
-        kinds = {leg['rid']: (leg['os'], leg['kind']) for leg in self.legs('pr')}
+        kinds = {leg['rid']: (leg['os'], leg['kind']) for leg in self.legs('release')}
         self.assertEqual(kinds, {
             'linux-x64': ('ubuntu-26.04', 'glibc'), 'linux-arm64': ('ubuntu-26.04-arm', 'glibc'),
             'linux-musl-x64': ('ubuntu-26.04', 'musl'), 'linux-musl-arm64': ('ubuntu-26.04-arm', 'musl'),

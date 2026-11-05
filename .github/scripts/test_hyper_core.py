@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import unittest
 
+import companion_map
 import yaml_lite
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / 'workflows'
@@ -28,7 +29,7 @@ class CoreWorkflowTests(unittest.TestCase):
 
     @staticmethod
     def matrix(job):
-        return job['strategy']['matrix']['include']
+        return companion_map.matrix_rows(job)
 
     def test_seven_legs_on_explicit_labels(self):
         self.assertEqual(set(self.jobs), {'core', 'core-musl', 'core-osx-x64'})

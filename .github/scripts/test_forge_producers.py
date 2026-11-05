@@ -243,7 +243,7 @@ class PhpExtensionContracts(unittest.TestCase):
 
     def test_inputs(self):
         inputs = self.workflow['on']['workflow_call']['inputs']
-        self.assertEqual(set(inputs), {'crate', 'mode', 'php_versions', 'php_floor_version', 'attest_native', 'pr_legs',
+        self.assertEqual(set(inputs), {'crate', 'mode', 'php_versions', 'php_floor_version', 'attest_native',
                                        'php_companions'})
         self.assertEqual(inputs['php_versions']['default'], '8.3 8.4 8.5')
         self.assertEqual(inputs['php_companions']['type'], 'string')
@@ -275,20 +275,15 @@ class PhpExtensionContracts(unittest.TestCase):
         self.assertIn('"php:$minor-zts-alpine"', script)
         self.assertIn('PHP_ZTS', script)
 
-    def test_php_workflow_wires_pr_legs(self):
-        inputs = self.workflow['on']['workflow_call']['inputs']
-        self.assertEqual(inputs['pr_legs']['default'], 'newest-plus-floor')
-        matrix = next(step for step in self.jobs['version']['steps'] if step.get('id') == 'matrix')
-        self.assertEqual(matrix['env']['PR_LEGS'], '${{ inputs.pr_legs }}')
-        self.assertIn('--floor "$PHP_FLOOR_VERSION" --pr-legs "$PR_LEGS"', matrix['run'])
-        # Under two-paths the linux-x64 leg takes the image's PHP: setup-php is off there, and
-        # a step holds the image's PHP to the leg's minor (with php-config beside it).
+    def test_a_pull_requests_one_php_leg_takes_the_images_php(self):
+        self.assertNotIn('pr_legs', self.workflow['on']['workflow_call']['inputs'])
+        # setup-php is off there, and a step holds the image's PHP to the leg's minor (with
+        # php-config beside it).
         setup = next(step for step in self.steps if step.get('uses', '').startswith('shivammathur/setup-php'))
-        two_paths = ("inputs.pr_legs == 'two-paths' && inputs.mode == 'pr' && matrix.rid == 'linux-x64' && "
-                     "matrix.ts == 'nts'")
-        self.assertIn(f"!({two_paths})", setup['if'])
+        leg = "inputs.mode == 'pr' && matrix.rid == 'linux-x64' && matrix.ts == 'nts'"
+        self.assertIn(f"!({leg})", setup['if'])
         image = self.step("The image's PHP is the leg's minor")
-        self.assertEqual(image['if'], two_paths)
+        self.assertEqual(image['if'], leg)
         self.assertIn('php-config', image['run'])
         self.assertIn('PHP_MINOR_VERSION', image['run'])
 

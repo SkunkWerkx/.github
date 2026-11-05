@@ -85,39 +85,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # static_targets are the Rust targets whose static library this leg builds: its
-          # own triple, for the C archive here and for the suites that link it later.
-          - os: ubuntu-26.04
-            rid: linux-x64
-            lib_name: lib${{ inputs.crate }}.so
-            target: x86_64-unknown-linux-gnu
-            manylinux: "2_28"
-            static_targets: x86_64-unknown-linux-gnu
-          - os: ubuntu-26.04-arm
-            rid: linux-arm64
-            lib_name: lib${{ inputs.crate }}.so
-            target: aarch64-unknown-linux-gnu
-            manylinux: "2_28"
-            static_targets: aarch64-unknown-linux-gnu
-          - os: xcode-27
-            rid: osx-arm64
-            lib_name: lib${{ inputs.crate }}.dylib
-            target: aarch64-apple-darwin
-            manylinux: ""
-            static_targets: aarch64-apple-darwin
-          - os: windows-2025-vs2026
-            rid: win-x64
-            lib_name: ${{ inputs.crate }}.dll
-            target: x86_64-pc-windows-msvc
-            manylinux: ""
-            static_targets: x86_64-pc-windows-msvc
-          - os: windows-11-vs2026-arm
-            rid: win-arm64
-            lib_name: ${{ inputs.crate }}.dll
-            target: aarch64-pc-windows-msvc
-            manylinux: ""
-            static_targets: aarch64-pc-windows-msvc
+        # static_targets are the Rust targets whose static library this leg builds: its
+        # own triple, for the C archive here and for the suites that link it later.
+        # A pull request asks whether the code broke, on linux-x64; the other platforms fan out on
+        # the board and a release. Two lists because `exclude` can't remove an `include` row.
+        include: >-
+          ${{ fromJSON(format(inputs.mode == 'pr'
+          && '[
+          {{"os":"ubuntu-26.04","rid":"linux-x64","lib_name":"lib{0}.so","target":"x86_64-unknown-linux-gnu","manylinux":"2_28","static_targets":"x86_64-unknown-linux-gnu"}}
+          ]'
+          || '[
+          {{"os":"ubuntu-26.04","rid":"linux-x64","lib_name":"lib{0}.so","target":"x86_64-unknown-linux-gnu","manylinux":"2_28","static_targets":"x86_64-unknown-linux-gnu"}},
+          {{"os":"ubuntu-26.04-arm","rid":"linux-arm64","lib_name":"lib{0}.so","target":"aarch64-unknown-linux-gnu","manylinux":"2_28","static_targets":"aarch64-unknown-linux-gnu"}},
+          {{"os":"xcode-27","rid":"osx-arm64","lib_name":"lib{0}.dylib","target":"aarch64-apple-darwin","manylinux":"","static_targets":"aarch64-apple-darwin"}},
+          {{"os":"windows-2025-vs2026","rid":"win-x64","lib_name":"{0}.dll","target":"x86_64-pc-windows-msvc","manylinux":"","static_targets":"x86_64-pc-windows-msvc"}},
+          {{"os":"windows-11-vs2026-arm","rid":"win-arm64","lib_name":"{0}.dll","target":"aarch64-pc-windows-msvc","manylinux":"","static_targets":"aarch64-pc-windows-msvc"}}
+          ]',
+          inputs.crate)) }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -319,7 +303,7 @@ jobs:
   # smokes run in Alpine, where the archive's libraries are the platform's own.
   # ===========================================================================
   core-musl:
-    if: inputs.musl
+    if: inputs.musl && inputs.mode != 'pr'
     strategy:
       fail-fast: false
       matrix:
