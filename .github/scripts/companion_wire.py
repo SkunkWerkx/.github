@@ -743,7 +743,7 @@ def _pack_with_payload(source, manifest, payload, out, run, bun=False):
     if bun:
         return _bun_packed(result.stdout, names, out)
     try:
-        report = json.loads(result.stdout)[0]
+        report = _npm_pack_report(json.loads(result.stdout), manifest['name'])
         tarball, packed = out / report['filename'], {f['path'] for f in report['files']}
     except (ValueError, KeyError, IndexError, TypeError):
         raise ValueError(f'npm pack printed no report: {str(result.stdout).strip()[-300:]}') from None
@@ -755,6 +755,12 @@ def _pack_with_payload(source, manifest, payload, out, run, bun=False):
         raise ValueError(f'{tarball.name}: npm pack reported integrity {report.get("integrity")}, the file has '
                          f'{npm_integrity(tarball)}')
     return tarball
+
+
+def _npm_pack_report(data, name):
+    """The one package's report from `npm pack --json`: a list of reports through npm 11, an object
+    keyed by package name from npm 12."""
+    return data[name] if isinstance(data, dict) else data[0]
 
 
 def _bun_packed(stdout, names, out):

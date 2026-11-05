@@ -675,10 +675,11 @@ class FakeNpm:
     its lock as npm writes one (resolved relative to the lock, the tarball's integrity). With
     `takes=False` it leaves the lock as it was (a rewrite npm never read); with `registry=True`
     it writes, for each such dependency, the entry npm wrote for the registry's copy
-    (fixtures/origin/npm/registry.json: npmjs's 0.0.1 placeholder)."""
-    def __init__(self, takes=True, fail_pack=False, registry=False):
+    (fixtures/origin/npm/registry.json: npmjs's 0.0.1 placeholder). `report` shapes pack's list of
+    reports as another npm prints it."""
+    def __init__(self, takes=True, fail_pack=False, registry=False, report=lambda reports: reports):
         self.calls, self.packed_from, self.takes, self.fail_pack = [], [], takes, fail_pack
-        self.registry = registry
+        self.registry, self.report = registry, report
 
     def __call__(self, argv, cwd=None, check=False, capture_output=False, text=False, **_):
         argv = list(map(str, argv))
@@ -689,7 +690,7 @@ class FakeNpm:
             if self.fail_pack:
                 raise subprocess.CalledProcessError(1, argv, '', 'npm error pack failed')
             out = Path(argv[argv.index('--pack-destination') + 1])
-            return subprocess.CompletedProcess(argv, 0, json.dumps(npm_pack(cwd, out)), '')
+            return subprocess.CompletedProcess(argv, 0, json.dumps(self.report(npm_pack(cwd, out))), '')
         assert argv[1:3] == ['install', '--package-lock-only'], argv
         if self.takes:
             manifest = json.loads((Path(cwd) / 'package.json').read_text())
@@ -963,6 +964,17 @@ class WireNpmTests(unittest.TestCase):
         self.assertIn('overrides', str(caught.exception))
         self.assertEqual(self.manifest.read_bytes(), before)
 
+    def test_wire_npm_reads_the_pack_report_npm_12_prints(self):
+        # npm 12 keys the report by package name where npm 11 prints a list; the package's own
+        # name is the key, so a report for anything else is no report.
+        self.wire(FakeNpm(report=lambda reports: {PACKAGE: reports[0]}))
+        self.assertIn('package/hypercast.darwin-arm64.node', tar_members(self.root / TARBALL))
+
+    def test_wire_npm_refuses_a_pack_report_for_another_package(self):
+        with self.assertRaises(ValueError) as caught:
+            self.wire(FakeNpm(report=lambda reports: {'@other/package': reports[0]}))
+        self.assertIn('npm pack printed no report', str(caught.exception))
+
     def test_wire_npm_restores_the_pinned_manifest_when_the_pack_fails(self):
         before = (self.source / 'package.json').read_bytes()
         with self.assertRaises(subprocess.CalledProcessError):
@@ -1027,7 +1039,8 @@ class WireNpmTests(unittest.TestCase):
         out.mkdir()
         result = subprocess.run([shutil.which('npm'), 'pack', '--json', '--ignore-scripts', '--pack-destination',
                                  str(out)], cwd=self.source, capture_output=True, text=True, check=True)
-        plain = out / json.loads(result.stdout)[0]['filename']
+        report = companion_wire._npm_pack_report(json.loads(result.stdout), PACKAGE)
+        plain = out / report['filename']
         self.assertNotIn('package/hypercast.darwin-arm64.node', tar_members(plain))
         (self.source / 'hypercast.darwin-arm64.node').unlink()
         # The wiring, with real npm packing: the addon is in.
