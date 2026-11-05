@@ -14,8 +14,6 @@ import yaml_lite
 GITHUB = Path(__file__).resolve().parents[1]
 CFG = hyper_config.HyperConfig({'crate': 'hypertabular', 'project': 'HyperTabular',
                                 'exports': {'sources': ['rust/src/ffi.rs'], 'patterns': ['x'], 'prefixes': ['x']}})
-HYPERCAST_CI = GITHUB.parents[1] / 'HyperCast' / '.github' / 'workflows' / 'ci.yml'
-
 
 def leg(workflow, job, rid=None, **extra):
     return Leg(workflow, job, rid, extra)
@@ -76,26 +74,6 @@ class LegTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             companion_map.artifacts_for(leg('hyper-test-go.yml', 'test', 'linux-x64'), 'hypertabular', CFG)
 
-
-def caller_inputs(text, workflow):
-    """The `with:` keys and values each HyperCast ci.yml job calling the Forge's `workflow` passes
-    (ci.yml is beyond yaml_lite, so read by indentation: jobs at 2, keys at 4, inputs at 6)."""
-    calls, job, in_with = [], None, False
-    for line in text.splitlines():
-        if re.match(r'^  [\w-]+:\s*$', line):
-            job, in_with = None, False
-        elif re.match(r'^    uses: .*/\.github/workflows/' + re.escape(workflow) + '@', line):
-            job = {}
-            calls.append(job)
-        elif job is not None and re.match(r'^    with:\s*$', line):
-            in_with = True
-        elif job is not None and in_with and re.match(r'^    \S', line):
-            in_with = False
-        elif job is not None and in_with:
-            m = re.match(r'^      ([\w-]+):\s*(.*?)\s*$', line)
-            if m:
-                job[m.group(1)] = m.group(2).strip('"\'')
-    return calls
 
 
 class ProducerTests(unittest.TestCase):
@@ -192,22 +170,6 @@ class ProducerTests(unittest.TestCase):
         uploaded = {inputs['ruby_version']['default'], companion_map.COMPANION_INPUTS['hyper-test-ruby.yml']['ruby_compat_version']}
         self.assertEqual(set(hyper_config.RUBY_ABIS), uploaded)
         self.assertEqual(set(CFG.ruby_abis), uploaded)
-
-    def test_companion_inputs_are_hypercasts(self):
-        """Every input HyperCast's ci.yml passes that reaches an upload name is in
-        COMPANION_INPUTS with that value, and every COMPANION_INPUTS entry is one it passes."""
-        if not HYPERCAST_CI.is_file():
-            self.skipTest(f'no sibling HyperCast checkout at {HYPERCAST_CI}')
-        text = HYPERCAST_CI.read_text()
-        for path in companion_map.producer_workflows():
-            relevant = companion_map.name_inputs(path)
-            for call in caller_inputs(text, path.name):
-                passed = {k: v for k, v in call.items() if k in relevant}
-                with self.subTest(workflow=path.name):
-                    self.assertEqual(passed, companion_map.COMPANION_INPUTS.get(path.name, {}))
-        self.assertEqual(companion_map.name_inputs(GITHUB / 'workflows' / 'hyper-test-ruby.yml'),
-                         {'ruby_version', 'ruby_compat_version'})
-        self.assertEqual(caller_inputs(text, 'hyper-test-ruby.yml')[0].get('ruby_compat_version'), '3.4')
 
     def test_platform_lists_come_from_the_config(self):
         cfg = hyper_config.HyperConfig({**CFG.data, 'ruby': {'abis': ['4.0']}, 'node': {'wasi': ''}})

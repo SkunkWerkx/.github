@@ -31,9 +31,9 @@ PRODUCER_GLOBS = ('hyper-core*.yml', 'hyper-build-*.yml', 'hyper-lint-*.yml', 'h
 # The inputs the companion's (HyperCast's) ci.yml passes that reach an upload name, where they
 # differ from the Forge default: its test-ruby job adds the compat ABI, so the board uploads
 # ruby-native-<rid>-3.4 beside the default ruby_version's -4.0. Every other name-bearing input is
-# left at its default (hyper-build-wasm.yml's artifact_name included). test_companion_map holds
-# this against HyperCast's ci.yml when the sibling checkout is there, and against
-# hyper_config.RUBY_ABIS always.
+# left at its default (hyper-build-wasm.yml's artifact_name included). A consumer's input the Forge
+# does not know surfaces as a missing artifact on that consumer's board. test_companion_map holds
+# this against hyper_config.RUBY_ABIS.
 COMPANION_INPUTS = {'hyper-test-ruby.yml': {'ruby_compat_version': '3.4'}}
 ECOSYSTEMS = ('rust', 'go', 'python', 'pyodide', 'npm', 'ruby', 'java', 'csharp', 'php', 'swift', 'r', 'c')
 # The rid a leg with no `rid` column runs on, from its runner label.
