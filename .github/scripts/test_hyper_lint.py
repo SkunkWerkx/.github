@@ -1,4 +1,4 @@
-"""Shape contracts for the lint a binding's job runs ahead of its suite, and hyper-lint-rust.yml.
+"""Shape contracts for the lint each job runs ahead of its build or suite, and for attesting.
 
 A binding is one job on a pull request: its toolchain once, then its linters, then its suite. The
 linters run only when the caller says so (`lint`, from the classifier's lint_<binding>, and only on a
@@ -40,8 +40,8 @@ def index(job_steps, name):
 
 
 class FoldedLintTests(unittest.TestCase):
-    def test_no_binding_keeps_a_lint_workflow(self):
-        self.assertEqual([p.name for p in WORKFLOWS.glob('hyper-lint-*.yml')], ['hyper-lint-rust.yml'])
+    def test_no_lint_workflow_is_left(self):
+        self.assertEqual(list(WORKFLOWS.glob('hyper-lint-*.yml')), [])
 
     def test_each_binding_lints_on_one_leg_before_its_suite(self):
         for binding, (workflow, job, leg, linters, suite) in LINTS.items():
@@ -77,14 +77,43 @@ class FoldedLintTests(unittest.TestCase):
         self.assertLess(index(job_steps, "Vendor the R package's core, crates and corpus"),
                         index(job_steps, 'Install the package for lintr'))
 
-    def test_rust_lint_is_fmt_and_clippy_on_linux_arm64(self):
-        text = (WORKFLOWS / 'hyper-lint-rust.yml').read_text()
-        workflow = yaml_lite.load(text)
-        self.assertEqual(list(workflow['jobs']), ['lint'])
-        self.assertEqual(workflow['jobs']['lint']['runs-on'], 'ubuntu-26.04-arm')
-        self.assertNotIn('needs', workflow['jobs']['lint'])
-        self.assertIn('cargo fmt --check', text)
-        self.assertIn('cargo clippy --all-targets -- -D warnings', text)
+    def test_the_core_job_lints_on_one_leg_before_it_builds(self):
+        job_steps = steps('hyper-core.yml', 'core')
+        build = index(job_steps, 'Build native core (release)')
+        for name in ('cargo fmt --check', 'cargo clippy', 'Install the pinned workflow validator',
+                     'Validate workflow syntax, interfaces and dependency graph', 'clang-format and shellcheck'):
+            step = job_steps[index(job_steps, name)]
+            self.assertTrue(step['if'].startswith(f'inputs.lint && {LINUX}'), name)
+            self.assertLess(index(job_steps, name), build)
+
+    def test_core_checks_lints_nothing(self):
+        # Formatting and lint are the pull request's question: how did it reach master otherwise.
+        text = (WORKFLOWS / 'hyper-core-checks.yml').read_text()
+        for gone in ('cargo fmt', 'cargo clippy', 'actionlint', 'clang-format', 'setup-go'):
+            self.assertNotIn(gone, text.replace('actionlint over', ''), gone)
+
+
+class AttestationTests(unittest.TestCase):
+    # The tail packs from a purpose=release dispatch and nothing else reads a native's provenance
+    # (pack-gems, pack-c, pack-nuget, verify-wheels, prepare-maven-package, stage-release).
+    BOARD = [p for p in WORKFLOWS.glob('hyper-*.yml')
+             if not p.name.startswith(('hyper-pack-', 'hyper-publish-', 'hyper-pie-', 'hyper-prepare-', 'hyper-stage-'))
+             and p.name not in ('hyper-build-native.yml', 'hyper-check-core.yml')]
+    PURPOSE = "github.event.inputs.purpose == 'release'"
+
+    def test_no_board_workflow_signs_unless_a_release_was_dispatched(self):
+        signed = 0
+        for path in self.BOARD:
+            for job_name, job in yaml_lite.load(path.read_text())['jobs'].items():
+                for step in job.get('steps', []):
+                    with self.subTest(workflow=path.name, job=job_name, step=step.get('name')):
+                        if str(step.get('uses', '')).startswith('actions/attest-build-provenance'):
+                            signed += 1
+                            self.assertIn(self.PURPOSE, step.get('if', ''))
+                        if 'attest' in (step.get('with') or {}):
+                            signed += 1
+                            self.assertIn(self.PURPOSE, str(step['with']['attest']))
+        self.assertGreater(signed, 15)
 
 
 class GoTierTests(unittest.TestCase):

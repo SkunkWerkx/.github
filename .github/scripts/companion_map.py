@@ -175,7 +175,6 @@ JOBS = {
     ('hyper-build-wheels.yml', 'sdist-fallthrough'): ('python-fallthrough',),
     ('hyper-build-wheels.yml', 'build-wheels'): ('python-wheels',),
     ('hyper-build-wheels.yml', 'build-pyodide-wheel'): ('pyodide',),
-    ('hyper-lint-rust.yml', 'lint'): ('rust',),
     ('hyper-test-c.yml', 'smoke'): ('c',),
     ('hyper-test-c.yml', 'smoke-apple-mobile'): ('c',),
     ('hyper-test-csharp.yml', 'test'): ('csharp',),

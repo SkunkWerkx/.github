@@ -101,8 +101,9 @@ class CompanionWorkflowTests(unittest.TestCase):
         step = self.php_step('The mode this run is in')
         self.assertEqual(step['id'], 'mode')
         self.assertIn('hyper_mode.py', step['run'])
-        self.assertNotIn('inputs.purpose', self.php_text)
-        self.assertNotIn('inputs.purpose', self.pie_text)
+        # A reusable workflow has no such input: the attest gates read the event, as hyper_mode.py does.
+        self.assertNotRegex(self.php_text, r'(?<!event\.)inputs\.purpose')
+        self.assertNotRegex(self.pie_text, r'(?<!event\.)inputs\.purpose')
 
     def test_mode_runs_only_with_a_block_and_after_the_companions_step(self):
         # Without a block nothing needs the mode, and hyper_mode.py refuses a dispatch with no
@@ -718,7 +719,7 @@ class FetchStepTests(unittest.TestCase):
     def test_every_wired_leg_fetches_the_companions_first(self):
         import companion_map
         legs = self.wired_legs()
-        self.assertEqual(len(legs), 37)
+        self.assertEqual(len(legs), 36)
         self.assertLessEqual(set(DEFERRED), set(legs))
         for (workflow, job_name), leg in sorted(legs.items()):
             with self.subTest(leg=f'{workflow}:{job_name}'):
@@ -1698,7 +1699,7 @@ class FetchStepTests(unittest.TestCase):
         self.assertEqual(calls, 1)
 
     def test_every_board_workflow_runs_fetch_companions_first(self):
-        # In every board workflow (hyper-core*, hyper-build-*, hyper-lint-rust, hyper-test-*), each job
+        # In every board workflow (hyper-core*, hyper-build-*, hyper-test-*), each job
         # that fetches the companions does so before its first step that resolves anything the
         # companion could be (BOARD_RESOLVES: a package manager, a build tool reading a manifest,
         # an install-and-cache action); a toolchain's install may come first, and the fetch's own
@@ -1853,12 +1854,10 @@ HEAD_CACHE_WITH = {
         {'working-directory': 'r', 'extra-packages': 'any::rcmdcheck'}],
     ('hyper-test-ruby.yml', 'test', './.hyperforge/.github/actions/ruby-magnus'): [
         {'ruby-version': '${{ inputs.ruby_compat_version }}', 'crate': '${{ inputs.crate }}', 'rid': '${{ matrix.rid }}',
-         'attest': "${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || "
-                   "github.event.pull_request.head.repo.full_name == github.repository) }}",
+         'attest': "${{ inputs.attest_native && github.event.inputs.purpose == 'release' }}",
          'companions': '${{ steps.companions.outputs.active }}', 'python': FETCH_PY},
         {'ruby-version': '${{ inputs.ruby_version }}', 'crate': '${{ inputs.crate }}', 'rid': '${{ matrix.rid }}',
-         'attest': "${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || "
-                   "github.event.pull_request.head.repo.full_name == github.repository) }}",
+         'attest': "${{ inputs.attest_native && github.event.inputs.purpose == 'release' }}",
          'companions': '${{ steps.companions.outputs.active }}', 'python': FETCH_PY}],
     ('hyper-test-ruby.yml', 'test', 'ruby/setup-ruby'): [
         {'ruby-version': '${{ inputs.ruby_version }}', 'bundler-cache': True, 'working-directory': 'ruby'},
@@ -2912,6 +2911,10 @@ class SwiftCWorkflowTests(unittest.TestCase):
             'Unpack the four Apple mobile archives': 'b9897113f6db802c', 'Install Rosetta': '1447d6ed60266a1a',
             'Boot an iPhone simulator': '5b4f619fde02fa48', 'Smoke-test the Apple mobile archives': '7a2996ebe86614ee'},
         ('hyper-core.yml', 'core'): {
+            'cargo fmt --check': '087d6d9ad95a889e', 'cargo clippy': 'b81c37d19eb1d7af',
+            'Install the pinned workflow validator': '93fb8657e71f918e',
+            'Validate workflow syntax, interfaces and dependency graph': 'c7da38499554a0a5',
+            'clang-format and shellcheck': '45d1a247ae33d23f',
             'Validate Forge workflow revision': 'b43ed1cffc80ac65', 'Build native core (release)': '4b92aa994002d469',
             'glibc floor — nothing newer than GLIBC_2.34 is referenced': 'a66d3b4b6423d628',
             'Run Rust test suite': '103a96ae7a127d21', 'Collect native artifact': 'e4b91d74a3980fa3',

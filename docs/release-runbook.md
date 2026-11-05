@@ -105,8 +105,8 @@ Maven through the three reusable workflows, the gems, npm, CRAN, C and the wheel
 `pack-gems`, `pack-npm`, `pack-r`, `pack-c` and `verify-wheels`), each attesting what it packs;
 `release-prepare` downloads them all, verifies every file's build provenance, builds and
 attests the inventory and preserves `release-packages` for 90 days in that run; `codeql`
-dispatches the consumer's `codeql.yml` with the run's id (its Swift leg unpacks the run's
-attested zips, `swift_release.py unpack`), waits, and requires zero open alerts on master,
+dispatches the consumer's `codeql.yml` (its Swift leg builds the core from A with
+`local-core.sh`), waits, and requires zero open alerts on master,
 still A; `stage-release` writes the zips' checksums into the root `Package.swift` and commits B
 on master with `Release-Source-SHA`, `Release-CI-Run-ID` and `Release-Forge-SHA`.
 

@@ -111,10 +111,10 @@ class TestBindingWorkflowTests(unittest.TestCase):
                 for job in workflow['jobs'].values():
                     for step in job['steps']:
                         if step.get('uses', '').startswith('actions/attest-build-provenance'):
-                            for needle in ("inputs.mode != 'pr'", 'inputs.attest_native', FORK_GUARD):
+                            for needle in ("github.event.inputs.purpose == 'release'", 'inputs.attest_native'):
                                 self.assertIn(needle, step['if'], step.get('name'))
                         if 'attest' in step.get('with', {}):
-                            for needle in ("inputs.mode != 'pr'", 'inputs.attest_native', FORK_GUARD):
+                            for needle in ("github.event.inputs.purpose == 'release'", 'inputs.attest_native'):
                                 self.assertIn(needle, step['with']['attest'], step.get('name'))
 
     def test_pr_trims(self):

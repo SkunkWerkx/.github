@@ -285,13 +285,11 @@ jobs:
           FETCH_PYTHON: ${{ steps.companions.outputs.python }}
         run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py npm --root . --dir typescript/browser-smoke --installed'
 
-      # The same condition as the archive's and the natives' attestations: pr mode, which no
-      # release packs from, and a fork's pull request, whose token cannot sign, attest nothing.
+      # The same condition as the archive's and the natives' attestations: a purpose=release
+      # dispatch, the one run a release packs from, attests; nothing else does.
       - name: Attest the WASI module and its loaders
         if: >-
-          inputs.mode != 'pr' &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
+          github.event.inputs.purpose == 'release'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: node-wasm32-wasip1/*
@@ -401,9 +399,7 @@ jobs:
       # packs from, and a fork's pull request, whose token cannot sign.
       - name: Attest the static library
         if: >-
-          inputs.mode != 'pr' &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
+          github.event.inputs.purpose == 'release'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ inputs.working_directory }}/target/wasm32-unknown-emscripten/release/lib${{ inputs.crate }}.a
@@ -828,6 +824,7 @@ jobs:
           out: ${{ runner.temp }}
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: github.event.inputs.purpose == 'release'
         with:
           subject-path: ${{ runner.temp }}/archives/${{ matrix.abi }}/${{ inputs.crate }}_native.a
 

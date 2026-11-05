@@ -59,7 +59,7 @@ class CoreWorkflowTests(unittest.TestCase):
         for job in self.jobs.values():
             for step in job['steps']:
                 if step.get('name', '').startswith('Attest'):
-                    self.assertIn("inputs.mode != 'pr'", step['if'])
+                    self.assertIn("github.event.inputs.purpose == 'release'", step['if'])
 
     def test_no_binding_steps(self):
         for job_name, job in self.jobs.items():
@@ -95,7 +95,7 @@ class CoreWorkflowTests(unittest.TestCase):
 
     def test_inputs(self):
         inputs = self.workflow['on']['workflow_call']['inputs']
-        self.assertEqual(set(inputs), {'mode', 'crate', 'project', 'osx_x64', 'musl', 'static_libs', 'attest_native', 'c_smoke'})
+        self.assertEqual(set(inputs), {'mode', 'crate', 'project', 'osx_x64', 'musl', 'static_libs', 'attest_native', 'c_smoke', 'lint', 'extra_features', 'no_std_rustflags', 'clippy_targets', 'c_lint'})
         for name in ('osx_x64', 'musl', 'static_libs', 'attest_native', 'c_smoke'):
             self.assertIs(inputs[name]['default'], True, name)
         self.assertEqual(inputs['mode']['default'], 'release')

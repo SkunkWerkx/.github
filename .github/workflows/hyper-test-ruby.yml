@@ -236,7 +236,7 @@ jobs:
           ruby-version: ${{ inputs.ruby_compat_version }}
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && github.event.inputs.purpose == 'release' }}
           companions: ${{ steps.companions.outputs.active }}
           python: ${{ steps.companions.outputs.python }}
           cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '0' }}
@@ -248,7 +248,7 @@ jobs:
           ruby-version: ${{ inputs.ruby_version }}
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && github.event.inputs.purpose == 'release' }}
           companions: ${{ steps.companions.outputs.active }}
           python: ${{ steps.companions.outputs.python }}
           cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '0' }}
@@ -339,7 +339,7 @@ jobs:
           ruby-version: ${{ inputs.ruby_compat_version }}
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && github.event.inputs.purpose == 'release' }}
 
       - name: Ruby (Magnus) on Alpine — primary ABI
         if: inputs.magnus
@@ -348,7 +348,7 @@ jobs:
           ruby-version: ${{ inputs.ruby_version }}
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && github.event.inputs.purpose == 'release' }}
 
       - name: Ruby on Alpine (Fiddle)
         uses: ./.hyperforge/.github/actions/musl-suite

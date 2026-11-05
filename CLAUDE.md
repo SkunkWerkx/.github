@@ -124,9 +124,12 @@ artifact names, so a consumer can run one or the other, never both at once (two 
   and nothing off one: what reached master has been linted. Go takes `linters` instead (`none`,
   `core`, `fast`, `sweep`): `core` is the committed-core regeneration check, the one check a core
   change must not skip; `fast` adds gofmt, go vet and revive; `sweep` adds the cross-compile sweep
-  and the race run off a pull request. `hyper-lint-rust.yml`
-  is rustfmt and clippy for a pull request that moved the core; off a pull request
-  `hyper-core-checks.yml` lints the same way, the clippy commands in both.
+  and the race run off a pull request. `hyper-core.yml`
+  takes `lint` the same way: rustfmt, clippy (bare metal and the extra targets included), actionlint
+  and the C lint on its linux-x64 leg, for a pull request that moved the core or `.github/`.
+  `hyper-core-checks.yml` lints nothing.
+- Only a `purpose=release` dispatch attests (`github.event.inputs.purpose`, the event's, since a
+  reusable workflow has no such input): the tail is the one reader of a native's provenance.
 - `hyper-test-<binding>.yml`, eight of them (csharp, java, typescript, ruby, python, r,
   swift, go): the binding's suite on the five desktop hosts, the two musl RIDs through
   `musl-suite` where the binding has a musl story (not R; Swift's is `swift-static-suite`,

@@ -583,9 +583,7 @@ jobs:
       # Release mode only, and never on a fork's pull request, whose token cannot sign.
       - name: Attest the zip's build provenance
         if: >-
-          inputs.attest_native && inputs.mode == 'release' &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
+          inputs.attest_native && github.event.inputs.purpose == 'release'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: php-dist/*.zip

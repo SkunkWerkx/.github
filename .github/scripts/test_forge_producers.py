@@ -377,7 +377,7 @@ class PhpExtensionContracts(unittest.TestCase):
         self.assertEqual(upload['with']['name'], '${{ matrix.artifact }}')
         self.assertEqual(upload['with']['path'], 'php-dist/*.zip')
         attest = next(step for step in self.steps if str(step.get('uses', '')).startswith('actions/attest-build-provenance@'))
-        self.assertIn("inputs.attest_native && inputs.mode == 'release'", attest['if'])
+        self.assertIn("inputs.attest_native && github.event.inputs.purpose == 'release'", attest['if'])
         self.assertEqual(attest['with']['subject-path'], 'php-dist/*.zip')
         glibc = self.step('glibc floor — nothing newer than GLIBC_2.34 is referenced')
         self.assertEqual(glibc['if'], "${{ inputs.mode != 'pr' && (matrix.kind == 'glibc') }}")

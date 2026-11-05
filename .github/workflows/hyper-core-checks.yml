@@ -1,10 +1,10 @@
 name: HyperForge — check the core
 
 # The core's static checks, one job on three hosts rather than hyper-check-core.yml's
-# twenty-three: the no_std and no-panic proofs, the export list held against every binding,
-# the corpus oracle, rustfmt and clippy, the MSRV, the SemVer check against the last
-# crates.io release, the crate's suite under wasmtime and on a big-endian target, actionlint
-# over the caller's own workflows, and the C formatter and shellcheck. Each check runs on the
+# these: the no_std and no-panic proofs, the export list held against every binding,
+# the corpus oracle, the MSRV, the SemVer check against the last
+# crates.io release, the crate's suite under wasmtime and on a big-endian target. The lint is the pull
+# request's, in hyper-core.yml. Each check runs on the
 # host its old job named (`matrix.arch`: x64 for all but two; the repository's own core
 # checks and the extra-feature suite on x64 and arm64, the no-panic link on x64 and Windows),
 # soonest-failing first, so a formatting slip is red in the first minute. The binding lints
@@ -55,7 +55,7 @@ on:
         type: string
         default: ""
       extra_features:
-        description: "A feature set the core also builds, tests, lints and checks on the MSRV with (HyperTabular: async); empty for none"
+        description: "A feature set the core also builds, tests and checks on the MSRV with (HyperTabular: async); empty for none"
         required: false
         type: string
         default: ""
@@ -79,16 +79,6 @@ on:
         required: false
         type: boolean
         default: true
-      lint_rust:
-        description: "rustfmt and clippy over the core and the companion crates present (rust/fuzz, rust/browser-test)"
-        required: false
-        type: boolean
-        default: true
-      clippy_targets:
-        description: "Extra targets clippy runs the core for, comma-separated (HyperUuid: aarch64-linux-android); empty for none"
-        required: false
-        type: string
-        default: ""
       msrv:
         description: "cargo check the library and the cdylib feature on rust-version from rust/Cargo.toml"
         required: false
@@ -96,11 +86,6 @@ on:
         default: true
       semver:
         description: "cargo-semver-checks against the latest crates.io release, default features"
-        required: false
-        type: boolean
-        default: true
-      actionlint:
-        description: "actionlint over the caller's .github/workflows with the Forge's pinned version and flags"
         required: false
         type: boolean
         default: true
@@ -118,11 +103,6 @@ on:
         required: false
         type: string
         default: ""
-      c_lint:
-        description: "clang-format over the C and C++ smoke consumers and the hand-written C++ header, and shellcheck over c/smoke/*.sh (a consumer with c_assets)"
-        required: false
-        type: boolean
-        default: true
 
 jobs:
   checks:
@@ -160,8 +140,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         if: matrix.arch != 'win'
         with:
-          components: rustfmt, clippy, llvm-tools
-          targets: thumbv7em-none-eabi,wasm32-unknown-unknown,wasm32-wasip1,x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu${{ inputs.clippy_targets != '' && format(',{0}', inputs.clippy_targets) || '' }}${{ inputs.big_endian != '' && format(',{0}', inputs.big_endian) || '' }}
+          components: llvm-tools
+          targets: thumbv7em-none-eabi,wasm32-unknown-unknown,wasm32-wasip1,x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu${{ inputs.big_endian != '' && format(',{0}', inputs.big_endian) || '' }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         if: matrix.arch == 'win'
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -177,34 +157,6 @@ jobs:
         uses: ./.hyperforge/.github/actions/fetch-companions
         with:
           leg: hyper-core-checks.yml:checks
-
-      - name: cargo fmt --check
-        if: inputs.lint_rust && matrix.arch == 'x64'
-        working-directory: rust
-        run: |
-          set -euo pipefail
-          cargo fmt --check
-          for companion in fuzz browser-test; do
-            [ -f "$companion/Cargo.toml" ] && cargo fmt --check --manifest-path "$companion/Cargo.toml"
-          done
-      - name: cargo clippy
-        if: inputs.lint_rust && matrix.arch == 'x64'
-        working-directory: rust
-        env:
-          NO_STD_RUSTFLAGS: ${{ inputs.no_std_rustflags }}
-          EXTRA_FEATURES: ${{ inputs.extra_features }}
-          CLIPPY_TARGETS: ${{ inputs.clippy_targets }}
-        run: |
-          set -euo pipefail
-          cargo clippy --all-targets -- -D warnings
-          if [ -n "$EXTRA_FEATURES" ]; then cargo clippy --all-targets --features "$EXTRA_FEATURES" -- -D warnings; fi
-          RUSTFLAGS="$NO_STD_RUSTFLAGS" cargo clippy --no-default-features --target thumbv7em-none-eabi -- -D warnings
-          cargo clippy --no-default-features --features cdylib -- -D warnings
-          cargo clippy --features python -- -D warnings
-          for target in ${CLIPPY_TARGETS//,/ }; do cargo clippy --target "$target" -- -D warnings; done
-          [ -f fuzz/Cargo.toml ] && cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
-          [ -f browser-test/Cargo.toml ] && cargo clippy --manifest-path browser-test/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings
-          true
 
       # Every binding declares the core's C ABI by hand. check_exports.py holds each of them to
       # the export list in the Rust source, so an export added to the core and missed in one
@@ -467,27 +419,3 @@ jobs:
           export CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime run --dir $GITHUB_WORKSPACE --dir $target"
           cargo test --target wasm32-wasip1
 
-      # actionlint over the caller's own workflows, with the Forge's pinned version and flags.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        if: inputs.actionlint && matrix.arch == 'x64'
-        with:
-          go-version: "1.26.x"
-          cache: false
-      - name: Install the pinned workflow validator
-        if: inputs.actionlint && matrix.arch == 'x64'
-        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-      - name: Validate workflow syntax, interfaces and dependency graph
-        if: inputs.actionlint && matrix.arch == 'x64'
-        run: actionlint -shellcheck= -ignore 'property "workflow_(sha|repository)" is not defined'
-
-      # The smoke consumers and the hand-written C++ header are source like any other:
-      # c/.clang-format for C and C++ (the cbindgen header is generated, and checked by
-      # rust/tests/header.rs instead), shellcheck for the scripts. The runner image ships both.
-      - name: clang-format and shellcheck
-        if: inputs.c_lint && matrix.arch == 'x64'
-        run: |
-          set -euo pipefail
-          clang-format --version
-          shopt -s nullglob
-          clang-format --style=file:c/.clang-format --dry-run -Werror c/smoke/*.c c/smoke/*.cpp include/*.hpp
-          shellcheck c/smoke/*.sh

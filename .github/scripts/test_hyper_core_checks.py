@@ -13,10 +13,10 @@ import yaml_lite
 WORKFLOWS = Path(__file__).resolve().parents[1] / 'workflows'
 BINDING_LINTS = {'cdylib', 'lint_go', 'lint_python', 'lint_node', 'lint_java_jni', 'lint_r', 'lint_php',
                  'lint_ruby', 'lint_swift', 'format_csharp', 'format_java', 'format_swift'}
+CORE_LINTS = {'lint_rust', 'clippy_targets', 'actionlint'}  # the PR leg's, in hyper-core.yml
 BINDING_WORDS = ('Go', 'Java', 'JNI', 'TypeScript', 'Node', 'Bun', 'R CMD', 'Python', 'C#', 'Swift', 'Ruby', 'PHP')
-ORDER = ['cargo fmt --check', 'cargo clippy', "declares exactly the core's C ABI", 'corpus', 'semver',
-         'rust-version', 'no_std', 'no panic path', 'the canary panics', 'big-endian', 'wasm32-wasip1 under wasmtime',
-         'Validate workflow syntax', 'clang-format and shellcheck']
+ORDER = ["declares exactly the core's C ABI", 'corpus', 'semver',
+         'rust-version', 'no_std', 'no panic path', 'the canary panics', 'big-endian', 'wasm32-wasip1 under wasmtime']
 
 
 class CoreChecksWorkflowTests(unittest.TestCase):
@@ -98,18 +98,15 @@ class CoreChecksWorkflowTests(unittest.TestCase):
             for word in BINDING_WORDS:
                 self.assertNotIn(word, step.get('name', ''), step.get('name'))
 
-    def test_inputs_are_check_cores_minus_binding_lints_plus_c_lint(self):
+    def test_inputs_are_check_cores_minus_every_lint(self):
         old = yaml_lite.load((WORKFLOWS / 'hyper-check-core.yml').read_text())['on']['workflow_call']['inputs']
         new = self.workflow['on']['workflow_call']['inputs']
-        self.assertEqual(set(new), (set(old) - BINDING_LINTS) | {'c_lint', 'no_panic_canary'})
-        self.assertEqual(new['c_lint']['type'], 'boolean')
-        self.assertIs(new['c_lint']['default'], True)
-        for name in set(old) - BINDING_LINTS:
+        self.assertEqual(set(new), (set(old) - BINDING_LINTS - CORE_LINTS) | {'no_panic_canary'})
+        for name in set(old) - BINDING_LINTS - CORE_LINTS:
             with self.subTest(input=name):
                 self.assertEqual(new[name]['type'], old[name]['type'])
                 if name != 'no_panic_runners':
                     self.assertEqual(new[name]['default'], old[name]['default'])
-        self.assertIn('inputs.c_lint', self.step('clang-format and shellcheck')['if'])
 
     def test_no_panic_canary_is_opt_in(self):
         # Off unless a crate names its canary: HyperUuid runs as before, HyperCast proves its

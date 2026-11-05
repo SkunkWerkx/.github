@@ -65,10 +65,38 @@ on:
         required: false
         type: boolean
         default: true
+      lint:
+        description: >
+          On a pull request that moved the core or .github/: rustfmt and clippy, actionlint and the C
+          lint, on the one leg, ahead of the build. What reached master has been linted, so nothing
+          else asks for it.
+        required: false
+        type: boolean
+        default: false
+      extra_features:
+        description: "A feature set clippy also runs with (HyperTabular: async); empty for none"
+        required: false
+        type: string
+        default: ""
+      no_std_rustflags:
+        description: "RUSTFLAGS bare-metal clippy needs (HyperUuid: --cfg getrandom_backend=\"custom\"); empty for none"
+        required: false
+        type: string
+        default: ""
+      clippy_targets:
+        description: "Extra targets clippy runs the core for, comma-separated (HyperUuid: aarch64-linux-android); empty for none"
+        required: false
+        type: string
+        default: ""
+      c_lint:
+        description: "clang-format over the C and C++ smoke consumers and the hand-written C++ header, and shellcheck over c/smoke/, under `lint`"
+        required: false
+        type: boolean
+        default: true
       attest_native:
         description: >
           Emit a signed SLSA build-provenance attestation for each leg's native library.
-          Release mode only; the caller must hold id-token and attestations write.
+          A purpose=release dispatch only; the caller must hold id-token and attestations write.
         required: false
         type: boolean
         default: true
@@ -124,6 +152,9 @@ jobs:
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: ${{ inputs.lint && matrix.rid == 'linux-x64' && 'rustfmt, clippy' || '' }}
+          targets: ${{ inputs.lint && matrix.rid == 'linux-x64' && format('thumbv7em-none-eabi,wasm32-unknown-unknown{0}', inputs.clippy_targets != '' && format(',{0}', inputs.clippy_targets) || '') || '' }}
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -137,6 +168,60 @@ jobs:
         uses: ./.hyperforge/.github/actions/fetch-companions
         with:
           leg: hyper-core.yml:core:${{ matrix.rid }}
+
+      # The lint, ahead of the build, in the job that already set the toolchain up. A red lint here
+      # stops the core, and with it the suites that wait for it.
+      - name: cargo fmt --check
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+          for companion in fuzz browser-test; do
+            if [ -f "$companion/Cargo.toml" ]; then cargo fmt --check --manifest-path "$companion/Cargo.toml"; fi
+          done
+      - name: cargo clippy
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        working-directory: rust
+        env:
+          NO_STD_RUSTFLAGS: ${{ inputs.no_std_rustflags }}
+          EXTRA_FEATURES: ${{ inputs.extra_features }}
+          CLIPPY_TARGETS: ${{ inputs.clippy_targets }}
+        run: |
+          set -euo pipefail
+          cargo clippy --all-targets -- -D warnings
+          if [ -n "$EXTRA_FEATURES" ]; then cargo clippy --all-targets --features "$EXTRA_FEATURES" -- -D warnings; fi
+          RUSTFLAGS="$NO_STD_RUSTFLAGS" cargo clippy --no-default-features --target thumbv7em-none-eabi -- -D warnings
+          cargo clippy --no-default-features --features cdylib -- -D warnings
+          cargo clippy --features python -- -D warnings
+          for target in ${CLIPPY_TARGETS//,/ }; do cargo clippy --target "$target" -- -D warnings; done
+          [ -f fuzz/Cargo.toml ] && cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+          [ -f browser-test/Cargo.toml ] && cargo clippy --manifest-path browser-test/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings
+          true
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        with:
+          go-version: "1.26.x"
+          cache: false
+      - name: Install the pinned workflow validator
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Validate workflow syntax, interfaces and dependency graph
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        run: actionlint -shellcheck= -ignore 'property "workflow_(sha|repository)" is not defined'
+
+      # The smoke consumers and the hand-written C++ header are source like any other:
+      # c/.clang-format for C and C++ (the cbindgen header is generated, and checked by
+      # rust/tests/header.rs instead), shellcheck for the scripts. The runner image ships both.
+      - name: clang-format and shellcheck
+        if: inputs.lint && matrix.rid == 'linux-x64' && inputs.c_lint
+        run: |
+          set -euo pipefail
+          clang-format --version
+          shopt -s nullglob
+          clang-format --style=file:c/.clang-format --dry-run -Werror c/smoke/*.c c/smoke/*.cpp include/*.hpp
+          shellcheck c/smoke/*.sh
 
       # The plain core is built through the crate's own `cargo cdylib` alias (rust/.cargo/
       # config.toml), because how it is built is the crate's call: every Hyper* alias today
@@ -185,9 +270,7 @@ jobs:
       # from a fork, whose token cannot sign.
       - name: Attest native build provenance
         if: >-
-          inputs.attest_native && inputs.mode != 'pr' &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
+          inputs.attest_native && github.event.inputs.purpose == 'release'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: out/${{ matrix.lib_name }}
@@ -356,7 +439,7 @@ jobs:
         with:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
-          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && github.event.inputs.purpose == 'release' }}
 
       - name: Build this leg's static library
         if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
@@ -533,9 +616,7 @@ jobs:
       # Same attestation, for the same reason, as the matrix legs' libraries.
       - name: Attest native build provenance
         if: >-
-          inputs.attest_native && inputs.mode != 'pr' &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository)
+          inputs.attest_native && github.event.inputs.purpose == 'release'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: out/lib${{ inputs.crate }}.dylib

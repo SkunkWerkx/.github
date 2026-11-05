@@ -98,7 +98,7 @@ jobs:
           apple_mobile: ${{ inputs.apple_mobile }}
           android: ${{ inputs.android }}
           upload: "true"
-          attest: ${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+          attest: ${{ inputs.attest_native && github.event.inputs.purpose == 'release' }}
 
       # A consumer whose hyper.json sets swift_remote ships the Swift core as two zips on its
       # GitHub Release instead of committing it: the artifact bundle and the XCFramework this
@@ -123,7 +123,7 @@ jobs:
           path: ${{ runner.temp }}/swift-release-assets
 
       - name: Attest the Swift zips' provenance
-        if: steps.config.outputs.swift_remote == 'true' && inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: steps.config.outputs.swift_remote == 'true' && inputs.attest_native && github.event.inputs.purpose == 'release'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ runner.temp }}/swift-release-assets/*.zip
