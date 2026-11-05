@@ -130,7 +130,7 @@ jobs:
         with:
           name: static-libs
           path: .
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
           # An extra runtime for the older target frameworks of a multi-targeted test project
@@ -299,7 +299,7 @@ jobs:
           path: .
       # The runner's SDK, for the fetch's wiring (dotnet pack, with this RID's musl natives); the
       # Alpine suite has its own.
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
 

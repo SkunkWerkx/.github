@@ -226,7 +226,7 @@ jobs:
       # call above leaves its Ruby active; the step below exists only for `magnus: false`. With a
       # pin, its Bundler cache (and ruby-magnus's) is keyed with the pin's commit (cache-version);
       # '0', the default, keeps the key as before.
-      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         if: ${{ !inputs.magnus }}
         with:
           ruby-version: ${{ inputs.ruby_version }}

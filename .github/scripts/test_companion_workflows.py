@@ -1210,7 +1210,7 @@ class FetchStepTests(unittest.TestCase):
         steps = yaml_lite.load((WORKFLOWS / 'hyper-test-csharp.yml').read_text())['jobs']['test']['steps']
         fetch = next(i for i, s in enumerate(steps) if s.get('uses') == FETCH_USES)
         self.assertEqual(steps[fetch]['id'], 'companions')
-        self.assertLess(self._index(steps, 'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68'), fetch)
+        self.assertLess(self._index(steps, 'actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73'), fetch)
         # The suite: its project restored, then proven, right before `dotnet test`.
         suite = self._index(steps, "Test C# bindings against this platform's native lib")
         proof = steps[suite - 1]
@@ -1232,7 +1232,7 @@ class FetchStepTests(unittest.TestCase):
         # The musl leg packs on the runner: the SDK first.
         musl = yaml_lite.load((WORKFLOWS / 'hyper-test-csharp.yml').read_text())['jobs']['test-musl']['steps']
         fetch = next(i for i, s in enumerate(musl) if s.get('uses') == FETCH_USES)
-        self.assertLess(self._index(musl, 'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68'), fetch)
+        self.assertLess(self._index(musl, 'actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73'), fetch)
         # Blazor: the check's own project restored and proven right before the check.
         blazor = yaml_lite.load((WORKFLOWS / 'hyper-build-wasm.yml').read_text())['jobs']['test-blazor']['steps']
         fetch = next(i for i, s in enumerate(blazor) if s.get('uses') == FETCH_USES)
@@ -1339,7 +1339,7 @@ class FetchStepTests(unittest.TestCase):
         proof = steps[rspec - 1]
         self.assertEqual(proof['if'], "inputs.companions == 'true'")
         self.assertRegex(proof['run'], PROOF)
-        self.assertLess(self._index(steps, 'ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f'), rspec - 1)
+        self.assertLess(self._index(steps, 'ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94'), rspec - 1)
         # The lint: after setup-ruby's install, before anything runs under Bundler.
         lint = yaml_lite.load((WORKFLOWS / 'hyper-lint-ruby.yml').read_text())['jobs']['lint']['steps']
         proof = self._index(lint, 'Bundler took the pinned companion')

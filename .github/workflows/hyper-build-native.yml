@@ -624,14 +624,14 @@ jobs:
       # rule: the newest code is where a run fails, and a failure in the first minutes lets
       # the owner cancel the rest. The floor JDK is Temurin on every leg, win-arm64 included (21 ships it), and
       # Gradle is told to use exactly that install, never to go looking for another.
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         id: jdk_floor
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java && inputs.java_jni }}
         with:
           distribution: temurin
           java-version: ${{ inputs.jdk_floor_version }}
 
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java && inputs.java_jni }}
         with:
           distribution: ${{ matrix.jdk_distribution }}
@@ -974,7 +974,7 @@ jobs:
       # ---------------------------------------------------------------------------
 
       # C#: the real [LibraryImport] resolution/marshalling path per OS.
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.csharp }}
         with:
           global-json-file: global.json
@@ -1080,7 +1080,7 @@ jobs:
           path: aot-publish.log
 
       # Java: the real FFM downcall path per OS.
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         if: ${{ matrix.shard != 'swift-ruby' && !cancelled() && steps.native_lib.conclusion == 'success' && inputs.java && !inputs.java_jni }}
         with:
           distribution: ${{ matrix.jdk_distribution }}
@@ -1367,7 +1367,7 @@ jobs:
       # a Magnus extension exists there. The primary-ABI call above leaves its Ruby active,
       # so this inherits it and needs no setup-ruby of its own — the step below exists only
       # for `magnus: false`, where nothing has installed a Ruby yet.
-      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         if: ${{ matrix.shard != 'ffi' && !cancelled() && steps.native_lib.conclusion == 'success' && !inputs.magnus && inputs.ruby }}
         with:
           ruby-version: ${{ inputs.ruby_version }}
@@ -1487,7 +1487,7 @@ jobs:
           echo "architectures: $archs"
           [ "$archs" = x86_64 ] || { echo "::error::expected an x86_64 JNI library, got: $archs"; exit 1; }
 
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         id: jdk_floor
         if: ${{ inputs.java && inputs.java_jni }}
         with:
@@ -1495,7 +1495,7 @@ jobs:
           java-version: ${{ inputs.jdk_floor_version }}
           architecture: x64
 
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         if: ${{ inputs.java && inputs.java_jni }}
         with:
           distribution: temurin

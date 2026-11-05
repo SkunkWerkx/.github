@@ -445,7 +445,7 @@ jobs:
           name: ${{ inputs.artifact_name }}
           path: ${{ runner.temp }}/staticlib
       - name: The .NET SDKs
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
           # .NET 10 beside the pinned SDK, for the net10.0 Blazor legs.
@@ -514,7 +514,7 @@ jobs:
         with:
           leg: hyper-build-wasm.yml:test-rust-browser
 
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: wasm-pack
       - name: wasm-bindgen tests in headless Chrome
@@ -798,7 +798,7 @@ jobs:
 
       # The host Ruby only runs Bundler, rake and rbwasm; the interpreter rbwasm builds is
       # matrix.abi whatever this is.
-      - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         with:
           ruby-version: "4.0"
           bundler-cache: true

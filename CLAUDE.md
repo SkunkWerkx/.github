@@ -227,6 +227,21 @@ actionlint (pinned version, flags in the workflow). It runs on pull requests tha
 platform: real behaviour shows up only in the consumers' release-mode CI and in a real
 release.
 
+## Disk
+
+The suites fill a laptop quickly, and scratch checkouts multiply it: one session's scratch folder
+reached 99 GB and one container 50 GB, until a 460 GB disk had 117 MB left, Docker's VM went
+read-only and other apps failed to save. `.github/scripts/dev_purge.sh` takes that back. It prints
+its plan unless given `--yes`, and `--stop` is a separate decision. It never touches tracked files,
+untracked source, toolchains, Docker volumes or a scratch folder in use. Delete a scratch checkout
+when its run ends, and never run the purge unasked: `--stop` ends the owner's other sessions.
+
+`dev_purge_hook.sh` is the brake, a Claude Code PreToolUse hook on Bash installed per developer in
+`~/.claude/settings.json` (its header has the JSON). Under 50 GB free (`DEV_PURGE_MIN_FREE_GB`) it
+refuses every command except those that only inspect or free space. It sees a command before it
+starts, so one already running keeps writing, and only Bash passes through it. The hook runs from
+this checkout, so a branch without the script turns it off, without an error that stops anything.
+
 ## Working with the owner
 
 - The owner drives git. Don't commit, push, tag, open pull requests or dispatch workflows

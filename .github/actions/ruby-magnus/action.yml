@@ -125,7 +125,7 @@ runs:
     # fails: RI_DEVKIT is per-Ruby (C:\hostedtoolcache\windows\Ruby\<ver>\<arch>\msys64),
     # the second Ruby inherited the first one's, and fiddle's mkmf under it found no
     # pkg-config and no libffi. RubyInstaller's devkit belongs to its Ruby.
-    - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+    - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
       with:
         ruby-version: ${{ inputs.ruby-version }}
         bundler: default
