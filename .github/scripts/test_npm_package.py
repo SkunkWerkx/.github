@@ -12,7 +12,7 @@ import unittest
 
 from hyper_config import NODE_PLATFORMS
 import npm_package
-from release_package_metadata import WASI_RUNTIME, npm_all_names, npm_filename
+from release_package_metadata import WASI_RUNTIME, npm_all_names, npm_filename, tar_entries
 from test_package_inventory_metadata import NODE_SUFFIXES, NODE_WASI, WASI_RUNTIME_PINS, write_npm, write_tar
 
 ENGINES = '^22.14.0 || >=23.6.0'
@@ -211,6 +211,32 @@ class NpmPackageTests(unittest.TestCase):
         self.assertEqual(list(fake.commands[0][0]), ['bun', 'install', '--frozen-lockfile', '--ignore-scripts'])
         self.assertEqual(Path(fake.commands[2][0][0]).name.split('.')[0], 'npm')
         self.assertEqual(fake.commands[2][0][1], 'pack')
+
+    def test_platform_and_wasi_packages_carry_the_license_texts_the_package_has(self):
+        (self.package / 'LICENSE').write_text('MIT\n')
+        (self.package / 'LICENSE-UNICODE').write_text('UNICODE\n')
+        code = npm_package.main(['pack', '--package', str(self.package), '--artifacts', str(self.artifacts),
+                                 '--out', str(self.out), '--root', str(self.tmp), '--work', str(self.tmp / 'work')],
+                                runner=FakeNpm(), cfg=CFG)
+        self.assertEqual(code, 0)
+        carried = 0
+        for path in self.out.glob('*.tgz'):
+            members = tar_entries(path)
+            if any(m.endswith(('.node', '.wasm')) for m in members):
+                self.assertIn('package/LICENSE', members, path.name)
+                self.assertIn('package/LICENSE-UNICODE', members, path.name)
+                carried += 1
+        self.assertEqual(carried, len(NODE_PLATFORMS) + 1)
+
+    def test_a_project_without_unicode_data_carries_only_its_own_license(self):
+        (self.package / 'LICENSE').write_text('MIT\n')
+        code = npm_package.main(['pack', '--package', str(self.package), '--artifacts', str(self.artifacts),
+                                 '--out', str(self.out), '--root', str(self.tmp), '--work', str(self.tmp / 'work')],
+                                runner=FakeNpm(), cfg=CFG)
+        self.assertEqual(code, 0)
+        members = [m for path in self.out.glob('*.tgz') for m in tar_entries(path)]
+        self.assertIn('package/LICENSE', members)
+        self.assertNotIn('package/LICENSE-UNICODE', members)
 
     def test_pack_wasi_cli_stages_creates_dirs_and_packs_the_wasi_dir_only(self):
         fake = FakeNpm()

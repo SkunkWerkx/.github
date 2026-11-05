@@ -123,6 +123,18 @@ def create_npm_dirs(work, runner=default_runner):
     runner(['napi', 'create-npm-dirs'], Path(work))
 
 
+def carry_licenses(work, package):
+    """Every package holds the compiled core, so each carries the license texts the root does. A
+    generated manifest's `files` lists only the build's output, and npm's automatic LICENSE
+    inclusion stops at that exact name, so each file is listed too."""
+    names = [name for name in ('LICENSE', 'LICENSE-UNICODE') if (Path(work) / name).is_file()]
+    for name in names:
+        shutil.copy2(Path(work) / name, Path(package) / name)
+    manifest = read_manifest(package)
+    manifest['files'] = [*manifest.get('files', []), *names]
+    write_manifest(package, manifest)
+
+
 def fill_wasi_dir(work, artifact_dir, crate, wasi):
     """Copy the artifact into `npm/<wasi>/`; every file the generated manifest lists must then exist."""
     wasi_dir = Path(work) / 'npm' / wasi
@@ -134,6 +146,7 @@ def fill_wasi_dir(work, artifact_dir, crate, wasi):
     wasm = f'{crate}.{wasi}.wasm'
     if not (wasi_dir / wasm).is_file():
         raise ValueError(f'the WASI artifact has no {wasm}')
+    carry_licenses(work, wasi_dir)
     return wasi_dir
 
 
@@ -165,6 +178,7 @@ def fill_native_dir(work, artifact_dir, crate, suffix):
         raise ValueError(f'missing addon {addon}')
     native_dir = Path(work) / 'npm' / suffix
     shutil.copy2(addon, native_dir / addon.name)
+    carry_licenses(work, native_dir)
     return native_dir
 
 

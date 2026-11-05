@@ -126,6 +126,11 @@ class ConfigTests(unittest.TestCase):
 
 
 class AssembleTests(Fixture):
+    def test_a_project_with_unicode_data_ships_that_license_too(self):
+        (self.root / 'LICENSE-UNICODE').write_text('UNICODE LICENSE V3\n')
+        tree = self.assemble('linux-x64', self.lib('libhyperuuid.a'), self.lib('libhyperuuid.so'))
+        self.assertEqual((tree / 'LICENSE-UNICODE').read_text(), 'UNICODE LICENSE V3\n')
+
     def test_linux_carries_both_libraries_and_the_package_files(self):
         tree = self.assemble('linux-x64', self.lib('libhyperuuid.a'), self.lib('libhyperuuid.so'))
         self.assertEqual(tree.name, 'hyperuuid-1.1.0-linux-x64')

@@ -9,7 +9,7 @@ static libraries CI built and attested, and the files CMake and pkg-config find 
       bin/{crate}.dll, lib/{crate}.dll.lib, lib/{crate}.lib          (Windows)
       lib/pkgconfig/{crate}.pc
       lib/cmake/{crate}/{crate}Config.cmake, {crate}ConfigVersion.cmake
-      LICENSE, README.md
+      LICENSE, README.md (and LICENSE-UNICODE, for a project that carries Unicode's data)
 
 The consumer's `c/` holds what is particular to it: `{crate}.pc.in`,
 `cmake/{crate}Config.cmake`, `cmake/{crate}ConfigVersion.cmake.in` and `README.md`. Three
@@ -181,6 +181,9 @@ def assemble(cfg, root, rid, version, static, shared, out):
     for source, destination in templates.items():
         (tree / destination).write_text(fill((c / source).read_text(), values, f'c/{source}'), newline='\n')
     shutil.copyfile(root / 'LICENSE', tree / 'LICENSE')
+    # A project that carries third-party data names its license beside its own.
+    if (root / 'LICENSE-UNICODE').exists():
+        shutil.copyfile(root / 'LICENSE-UNICODE', tree / 'LICENSE-UNICODE')
     return tree
 
 
