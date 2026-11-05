@@ -220,7 +220,8 @@ class MappingRowTests(unittest.TestCase):
     """One per row of the spec's mapping table."""
 
     def test_rust_core(self):
-        for workflow, job, rid in (('hyper-core-checks.yml', 'checks', None), ('hyper-build-wasm.yml', 'build-wasm', None),
+        for workflow, job, rid in (('hyper-core-checks.yml', 'checks', None), ('hyper-core-proofs.yml', 'proofs', None),
+                                   ('hyper-build-wasm.yml', 'build-wasm', None),
                                    ('hyper-build-android.yml', 'build-native-android', 'android-x64')):
             with self.subTest(job=job):
                 self.assertEqual(ecos(workflow, job, rid), ['rust'])

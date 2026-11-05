@@ -210,7 +210,7 @@ case "$binding" in
       chmod +x gradlew
       companion_java /src /work /forge origin /work/java
       ./gradlew test testFloor checkSuiteParity :aot-smoke-test:run --console=plain \
-        -Porg.gradle.java.installations.paths=/musl/jdk-floor -Porg.gradle.java.installations.auto-detect=false
+        -Dorg.gradle.java.installations.paths=/musl/jdk-floor -Dorg.gradle.java.installations.auto-detect=false
     '
     ;;
 

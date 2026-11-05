@@ -1468,7 +1468,7 @@ class JniContracts(unittest.TestCase):
         text = '\n'.join(str(s) for s in self.steps('build-native'))
         for value in ('cargo build --release --locked --lib', 'GLIBC_2.34', 'nm -D --defined-only', 'JNI_OnLoad',
                       'core_exports()', './gradlew test testFloor checkSuiteParity javadoc --console=plain',
-                      '-Porg.gradle.java.installations.auto-detect=false', 'jni-${{ matrix.rid }}'):
+                      '-Dorg.gradle.java.installations.auto-detect=false', 'jni-${{ matrix.rid }}'):
             self.assertIn(value, text)
         osx = '\n'.join(str(s) for s in self.steps('build-native-osx-x64'))
         for value in ('--target x86_64-apple-darwin', 'lipo -archs', 'os.arch = x86_64', 'jni-osx-x64',

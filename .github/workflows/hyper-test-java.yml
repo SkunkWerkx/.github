@@ -120,7 +120,7 @@ jobs:
       # another. Both before the fetch: its Java wiring runs the pin's own Gradle.
       - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         id: jdk_floor
-        if: inputs.mode != 'pr' && inputs.java_jni
+        if: inputs.java_jni
         with:
           distribution: temurin
           java-version: ${{ inputs.jdk_floor_version }}
@@ -206,16 +206,17 @@ jobs:
         working-directory: java
         env:
           JDK_FLOOR_PATH: ${{ steps.jdk_floor.outputs.path }}
-          # A pull request runs the corpus on the primary JDK; the floor, the suite parity and the
-          # javadoc wait for a release.
+          # A pull request runs the corpus on the primary JDK; the floor suite, the suite parity and
+          # the javadoc wait for a release. It still installs the floor JDK: `test` depends on
+          # checkFloorApi, which runs on it.
           TASKS: ${{ inputs.mode == 'pr' && 'test' || 'test testFloor checkSuiteParity javadoc' }}
         run: |
           chmod +x gradlew
           # shellcheck disable=SC2086
-          ./gradlew $TASKS --console=plain -Porg.gradle.java.installations.paths="$JDK_FLOOR_PATH" -Porg.gradle.java.installations.auto-detect=false
+          ./gradlew $TASKS --console=plain -Dorg.gradle.java.installations.paths="$JDK_FLOOR_PATH" -Dorg.gradle.java.installations.auto-detect=false
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: inputs.mode != 'pr' && inputs.java_jni
+        if: inputs.java_jni
         with:
           name: jni-${{ matrix.rid }}
           path: java/jni/target/release/${{ matrix.jni_lib_name }}
@@ -434,7 +435,7 @@ jobs:
           set -euo pipefail
           java -XshowSettings:properties -version 2>&1 | grep 'os.arch = x86_64'
           chmod +x gradlew
-          ./gradlew test testFloor checkSuiteParity javadoc --console=plain -Porg.gradle.java.installations.paths="$JDK_FLOOR_PATH" -Porg.gradle.java.installations.auto-detect=false
+          ./gradlew test testFloor checkSuiteParity javadoc --console=plain -Dorg.gradle.java.installations.paths="$JDK_FLOOR_PATH" -Dorg.gradle.java.installations.auto-detect=false
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

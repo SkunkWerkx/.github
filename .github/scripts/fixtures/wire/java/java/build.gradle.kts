@@ -26,7 +26,8 @@ repositories {
 // JNI Native) compiles for jdkFloor, and src/main/java25 (the FFM Native) with --release 25.
 // Gradle, Spotless, javadoc and publish all run on JDK 25. It is HyperCast's floor too: the
 // HyperCast jar this one depends on is the same multi-release shape.
-val jdkFloor by extra(21)
+val jdkFloor = 21
+extra.set("jdkFloor", jdkFloor)
 
 // The formatter, over every Java file in the build: the library, its tests, the floor-API
 // check (gradle/FloorApiCheck.java), the AOT smoke test and the JMH benchmarks. palantir-java-format is google-java-format's rules at a

@@ -1,0 +1,155 @@
+name: HyperForge — prove the core's thesis
+
+# The core is no_std, never allocates and cannot panic, and every binding relies on that: it hands
+# the core its memory and takes back a code it turns into its own idiom. So these proofs gate every
+# pull request that builds the core, one job on x64, rather than waiting for hyper-core-checks.yml
+# on a board or a release, by when the commit that broke them is on master. The steps are that
+# workflow's own, which runs them on its hosts; test_hyper_core_proofs.py holds the two equal. The
+# allocation suite runs in hyper-core.yml's `cargo test --release`.
+on:
+  workflow_call:
+    inputs:
+      no_std:
+        description: "cargo check for a bare-metal target, a default-features = false consumer on the host and wasm32-unknown-unknown, and no `extern crate alloc` in the core"
+        required: false
+        type: boolean
+        default: true
+      no_std_rustflags:
+        description: "RUSTFLAGS the no_std builds need (HyperUuid: --cfg getrandom_backend=\"custom\"); empty for none"
+        required: false
+        type: string
+        default: ""
+      no_panic:
+        description: "Prove no panic path survives in a release build of every export (no_panic_command)"
+        required: false
+        type: boolean
+        default: true
+      no_panic_command:
+        description: "The command, run in rust/, whose link fails on a surviving panic path"
+        required: false
+        type: string
+        default: "cargo build --release --example no_panic --features no-panic"
+      no_panic_canary:
+        description: "The crate's canary: a function that can panic, compiled in only under the cfg of the same name, which no_panic_command must then reject by that name alone (HyperCast: hypercast_canary); empty for none. The canary build sets RUSTFLAGS to that cfg, which replaces the rustflags .cargo/config.toml sets for the target"
+        required: false
+        type: string
+        default: ""
+      core_script:
+        description: "A repository-owned script that holds the crate's proofs, run in rust/ (HyperTabular: rust/check-core.sh, whose own canary is why it sets no_panic false)"
+        required: false
+        type: string
+        default: ""
+      python_version:
+        required: false
+        type: string
+        default: "3.14"
+
+jobs:
+  proofs:
+    runs-on: ubuntu-26.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy, llvm-tools
+          targets: thumbv7em-none-eabi,wasm32-unknown-unknown,x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      # The pinned companion, as in hyper-core-checks.yml: HyperTabular's core builds against it.
+      - name: Fetch the companions
+        id: companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-core-proofs.yml:proofs
+
+      - name: cargo check (no_std, bare metal)
+        if: inputs.no_std
+        working-directory: rust
+        env:
+          RUSTFLAGS: ${{ inputs.no_std_rustflags }}
+        run: cargo check --no-default-features --target thumbv7em-none-eabi
+
+      # The check above only ever passes because a bare-metal target cannot produce a cdylib.
+      # A manifest that lists one makes a `default-features = false` consumer fail on every
+      # target that can produce one, which is the developer's own machine and the browser.
+      # This builds a consumer the way one would actually depend on the crate, on both. The
+      # host needs no RUSTFLAGS; wasm32-unknown-unknown has no OS and gets the same flags the
+      # bare-metal check names.
+      - name: A default-features = false consumer builds on the host and for wasm32-unknown-unknown
+        if: inputs.no_std
+        env:
+          NO_STD_RUSTFLAGS: ${{ inputs.no_std_rustflags }}
+        run: |
+          set -euo pipefail
+          crate=$(python3 -c 'import json; print(json.load(open(".github/hyper.json"))["crate"])')
+          consumer="$RUNNER_TEMP/no-std-consumer"
+          mkdir -p "$consumer/src"
+          printf '%s\n' '[package]' 'name = "no-std-consumer"' 'version = "0.0.0"' 'edition = "2024"' '' \
+            '[dependencies]' "$crate = { path = \"$GITHUB_WORKSPACE/rust\", default-features = false }" \
+            > "$consumer/Cargo.toml"
+          printf '%s\n' '#![no_std]' "pub use $crate as core_under_test;" > "$consumer/src/lib.rs"
+          cargo build --manifest-path "$consumer/Cargo.toml"
+          RUSTFLAGS="$NO_STD_RUSTFLAGS" cargo build --manifest-path "$consumer/Cargo.toml" --target wasm32-unknown-unknown
+
+      # The stronger half of the no_std claim: a bare-metal consumer supplies an entropy
+      # backend and a panic handler and no `#[global_allocator]`. `cargo check` never links,
+      # so a missing allocator never surfaces for an rlib; the regression to guard is the
+      # declaration itself. Anchored to a line start: the core's lib.rs explains in a comment
+      # that there is no `extern crate alloc`, and an unanchored grep reads that sentence as
+      # the thing it forbids. The extension modules sit behind features that pull in std.
+      - name: assert the core links no allocator
+        if: inputs.no_std
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          if grep -rnE '^[[:space:]]*extern crate alloc' src \
+               --exclude=python_ext.rs --exclude=ruby_ext.rs --exclude=php_ext.rs --exclude-dir=php_ext; then
+            echo '::error::The core declared "extern crate alloc"; it documents that a bare-metal consumer needs no global allocator (rust/README.md, no_std). Drop the allocation or update that claim.' >&2
+            exit 1
+          fi
+          echo "no allocator dependency in the core"
+
+      - name: The repository's own core checks
+        if: inputs.core_script != ''
+        working-directory: rust
+        run: ../${{ inputs.core_script }}
+
+      # Any panic path the optimizer leaves in a `#[no_panic]` function becomes an undefined
+      # symbol, so the link fails naming the function. A panic that crossed the C ABI would
+      # abort the host process, or trap the wasm instance, rather than surface as an error
+      # code.
+      - name: the public API and the C exports link with no panic path
+        if: inputs.no_panic
+        working-directory: rust
+        run: ${{ inputs.no_panic_command }}
+
+      # The step above passing proves nothing on its own if the functions it should check were
+      # never linked, or the check stopped running: a proof that has never rejected anything has
+      # not been shown to check anything. A crate that names its canary gets the same build with
+      # the canary compiled in, which must fail, naming the canary and nothing else.
+      - name: the canary panics, and is the only function the no-panic proof names
+        if: inputs.no_panic && inputs.no_panic_canary != ''
+        working-directory: rust
+        env:
+          CANARY: ${{ inputs.no_panic_canary }}
+          NO_PANIC_COMMAND: ${{ inputs.no_panic_command }}
+        run: python ../.hyperforge/.github/scripts/no_panic_canary.py --name "$CANARY" -- bash -c "$NO_PANIC_COMMAND"

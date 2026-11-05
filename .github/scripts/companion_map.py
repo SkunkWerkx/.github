@@ -144,6 +144,7 @@ JOBS = {
     ('hyper-core.yml', 'core-musl'): ('rust', 'c'),
     ('hyper-core.yml', 'core-osx-x64'): ('rust', 'c'),
     ('hyper-core-checks.yml', 'checks'): ('rust',),
+    ('hyper-core-proofs.yml', 'proofs'): ('rust',),
     ('hyper-check-core.yml', 'check-no-std'): ('rust',),
     ('hyper-check-core.yml', 'check-no-panic'): ('rust',),
     ('hyper-check-core.yml', 'check-core'): ('rust',),
