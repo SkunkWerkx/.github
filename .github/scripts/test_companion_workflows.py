@@ -771,8 +771,7 @@ class FetchStepTests(unittest.TestCase):
                 first = next(i for i, s in enumerate(steps) if resolves(s))
                 self.assertLess(fetches[0], first, steps[first].get('name') or steps[first].get('uses'))
                 # Gated only by the job's own switch for the tool the wiring runs.
-                self.assertIn(fetch.get('if'), (None, 'inputs.lint_go', 'inputs.lint_java_jni', 'inputs.lint_node',
-                                                 'inputs.lint_ruby', 'inputs.lint_r'))
+                self.assertIsNone(fetch.get('if'))
                 # Wiring Rust runs cargo (cargo update) on the host: the job's own toolchain is
                 # set up first, under no narrower condition than the fetch, never the image's.
                 if 'rust' in ecosystems:
@@ -982,7 +981,7 @@ class FetchStepTests(unittest.TestCase):
                 proof = steps[names.index(origin)]
                 self.assertEqual(proof['run'], '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py npm --root . '
                                                + flags)
-                self.assertEqual(proof['if'].replace('inputs.lint_node && ', ''),
+                self.assertEqual(proof['if'].replace("inputs.lint && matrix.rid == 'linux-x64' && ", ''),
                                  "steps.companions.outputs.active == 'true'")
                 # Every install comes before the proof, the suite after it, and nothing installs in
                 # between (the x64 Node of the Rosetta leg is set up before its proof).
@@ -1024,6 +1023,10 @@ class FetchStepTests(unittest.TestCase):
     HEAD_RUNS = {
         ('hyper-test-typescript.yml', 'test'): {
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
+            'Install the dev dependencies': '64d8acd5dbc01be7',
+            'bun run lint': 'f1e294de75598104',
+            'cargo fmt --check': '194fabc0129ce4a9',
+            'cargo clippy': 'e89ad37e84720f8f',
             'Build the TypeScript (napi-rs) addon': '12c3425533ee7f05',
             'glibc the TypeScript addon references (printed, never fails)': '20a027e529cef154',
             'Test TypeScript bindings on Node': '3c777d6ebebb16d6',
@@ -1060,6 +1063,8 @@ class FetchStepTests(unittest.TestCase):
     # added the PHP build's thread-safety check and moved its macOS and Alpine steps.
     RUBY_PHP_HEAD_RUNS = {
         ('workflows/hyper-test-ruby.yml', 'test'): {
+            'rake docs:check': '2fe7ba0d29cf77eb',
+            'rubocop': '9bd27eb7ae1f5167',
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
             'Point Xcode at a full toolchain (works around a Ruby native-extension mkmf issue)': 'a5ddfc440d5e810f',
             "Point bindgen at one system LLVM, not at Swift's clang": '6047d04ccc1a8ca6',
@@ -1074,6 +1079,7 @@ class FetchStepTests(unittest.TestCase):
             'Build and stage the Magnus extension — Ruby ${{ inputs.ruby-version }}': '275b9dcc84c7fe5b',
             'Test Ruby bindings (Magnus backend) — Ruby ${{ inputs.ruby-version }}': 'f8e2d40e29bbb266'},
         ('workflows/hyper-build-php-extension.yml', 'build'): {
+            'phpcs': 'dff552b8c6437bf3',
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
             'The companions this run builds': '0dc39067430cedef', 'The mode this run is in': 'a464654c90805cac',
             'The companions built from the registry': '41daeff08859aa2c',
@@ -1110,6 +1116,13 @@ class FetchStepTests(unittest.TestCase):
     # the fetch needs.
     JVM_DOTNET_HEAD_RUNS = {
         ('hyper-test-java.yml', 'test'): {
+            'spotlessCheck': '49d6e5df189f33ed',
+            'cargo fmt --check (java/jni)': '194fabc0129ce4a9',
+            'cargo clippy (java/jni)': '0aa58d1cc572c495',
+            'cargo test (java/jni)': '867397632d16f206',
+            'The release build links libc and nothing else': '9c6103afa7f613aa',
+            "JNI_OnLoad plus the core's exports, and nothing else": '79f101e229312afd',
+            'No panic path survives in a release build of every native': 'cf1a11156857521d',
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
             'Stage the core where a dev-loop build looks': '0fda8b8ce8153626',
             'Build the JNI library': '16a5a04fe2d76414', 'Place both libraries for the Java suites': '92d3295521c6d0ff',
@@ -1123,6 +1136,7 @@ class FetchStepTests(unittest.TestCase):
             'Place both libraries for the Java suites': 'e081616a7d48018f',
             'Test Java (JNI) on an x64 JDK, primary and floor': '118c4e06e1f65ffa'},
         ('hyper-test-csharp.yml', 'test'): {
+            'dotnet format whitespace --verify-no-changes': '0d76724b90e9fe2e',
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
             'Stage the core where a dev-loop build looks': '0fda8b8ce8153626',
             'Place native lib for C# in-repo testing': 'c040c04fec94695d',
@@ -1836,9 +1850,7 @@ HEAD_CACHE_WITH = {
          'working-directory': 'ruby'}],
     ('hyper-test-r.yml', 'test', 'r-lib/actions/setup-r-dependencies'): [
         {'working-directory': 'r', 'extra-packages': LINT_R_PACKAGES},
-        {'working-directory': 'r', 'extra-packages': LINT_R_PACKAGES}],
-    ('hyper-test-ruby.yml', 'test', 'ruby/setup-ruby'): [
-        {'ruby-version': '${{ inputs.ruby_version }}', 'bundler-cache': True, 'working-directory': 'ruby'}],
+        {'working-directory': 'r', 'extra-packages': 'any::rcmdcheck'}],
     ('hyper-test-ruby.yml', 'test', './.hyperforge/.github/actions/ruby-magnus'): [
         {'ruby-version': '${{ inputs.ruby_compat_version }}', 'crate': '${{ inputs.crate }}', 'rid': '${{ matrix.rid }}',
          'attest': "${{ inputs.attest_native && inputs.mode != 'pr' && (github.event_name != 'pull_request' || "
@@ -1849,6 +1861,7 @@ HEAD_CACHE_WITH = {
                    "github.event.pull_request.head.repo.full_name == github.repository) }}",
          'companions': '${{ steps.companions.outputs.active }}', 'python': FETCH_PY}],
     ('hyper-test-ruby.yml', 'test', 'ruby/setup-ruby'): [
+        {'ruby-version': '${{ inputs.ruby_version }}', 'bundler-cache': True, 'working-directory': 'ruby'},
         {'ruby-version': '${{ inputs.ruby_version }}', 'bundler': 'default', 'bundler-cache': True,
          'working-directory': 'ruby'}],
     ('hyper-build-wasm.yml', 'build-ruby-wasm', 'ruby/setup-ruby'): [
@@ -2880,6 +2893,9 @@ class SwiftCWorkflowTests(unittest.TestCase):
     # step came with the C wiring (Task 14), with the Forge checkout the fetch needs.
     HEAD_RUNS = {
         ('hyper-test-swift.yml', 'test'): {
+            'Install SwiftLint': 'f2a8873ca49421ce',
+            'Lint': '8e9f90928aa751b3',
+            'swift format lint': '39727ce239d15155',
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
             "The image's Swift is the matrix's": 'ba7ac5c5707e3dc2',
             'Key the installed Swift toolchain (Windows)': '3e1367e780b4d0f6',
@@ -3330,11 +3346,13 @@ class RWorkflowTests(unittest.TestCase):
     # ones gated on the fetch's outputs runs exactly these.
     HEAD_RUNS = {
         'hyper-test-r.yml': {'Validate Forge workflow revision': 'b43ed1cffc80ac65',
-                             "Vendor the R package's core, crates and corpus": '0d38af4c60e4d15c'},
+                             "Vendor the R package's core, crates and corpus": '0d38af4c60e4d15c',
+                             'Install the package for lintr': 'cee0518663db22d1', 'lintr': '7f3ad07a8a8a0599',
+                             'cargo fmt --check': 'f734e50e77428b7d', 'clang-format --dry-run': '3ca522cb73ba0422'},
     }
     # HEAD 666a621's steps, whole (sorted JSON): what is left once the companion steps go and the release-mode clause leaves each
     # setup-r-dependencies `if`.
-    HEAD_STEPS = {'hyper-test-r.yml': '8fba8832f8ae11d5b3a2112c43461db4d7fd158745d14d6a1023bd03bdffcbe2',
+    HEAD_STEPS = {'hyper-test-r.yml': '48d4315a35f17b031ad1e9acc51a8445499903a7dfb5b9500bf34d7c987381ac',
                   }
 
     def steps(self, workflow):

@@ -3,7 +3,7 @@ name: HyperForge — test the R binding
 # One of the hyper-test-<binding>.yml workflows: this binding's suite on every leg, against
 # the core hyper-core.yml built and uploaded as `native-<rid>`, in a job of its own so a
 # consumer's board runs it only when the binding (or the core, or the workflows) changed,
-# after its hyper-lint-<binding>.yml gate. It never builds a second core: the bindings that
+# with its linters first when the caller says so. It never builds a second core: the bindings that
 # load the shared library download it, the ones that link the static archive download
 # `static-libs`, and the ones that compile their own extension from rust/ download nothing.
 # The steps are hyper-build-native.yml's, with that job's `!cancelled()` and shard guards
@@ -233,8 +233,8 @@ jobs:
           error-on: '"note"'
 
       # The same check on the previous R minor, the floor the package's users are likeliest to
-      # still run. Linux x64 only: what differs between R minors is R, not the platform. In pr
-      # mode hyper-lint-r.yml runs it, once per board; here in release mode. The three steps
+      # still run. Linux x64 only: what differs between R minors is R, not the platform. Release
+      # mode only. The three steps
       # carry their own library paths: setup-r-dependencies writes R_LIBS_SITE, R_LIBS_USER and
       # R_LIB_FOR_PAK to GITHUB_ENV only when they are unset, so without these the floor R
       # would search the first R's libraries, find its pak missing and fail to load its

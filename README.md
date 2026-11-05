@@ -67,18 +67,8 @@ jobs:
       no_panic_runners: '["ubuntu-26.04"]'
       corpus_oracle: ""
       big_endian: s390x-unknown-linux-gnu
-  lint-csharp:
-    needs: [changes]
-    if: needs.changes.outputs.csharp == 'true' || needs.changes.outputs.core == 'true' || needs.changes.outputs.ci == 'true'
-    uses: SkunkWerkx/.github/.github/workflows/hyper-lint-csharp.yml@master
-    permissions:
-      contents: read
-    with:
-      mode: ${{ github.event_name == 'pull_request' && 'pr' || 'release' }}
-      crate: hypercast
-      project: HyperCast
   test-csharp:
-    needs: [changes, lint-csharp, core, build-static]
+    needs: [changes, core, build-static]
     if: needs.changes.outputs.csharp == 'true' || needs.changes.outputs.core == 'true' || needs.changes.outputs.ci == 'true'
     uses: SkunkWerkx/.github/.github/workflows/hyper-test-csharp.yml@master
     permissions:
@@ -87,12 +77,13 @@ jobs:
       mode: ${{ github.event_name == 'pull_request' && 'pr' || 'release' }}
       crate: hypercast
       project: HyperCast
+      lint: ${{ github.event_name == 'pull_request' && needs.changes.outputs.lint_csharp == 'true' }}
       csharp_aot_project: csharp/HyperCast.AotSmokeTest/HyperCast.AotSmokeTest.csproj
       csharp_aot_frameworks: "net10.0 net11.0"
       csharp_test_project: csharp/HyperCast.Tests/HyperCast.Tests.csproj
       csharp_extra_runtime: "10.0"
       csharp_runtimes_dir: csharp/HyperCast/runtimes
-  # ... build-static, build-android, the other lints and suites, pack-c, build-wasm,
+  # ... build-static, build-android, the other suites, pack-c, build-wasm,
   # build-wheels, and the repo's own Apple-mobile, Android, NuGet and npm consumer tests
   nuget-org-pack:           # the release tail: only a purpose=release dispatch on master
     needs: [changes, forge]
@@ -111,7 +102,7 @@ jobs:
       source_run_id: ${{ github.run_id }}
   # ... forge, the other pack jobs, release-prepare, codeql, stage-release
   pr-board:                 # the one status to read
-    needs: [changes, core, core-checks, lint-csharp, test-csharp, nuget-org-pack]  # ...and every other job
+    needs: [changes, core, core-checks, test-csharp, nuget-org-pack]  # ...and every other job
     if: always()
     runs-on: ubuntu-26.04
     permissions:

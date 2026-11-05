@@ -1,7 +1,7 @@
 name: HyperForge — lint the Rust core
 
-# rustfmt and clippy over the core, for a pull request that moved it: a job of its own, like the
-# hyper-lint-<binding>.yml workflows, so a pull request gets the lint without hyper-core-checks.yml's
+# rustfmt and clippy over the core, for a pull request that moved it: a job of its own, because a
+# core change has no binding job to run it in, so a pull request gets the lint without hyper-core-checks.yml's
 # release checks (the MSRV, semver, big-endian). Those run on a board and in a release, whose
 # hyper-core-checks.yml lints the same way. Bare-metal and Android clippy stay there. The no_std and
 # no-panic proofs gate a pull request through hyper-core-proofs.yml.

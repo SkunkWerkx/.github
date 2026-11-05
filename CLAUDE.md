@@ -117,11 +117,14 @@ artifact names, so a consumer can run one or the other, never both at once (two 
   wasmtime, actionlint, and `c_lint`'s clang-format and shellcheck over `c/smoke/` and the
   C++ header) in one job on three hosts (ubuntu x64 and arm64, Windows x64); the x64-only
   steps carry `matrix.arch == 'x64'`. No binding lint lives here.
-- `hyper-lint-<binding>.yml`, nine of them (csharp, java, python, ruby, php, swift,
-  typescript, r, go): the binding's formatter and linter on `ubuntu-26.04-arm`, no artifact,
-  no `needs`. Go's `linters: full` adds the cross-compile sweep and the race run; its fast
-  default keeps `go vet`, revive and the committed-core regeneration check, which is the
-  one check a core change must not skip, so `linters: core` runs it alone. `hyper-lint-rust.yml`
+- A binding's lint is not a job. Each `hyper-test-<binding>.yml` (PHP's is
+  `hyper-build-php-extension.yml`) takes `lint`, false by default, and runs the formatter and linter
+  on one leg (linux-x64, macOS for Swift) after its toolchain and before its suite, so a pull
+  request sets a toolchain up once. Callers pass the classifier's `lint_<binding>` on a pull request
+  and nothing off one: what reached master has been linted. Go takes `linters` instead (`none`,
+  `core`, `fast`, `sweep`): `core` is the committed-core regeneration check, the one check a core
+  change must not skip; `fast` adds gofmt, go vet and revive; `sweep` adds the cross-compile sweep
+  and the race run off a pull request. `hyper-lint-rust.yml`
   is rustfmt and clippy for a pull request that moved the core; off a pull request
   `hyper-core-checks.yml` lints the same way, the clippy commands in both.
 - `hyper-test-<binding>.yml`, eight of them (csharp, java, typescript, ruby, python, r,
@@ -210,7 +213,7 @@ there broke setup-dotnet's extraction.
   ignored there and refreshed by hand to the head of its `stable` branch. A Dependabot PR
   only runs `validate.yml`; the consumers' next runs are where it proves itself.
 - Every binding's tool pin (ruff, revive, SwiftLint, PHP, Ruby, JDK, actionlint, wasmtime)
-  lives in `hyper-check-core.yml`, and again in the `hyper-lint-<binding>.yml` and
+  lives in `hyper-check-core.yml`, and again in the `hyper-test-<binding>.yml` and
   `hyper-core-checks.yml` it was split into, the same values; bump both families together
   until the old one goes. `validate.yml` repeats the actionlint pin for the Forge itself. wasmtime is a release tarball checked against its SHA-256; Dependabot does not
   see it, so its version and checksum are bumped together by hand.

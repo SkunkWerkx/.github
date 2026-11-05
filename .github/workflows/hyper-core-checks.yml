@@ -8,7 +8,7 @@ name: HyperForge — check the core
 # host its old job named (`matrix.arch`: x64 for all but two; the repository's own core
 # checks and the extra-feature suite on x64 and arm64, the no-panic link on x64 and Windows),
 # soonest-failing first, so a formatting slip is red in the first minute. The binding lints
-# are each binding's hyper-lint-<binding>.yml, gated on that binding changing, and the shared
+# run in each binding's hyper-test-<binding>.yml ahead of its suite, on request, and the shared
 # library on every RID is hyper-core.yml's. Every tool pin lives here, so the three
 # repositories cannot drift one version at a time. Names come from the caller's
 # .github/hyper.json.

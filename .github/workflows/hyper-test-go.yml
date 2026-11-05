@@ -2,15 +2,17 @@ name: HyperForge — test the Go binding
 
 # One of the hyper-test-<binding>.yml workflows: this binding's suite on every leg, in a job
 # of its own so a consumer's board runs it only when the binding (or the core, or the
-# workflows) changed, after its hyper-lint-<binding>.yml gate. The steps are
+# workflows) changed, with its linters first when the caller says so. The steps are
 # hyper-build-native.yml's, with that job's `!cancelled()` and shard guards gone: here a red
 # step is the binding's own, and the job stops on it.
 #
 # Go: the binding is wasm2go's translation of the core, committed as Go source, so the suite
-# links nothing, downloads nothing and waits for nothing but its lint: `go test ./...` with
+# links nothing, downloads nothing and waits for nothing: `go test ./...` with
 # CGO_ENABLED=0 on the five desktop hosts and, from the Go version go.mod declares, on the two
-# Alpine images. That the committed translation is this commit's core is hyper-lint-go.yml's
-# regeneration check, not this workflow's.
+# Alpine images. Ahead of it `linters` picks the tier on the one leg that lints: `core` is the
+# regeneration check (that the committed translation is this commit's core, which a core change must
+# not skip), `fast` adds gofmt, go vet and revive, `sweep` is the check with the cross-compile sweep
+# and the race run off a pull request, and `none` is the suite alone.
 
 on:
   workflow_call:

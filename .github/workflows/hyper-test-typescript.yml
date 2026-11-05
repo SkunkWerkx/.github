@@ -3,7 +3,7 @@ name: HyperForge — test the TypeScript binding
 # One of the hyper-test-<binding>.yml workflows: this binding's suite on every leg, against
 # the core hyper-core.yml built and uploaded as `native-<rid>`, in a job of its own so a
 # consumer's board runs it only when the binding (or the core, or the workflows) changed,
-# after its hyper-lint-<binding>.yml gate. It never builds a second core: the bindings that
+# with its linters first when the caller says so. It never builds a second core: the bindings that
 # load the shared library download it, the ones that link the static archive download
 # `static-libs`, and the ones that compile their own extension from rust/ download nothing.
 # The steps are hyper-build-native.yml's, with that job's `!cancelled()` and shard guards
