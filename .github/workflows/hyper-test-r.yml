@@ -11,7 +11,7 @@ name: HyperForge — test the R binding
 #
 # R: R CMD check --as-cran on every leg but win-arm64 (R on Windows ARM64 is experimental;
 # CRAN builds no binaries for it), building the core from the vendor tarball as CRAN will, and
-# on the floor R on linux-x64 in release mode (a PR board runs that once, in hyper-lint-r.yml).
+# on the floor R on linux-x64 in release mode.
 # No musl legs (a source package, compiled on the user's machine) and no osx-x64.
 
 on:

@@ -178,6 +178,7 @@ JOBS = {
     # spotlessCheck, before the fetch, resolves no dependency; the JNI crate's clippy and tests
     # build the Rust core.
     ('hyper-lint-java.yml', 'lint'): ('rust',),
+    ('hyper-lint-rust.yml', 'lint'): ('rust',),
     ('hyper-lint-r.yml', 'lint'): ('r',),
     ('hyper-lint-ruby.yml', 'lint'): ('ruby-lint',),
     # The install takes the companion's package, so the runner's addon goes into the tarball.

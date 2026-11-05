@@ -718,7 +718,7 @@ class FetchStepTests(unittest.TestCase):
     def test_every_wired_leg_fetches_the_companions_first(self):
         import companion_map
         legs = self.wired_legs()
-        self.assertEqual(len(legs), 40)
+        self.assertEqual(len(legs), 41)
         self.assertLessEqual(set(DEFERRED), set(legs))
         for (workflow, job_name), leg in sorted(legs.items()):
             with self.subTest(leg=f'{workflow}:{job_name}'):
@@ -1086,7 +1086,6 @@ class FetchStepTests(unittest.TestCase):
             'The companions this run builds': '0dc39067430cedef', 'The mode this run is in': 'a464654c90805cac',
             'The companions built from the registry': '41daeff08859aa2c',
             'Fetch PIE, and verify its checksum and attestation': '398dfe2df8a8fa28',
-            "The image's PHP is the leg's minor": '69200671d13e4008',
             'PHP from the shivammathur/php tap (macOS)': 'e018aa240b8e768c',
             "The leg's PHP is its thread safety": '5f43d3089c1bfa72', 'Composer (macOS)': '151159ac80bde2d6',
             "Point bindgen at one system LLVM, not at Swift's clang": '6047d04ccc1a8ca6',
@@ -1122,7 +1121,7 @@ class FetchStepTests(unittest.TestCase):
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
             'Stage the core where a dev-loop build looks': '0fda8b8ce8153626',
             'Build the JNI library': '16a5a04fe2d76414', 'Place both libraries for the Java suites': '92d3295521c6d0ff',
-            'Test Java (JNI) on the primary JDK and the floor': 'b23f2168055cf5e8',
+            'Test Java (JNI) on the primary JDK and the floor': 'a7513abc7c66dc9c',
             'Place native lib for Java in-repo testing': '663f3b398764f341',
             "Test Java bindings against this platform's native lib": 'd712536c8f777800'},
         ('hyper-test-java.yml', 'test-musl'): {'Validate Forge workflow revision': 'b43ed1cffc80ac65'},
@@ -1135,7 +1134,7 @@ class FetchStepTests(unittest.TestCase):
             'Validate Forge workflow revision': 'b43ed1cffc80ac65',
             'Stage the core where a dev-loop build looks': '0fda8b8ce8153626',
             'Place native lib for C# in-repo testing': 'c040c04fec94695d',
-            "Test C# bindings against this platform's native lib": 'a63e1a2395ae912b',
+            "Test C# bindings against this platform's native lib": '096aa14429065065',
             'Native AOT publish (zero trim warnings required)': '0ef5ea810eba57a1',
             'Run the AOT-published binary (must exit 0)': 'e8d7857ee344a4c6'},
         ('hyper-test-csharp.yml', 'test-musl'): {
@@ -1503,7 +1502,7 @@ class FetchStepTests(unittest.TestCase):
         # The caches the decision covers, so a renamed action or a moved step fails here.
         self.assertEqual({k: len(v) for k, v in seen.items() if k in KEYED_KINDS},
                          {'actions/cache': 3, 'actions/cache/restore': 1, 'actions/cache/save': 1,
-                          'r-lib/actions/setup-r-dependencies': 8, 'ruby/setup-ruby': 5, SEMVER: 1})
+                          'r-lib/actions/setup-r-dependencies': 6, 'ruby/setup-ruby': 5, SEMVER: 1})
         # Every NO_CACHE entry is still in use, so the table cannot hide a stale reason.
         self.assertLessEqual(set(NO_CACHE), set(seen))
 
@@ -1845,8 +1844,7 @@ HEAD_CACHE_WITH = {
         {'working-directory': 'r', 'extra-packages': 'any::rcmdcheck'},
         {'working-directory': 'r', 'extra-packages': 'any::rcmdcheck'}],
     ('hyper-lint-r.yml', 'lint', 'r-lib/actions/setup-r-dependencies'): [
-        {'working-directory': 'r', 'extra-packages': 'any::lintr', 'needs': 'lint'},
-        {'working-directory': 'r', 'extra-packages': 'any::rcmdcheck'}],
+        {'working-directory': 'r', 'extra-packages': 'any::lintr', 'needs': 'lint'}],
     ('hyper-lint-ruby.yml', 'lint', 'ruby/setup-ruby'): [
         {'ruby-version': '4.0', 'bundler-cache': True, 'working-directory': 'ruby'}],
     ('hyper-test-ruby.yml', 'test', './.hyperforge/.github/actions/ruby-magnus'): [
@@ -3339,8 +3337,7 @@ class RWorkflowTests(unittest.TestCase):
     PACKAGE = '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_gate.py --root . --r-package >> "$GITHUB_OUTPUT"'
     FLOOR = {'hyper-test-r.yml': "inputs.mode != 'pr' && matrix.rid == 'linux-x64' && inputs.r_floor_version != '' "
                                  "&& inputs.r_floor_version != inputs.r_version",
-             'hyper-lint-r.yml': "inputs.lint_r && inputs.mode == 'pr' && inputs.r_floor_version != '' "
-                                 "&& inputs.r_floor_version != inputs.r_version"}
+             }
     JOBS = {'hyper-test-r.yml': 'test', 'hyper-lint-r.yml': 'lint'}
     # HEAD 666a621's commands, by step, as for npm above: without a pin, every `run` step but the
     # ones gated on the fetch's outputs runs exactly these. The lint's Validate step came with
@@ -3356,7 +3353,7 @@ class RWorkflowTests(unittest.TestCase):
     # fetch): what is left once the companion steps go and the release-mode clause leaves each
     # setup-r-dependencies `if`.
     HEAD_STEPS = {'hyper-test-r.yml': '8fba8832f8ae11d5b3a2112c43461db4d7fd158745d14d6a1023bd03bdffcbe2',
-                  'hyper-lint-r.yml': 'aba96a5f9358289d4116bdc16c76e612202edd088f4fabb99b42353e33589a51'}
+                  'hyper-lint-r.yml': '8e6f32fd800a97bb3e3563d504a95138c0b89387065007cd744cb36ed3d60008'}
 
     def steps(self, workflow):
         return yaml_lite.load((WORKFLOWS / workflow).read_text())['jobs'][self.JOBS[workflow]]['steps']
@@ -3439,7 +3436,7 @@ class RWorkflowTests(unittest.TestCase):
                     self.assertLess(first, fetch, prefix)
                     self.assertIn(steps[first].get('if'), (None, steps[fetch].get('if')))
                 installs = [i for i, s in enumerate(steps) if str(s.get('uses', '')).startswith(self.SRD)]
-                self.assertEqual(len(installs), 4)
+                self.assertEqual(len(installs), 2 if workflow == 'hyper-lint-r.yml' else 4)
                 self.assertLess(fetch, min(installs))
 
     def test_release_mode_takes_the_companions_github_release_tarball(self):
@@ -3468,13 +3465,12 @@ class RWorkflowTests(unittest.TestCase):
                                  ('hyper-lint-r.yml', {'lintr': ('lintr takes the pinned companion',
                                                                  f'inputs.lint_r && {self.ACTIVE}', lint_env)})):
             steps = self.steps(workflow)
-            floor = self.FLOOR[workflow]
-            braced = workflow == 'hyper-test-r.yml'
-            check = steps[self.index(steps, 'R CMD check the R package — the floor R')]
-            suites['R CMD check the R package — the floor R'] = (
-                'The floor check takes the pinned companion',
-                (f'${{{{ {floor} && steps.r_vendor.conclusion == \'success\' && {self.ACTIVE} }}}}' if braced
-                 else f"{floor} && steps.r_vendor.conclusion == 'success' && {self.ACTIVE}"), check['env'])
+            if workflow == 'hyper-test-r.yml':
+                floor = self.FLOOR[workflow]
+                check = steps[self.index(steps, 'R CMD check the R package — the floor R')]
+                suites['R CMD check the R package — the floor R'] = (
+                    'The floor check takes the pinned companion',
+                    f'${{{{ {floor} && steps.r_vendor.conclusion == \'success\' && {self.ACTIVE} }}}}', check['env'])
             for suite, (name, condition, env) in suites.items():
                 with self.subTest(workflow=workflow, suite=suite):
                     proof = steps[self.index(steps, suite) - 1]
@@ -3483,13 +3479,14 @@ class RWorkflowTests(unittest.TestCase):
                     self.assertNotIn('working-directory', proof)
             # The floor R builds its own copy of the pin, into the floor's library, right after
             # it is set up and before its setup-r-dependencies.
+            if workflow != 'hyper-test-r.yml':
+                continue
             with self.subTest(workflow=workflow, step='floor install'):
                 setup = max(i for i, s in enumerate(steps) if str(s.get('uses', '')).startswith('r-lib/actions/setup-r@'))
                 install = steps[setup + 1]
                 self.assertEqual((install['name'], install['run'].strip()),
                                  ('Install the pinned companion for the floor R', self.FLOOR_INSTALL))
-                self.assertEqual(install['if'], f'${{{{ {floor} && {self.ACTIVE} }}}}' if braced
-                                 else f'{floor} && {self.ACTIVE}')
+                self.assertEqual(install['if'], f'${{{{ {floor} && {self.ACTIVE} }}}}')
                 self.assertEqual(without_fetch_python(install), check['env'])
                 self.assertTrue(str(steps[setup + 2].get('uses', '')).startswith(self.SRD))
 

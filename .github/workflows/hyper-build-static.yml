@@ -40,7 +40,7 @@ on:
         type: string
         required: true
       mode:
-        description: "Release signs artifacts; pr only builds and tests"
+        description: "Release builds every target and signs artifacts; pr builds aarch64-apple-darwin alone, signing nothing"
         type: string
         default: release
       attest_native:
@@ -92,6 +92,9 @@ jobs:
         with:
           crate: ${{ inputs.crate }}
           project: ${{ inputs.project }}
+          # A pull request builds the one archive its Swift leg (xcode-27) links. Its source is the
+          # no_std build `cargo cdylib` already compiled; the other targets wait for a release.
+          targets: ${{ inputs.mode == 'pr' && 'aarch64-apple-darwin' || '' }}
           apple_mobile: ${{ inputs.apple_mobile }}
           android: ${{ inputs.android }}
           upload: "true"
@@ -103,6 +106,7 @@ jobs:
       # uploaded as swift-release-assets and attested like the archives inside them. Staging
       # writes their checksums into the root Package.swift; the release attaches these bytes.
       - name: Read whether the Swift core ships as release assets
+        if: inputs.mode != 'pr'
         id: config
         run: |
           eval "$(python3 .hyperforge/.github/scripts/hyper_config.py shell)"

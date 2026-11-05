@@ -1,0 +1,60 @@
+name: HyperForge — lint the Rust core
+
+# rustfmt and clippy over the core, for a pull request that moved it: a job of its own, like the
+# hyper-lint-<binding>.yml workflows, so a pull request gets the lint without hyper-core-checks.yml's
+# release checks (the MSRV, no_std, no-panic, semver, big-endian). Those run on a board and in a
+# release, whose hyper-core-checks.yml lints the same way. Bare-metal and Android clippy stay there.
+on:
+  workflow_call:
+    inputs:
+      extra_features:
+        description: "The crate's extra feature set, comma-separated, linted beside the default one"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  lint:
+    runs-on: ubuntu-26.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        shell: bash
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy
+      # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
+      # and otherwise the Cargo patch, proven, before clippy resolves the crate.
+      - name: Fetch the companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-lint-rust.yml:lint
+      - name: cargo fmt --check
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+          for companion in fuzz browser-test; do
+            if [ -f "$companion/Cargo.toml" ]; then cargo fmt --check --manifest-path "$companion/Cargo.toml"; fi
+          done
+      - name: cargo clippy
+        working-directory: rust
+        env:
+          EXTRA_FEATURES: ${{ inputs.extra_features }}
+        run: |
+          set -euo pipefail
+          cargo clippy --all-targets -- -D warnings
+          if [ -n "$EXTRA_FEATURES" ]; then cargo clippy --all-targets --features "$EXTRA_FEATURES" -- -D warnings; fi
+          cargo clippy --no-default-features --features cdylib -- -D warnings
+          cargo clippy --features python -- -D warnings

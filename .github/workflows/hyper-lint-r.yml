@@ -9,10 +9,8 @@ name: HyperForge — lint the R binding
 # ci.yml and with a reason, why a check does not apply.
 #
 # lintr reads r/.lintr. The Rust half is a wrapper crate pinning the core by version; cargo
-# fmt reads its manifest without resolving it. In pr mode the job ends with R CMD check on
-# the floor R (r_floor_version), the one place on a PR board that check runs: what differs
-# between R minors is R, not the platform, so once per board is the proof. In release mode
-# hyper-test-r.yml runs it on linux-x64 beside the current R's check, as it always has.
+# fmt reads its manifest without resolving it. The floor R's check is hyper-test-r.yml's, in a
+# release.
 on:
   workflow_call:
     inputs:
@@ -35,15 +33,10 @@ on:
         type: boolean
         default: false
       r_version:
-        description: "The R lintr runs under, and the floor check is compared against (`release` is the current one)"
+        description: "The R lintr runs under (`release` is the current one)"
         required: false
         type: string
         default: "release"
-      r_floor_version:
-        description: "An older R the package is checked on in pr mode (`oldrel` is the previous minor). Empty skips it."
-        required: false
-        type: string
-        default: "oldrel"
 
 jobs:
   lint:
@@ -125,8 +118,7 @@ jobs:
       # lintr's object_usage linter loads the package it lints: without an installed copy
       # every exported name is a false positive (34 on HyperUuid), so the package is
       # installed into a scratch library first. The install builds from the vendor tarball
-      # vendor.sh writes (the core among the crates); it refuses to build without one. The
-      # floor check below builds from the same tarball.
+      # vendor.sh writes (the core among the crates); it refuses to build without one.
       - name: Install the package for lintr
         id: r_vendor
         if: inputs.lint_r
@@ -165,71 +157,3 @@ jobs:
           set -euo pipefail
           clang-format --version
           clang-format --dry-run -Werror r/src/*.c r/src/*.h
-
-      # The floor R, pr mode. The three steps carry their own library paths:
-      # setup-r-dependencies writes R_LIBS_SITE, R_LIBS_USER and R_LIB_FOR_PAK to GITHUB_ENV
-      # only when they are unset, so without these the floor R would search the first R's
-      # libraries, find its pak missing and fail to load its compiled packages (rlang's .so,
-      # built under the newer R). The check writes to its own directory.
-      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
-        if: inputs.lint_r && inputs.mode == 'pr' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version
-        env:
-          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
-          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
-          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
-        with:
-          r-version: ${{ inputs.r_floor_version }}
-          use-public-rspm: true
-      # The pinned companion again, built by the floor R into its own library.
-      - name: Install the pinned companion for the floor R
-        if: inputs.lint_r && inputs.mode == 'pr' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.companions.outputs.active == 'true'
-        shell: bash
-        env:
-          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
-          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
-          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
-          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
-        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_wire.py r --root .'
-      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
-        if: inputs.lint_r && inputs.mode == 'pr' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.companions.outputs.mode != 'release'
-        env:
-          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
-          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
-          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
-        with:
-          install-pandoc: ${{ steps.pandoc.outputs.install }}
-          working-directory: r
-          cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '1' }}
-          extra-packages: any::rcmdcheck
-      - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
-        if: inputs.lint_r && inputs.mode == 'pr' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.companions.outputs.mode == 'release'
-        env:
-          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
-          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
-          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
-        with:
-          install-pandoc: ${{ steps.pandoc.outputs.install }}
-          working-directory: r
-          cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '1' }}
-          extra-packages: any::rcmdcheck ${{ steps.companion_r.outputs.package }}
-      - name: The floor check takes the pinned companion
-        if: inputs.lint_r && inputs.mode == 'pr' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.r_vendor.conclusion == 'success' && steps.companions.outputs.active == 'true'
-        shell: bash
-        env:
-          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
-          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
-          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
-          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
-        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py r --root . --installed'
-      - name: R CMD check the R package — the floor R
-        if: inputs.lint_r && inputs.mode == 'pr' && inputs.r_floor_version != '' && inputs.r_floor_version != inputs.r_version && steps.r_vendor.conclusion == 'success'
-        env:
-          R_LIBS_SITE: ${{ runner.temp }}/r-floor/site-library
-          R_LIBS_USER: ${{ runner.temp }}/r-floor/library
-          R_LIB_FOR_PAK: ${{ runner.temp }}/r-floor/site-library
-        uses: r-lib/actions/check-r-package@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
-        with:
-          working-directory: r
-          args: 'c("--no-manual", "--as-cran")'
-          error-on: '"note"'
-          check-dir: '"check-floor"'

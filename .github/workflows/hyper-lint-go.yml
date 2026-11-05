@@ -8,7 +8,9 @@ name: HyperForge — lint the Go binding
 # a toolchain. Each step has its hyper-check-core.yml toggle, so a repository can say, in its
 # ci.yml and with a reason, why a check does not apply.
 #
-# Two tiers. `fast` (the PR board's gate, under a minute): gofmt, go vet, revive on both
+# Three tiers. `core` (a pull request that moved the core and not go/): the regeneration proof
+# alone, since test-go runs the committed core and without the proof would pass on a stale one.
+# `fast` (the PR board's gate, under a minute): gofmt, go vet, revive on both
 # modules, and the proof that the committed core is this commit's crate, regenerated with the
 # pinned toolchain and diffed, so a core change without `go generate` is red here, before any
 # leg builds. `full` adds the 23-platform cross-compile sweep and the race detector, the two
@@ -36,7 +38,7 @@ on:
         type: boolean
         default: true
       linters:
-        description: "`fast` (gofmt, go vet, revive, the regeneration check) or `full` (those plus the cross-compile sweep and the race detector)"
+        description: "`core` (the regeneration check alone), `fast` (gofmt, go vet, revive, the regeneration check) or `full` (those plus the cross-compile sweep and the race detector)"
         required: false
         type: string
         default: "fast"
@@ -81,7 +83,7 @@ jobs:
 
       # gofmt walks directories, not modules, so this covers internal/wasm2go as well.
       - name: gofmt
-        if: inputs.lint_go
+        if: inputs.lint_go && inputs.linters != 'core'
         working-directory: go
         run: |
           unformatted="$(gofmt -l .)"
@@ -90,15 +92,15 @@ jobs:
             exit 1
           fi
       - name: go vet
-        if: inputs.lint_go
+        if: inputs.lint_go && inputs.linters != 'core'
         working-directory: go
         run: go vet ./...
       - name: Install revive
-        if: inputs.lint_go
+        if: inputs.lint_go && inputs.linters != 'core'
         run: go install github.com/mgechev/revive@v1.16.0
       # The generator (go/internal/wasm2go) is its own module, so revive is pointed at it too.
       - name: revive
-        if: inputs.lint_go
+        if: inputs.lint_go && inputs.linters != 'core'
         working-directory: go
         run: |
           set -euo pipefail

@@ -275,17 +275,12 @@ class PhpExtensionContracts(unittest.TestCase):
         self.assertIn('"php:$minor-zts-alpine"', script)
         self.assertIn('PHP_ZTS', script)
 
-    def test_a_pull_requests_one_php_leg_takes_the_images_php(self):
+    def test_a_pull_requests_php_leg_takes_setup_phps_zts(self):
+        # The image's PHP is NTS: it can't serve a ZTS leg, so no leg special-cases it.
         self.assertNotIn('pr_legs', self.workflow['on']['workflow_call']['inputs'])
-        # setup-php is off there, and a step holds the image's PHP to the leg's minor (with
-        # php-config beside it).
         setup = next(step for step in self.steps if step.get('uses', '').startswith('shivammathur/setup-php'))
-        leg = "inputs.mode == 'pr' && matrix.rid == 'linux-x64' && matrix.ts == 'nts'"
-        self.assertIn(f"!({leg})", setup['if'])
-        image = self.step("The image's PHP is the leg's minor")
-        self.assertEqual(image['if'], leg)
-        self.assertIn('php-config', image['run'])
-        self.assertIn('PHP_MINOR_VERSION', image['run'])
+        self.assertEqual(setup['if'], "matrix.kind == 'glibc' || matrix.kind == 'windows'")
+        self.assertNotIn("The image's PHP is the leg's minor", [step.get('name') for step in self.steps])
 
     def test_version_job_reads_the_crate_version_at_the_commit_and_derives_the_tag(self):
         version = self.jobs['version']
@@ -385,7 +380,7 @@ class PhpExtensionContracts(unittest.TestCase):
         self.assertIn("inputs.attest_native && inputs.mode == 'release'", attest['if'])
         self.assertEqual(attest['with']['subject-path'], 'php-dist/*.zip')
         glibc = self.step('glibc floor — nothing newer than GLIBC_2.34 is referenced')
-        self.assertEqual(glibc['if'], "matrix.kind == 'glibc'")
+        self.assertEqual(glibc['if'], "${{ inputs.mode != 'pr' && (matrix.kind == 'glibc') }}")
 
     def test_pie_acceptance_runs_as_root_where_pie_would_refuse_to_prompt(self):
         # v1.1.0's replay: the six glibc legs died in PIE with "PIE needed to elevate privileges

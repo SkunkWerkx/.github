@@ -302,8 +302,8 @@ class Matrix(unittest.TestCase):
         # A pull request asks whether the binding passes its corpus; platforms wait for the board.
         for floor in ('8.3', '8.5', ''):
             legs = php_ext_package.matrix('pr', '8.3 8.4 8.5', floor)['include']
-            self.assertEqual(self.triples(legs), [('linux-x64', '8.5', 'nts')], floor)
-            self.assertEqual([leg['stubs'] for leg in legs], [True])
+            self.assertEqual(self.triples(legs), [('linux-x64', '8.5', 'zts')], floor)
+            self.assertEqual([leg['stubs'] for leg in legs], [False])
 
     def test_release_builds_every_leg(self):
         self.assertEqual(len(php_ext_package.matrix('release', '8.3 8.4 8.5', '8.3')['include']), 36)
@@ -323,10 +323,10 @@ class Matrix(unittest.TestCase):
         self.assertEqual(json.loads(run('matrix', '--mode', 'pr', '--versions', '8.3 8.4 8.5', '--floor', '8.3')),
                          php_ext_package.matrix('pr', '8.3 8.4 8.5', '8.3'))
 
-    def test_the_stub_diff_runs_on_linux_x64_newest_nts_only(self):
-        for mode in ('pr', 'release'):
-            stubs = [(leg['rid'], leg['minor'], leg['ts']) for leg in self.legs(mode) if leg['stubs']]
-            self.assertEqual(stubs, [('linux-x64', '8.5', 'nts')], mode)
+    def test_the_stub_diff_runs_in_a_release_alone_on_linux_x64_newest_nts(self):
+        stubs = [(leg['rid'], leg['minor'], leg['ts']) for leg in self.legs('release') if leg['stubs']]
+        self.assertEqual(stubs, [('linux-x64', '8.5', 'nts')])
+        self.assertEqual([leg for leg in self.legs('pr') if leg['stubs']], [])
 
     def test_each_leg_names_its_runner_and_kind(self):
         kinds = {leg['rid']: (leg['os'], leg['kind']) for leg in self.legs('release')}

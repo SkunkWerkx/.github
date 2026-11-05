@@ -121,10 +121,11 @@ def minor_key(minor):
 
 def matrix(mode, versions, floor):
     """The build legs, each NTS or ZTS (`ts`). `release`: every platform on every minor, both
-    ways, the zips a release ships. `pr`: one leg, linux-x64 NTS on the newest minor, because a pull
-    request asks whether the binding passes its corpus and the other platforms wait for a board or
-    a release. The stub diff runs on that leg. A Windows leg names its MSVC toolset and component,
-    and every leg the artifact it uploads."""
+    ways, the zips a release ships. `pr`: one leg, linux-x64 ZTS on the newest minor, because a pull
+    request asks whether the binding passes its corpus, ZTS is where the engine's globals go through
+    TSRM and so where a change is likeliest to break, and the other platforms wait for a board or a
+    release. The stub diff runs in a release alone, on linux-x64 NTS on the newest minor. A Windows
+    leg names its MSVC toolset and component, and every leg the artifact it uploads."""
     minors = versions.split()
     if not minors or len(set(minors)) != len(minors) or not all(MINOR.match(m) for m in minors):
         raise ValueError(f'php_versions must be distinct X.Y minors, space-separated, not {versions!r}')
@@ -136,10 +137,10 @@ def matrix(mode, versions, floor):
                    for platform in PLATFORMS]
     elif mode == 'pr':
         by_rid = {platform[0]: platform for platform in PLATFORMS}
-        triples = [(by_rid['linux-x64'], newest, 'nts')]
+        triples = [(by_rid['linux-x64'], newest, 'zts')]
     else:
         raise ValueError(f'mode is pr or release, not {mode!r}')
-    return {'include': [leg(rid, runner, kind, minor, ts, rid == 'linux-x64' and minor == newest and ts == 'nts')
+    return {'include': [leg(rid, runner, kind, minor, ts, mode == 'release' and rid == 'linux-x64' and minor == newest and ts == 'nts')
                         for (rid, runner, kind), minor, ts in triples]}
 
 

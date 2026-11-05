@@ -86,8 +86,12 @@ Cross-building the library and testing it under Rosetta is a different thing and
 `mode: pr` skips everything only a release needs (attestations, the second Ruby ABI,
 osx-x64, native wheels, ruby.wasm, ext-php-rs). Release-only work gates on
 `inputs.mode != 'pr'`; a PR run must sign nothing. In the per-binding family below, `pr`
-runs linux-x64 alone: `hyper-core.yml` compiles the core and runs its suite, each binding runs its
-suite through the corpus, PHP on one leg. The platforms, musl, floors, AOT, packs, smokes and
+runs one leg, linux-x64 unless a binding's riskier boundary is elsewhere: `hyper-core.yml` compiles
+the core and runs its suite, each binding runs its suite through the corpus, Swift on `xcode-27`
+(osx-arm64) and PHP on ZTS. A core change lints Rust and runs every suite; a binding change lints
+and runs that binding (the consumer's `pr_changes.py`). `hyper-build-static.yml` builds Swift's one
+archive: `cargo cdylib` compiles the same no_std source, so only a target-specific break waits. The
+platforms, musl, floors, AOT, packs, smokes, stubs and
 export checks wait for the board and a release, which `prepare-release.yml` and a `purpose=board`
 dispatch run in full. `hyper-build-wasm.yml`'s `archive`
 (default true) switches the browser-wasm archive build off for a pull request that cannot reach
@@ -98,8 +102,8 @@ it (the Blazor check skips with it); the WASI, Rust browser and Go wasm jobs run
 `hyper-build-native.yml` runs every binding in one job per leg. A consumer that wants to
 run only what a pull request touched calls the family below instead, one reusable workflow
 per concern, and gates each call on its own change detection; the Forge has no opinion on
-the gating, only on what each workflow does. HyperUuid and HyperCast run it; the old
-workflows stay for HyperTabular until it moves; the two families share the composites and the
+the gating, only on what each workflow does. All three consumers run it; the old
+workflows have no caller left; the two families share the composites and the
 artifact names, so a consumer can run one or the other, never both at once (two producers of
 `native-<rid>` fail the upload).
 
@@ -117,7 +121,9 @@ artifact names, so a consumer can run one or the other, never both at once (two 
   typescript, r, go): the binding's formatter and linter on `ubuntu-26.04-arm`, no artifact,
   no `needs`. Go's `linters: full` adds the cross-compile sweep and the race run; its fast
   default keeps `go vet`, revive and the committed-core regeneration check, which is the
-  one check a core change must not skip.
+  one check a core change must not skip, so `linters: core` runs it alone. `hyper-lint-rust.yml`
+  is rustfmt and clippy for a pull request that moved the core; off a pull request
+  `hyper-core-checks.yml` lints the same way, the clippy commands in both.
 - `hyper-test-<binding>.yml`, eight of them (csharp, java, typescript, ruby, python, r,
   swift, go): the binding's suite on the five desktop hosts, the two musl RIDs through
   `musl-suite` where the binding has a musl story (not R; Swift's is `swift-static-suite`,
@@ -138,7 +144,7 @@ artifact names, so a consumer can run one or the other, never both at once (two 
   two are in `.github/actionlint.yaml`); the shape tests (`test_hyper_core.py`,
   `test_hyper_core_checks.py`, `test_hyper_lint.py`, `test_hyper_test_bindings.py`) pin it.
   The toolchains those images ship are used where they are the current release (Rust,
-  Python, Node, Go, .NET, the JDKs, Swift on Linux, PHP on its one PR leg), and
+  Python, Node, Go, .NET, the JDKs, Swift on Linux and macOS), and
   a step asserts the version where the leg depends on it.
 
 ## Companions

@@ -208,27 +208,29 @@ class GoWorkflowTests(unittest.TestCase):
 
 
 class PullRequestLegs(unittest.TestCase):
-    """A pull request asks whether the code broke: linux-x64 alone. Every other platform runs on
-    the board and a release, so their lists stay whole."""
+    """A pull request asks whether the code broke: linux-x64 alone, except Swift, on osx-arm64.
+    Every other platform runs on the board and a release, so their lists stay whole."""
     FILES = ['hyper-core', 'hyper-test-csharp', 'hyper-test-go', 'hyper-test-java', 'hyper-test-python',
              'hyper-test-r', 'hyper-test-ruby', 'hyper-test-swift', 'hyper-test-typescript']
+    RID = {'hyper-test-swift': 'osx-arm64'}
 
     def jobs(self, name):
         path = Path(__file__).resolve().parent.parent / 'workflows' / f'{name}.yml'
         return yaml_lite.load(path.read_text(encoding='utf-8'))['jobs']
 
-    def test_the_main_job_runs_linux_x64_alone_on_a_pull_request(self):
+    def test_the_main_job_runs_one_leg_on_a_pull_request(self):
         for name in self.FILES:
             job = self.jobs(name)['core' if name == 'hyper-core' else 'test']
             with self.subTest(name):
-                self.assertEqual([r['rid'] for r in companion_map.matrix_rows(job, 'pr')], ['linux-x64'])
+                self.assertEqual([r['rid'] for r in companion_map.matrix_rows(job, 'pr')],
+                                 [self.RID.get(name, 'linux-x64')])
 
     def test_a_pull_requests_row_is_the_release_row(self):
         for name in self.FILES:
             job = self.jobs(name)['core' if name == 'hyper-core' else 'test']
             with self.subTest(name):
                 release = {r['rid']: r for r in companion_map.matrix_rows(job, 'release')}
-                self.assertEqual(companion_map.matrix_rows(job, 'pr'), [release['linux-x64']])
+                self.assertEqual(companion_map.matrix_rows(job, 'pr'), [release[self.RID.get(name, 'linux-x64')]])
                 self.assertGreater(len(release), 1)
 
     def test_the_crate_name_survives_format(self):

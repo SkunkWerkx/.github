@@ -13,7 +13,8 @@ name: HyperForge — test the Swift binding
 # hyper-build-static.yml uploaded; the root manifest built; Windows' pre-6.4 build system
 # link; and on the Linux legs the static-link suite (glibc consumer, musl through the static
 # Linux SDK, WebAssembly and the browser, then the declared floor), which is where musl is
-# covered. No osx-x64 leg.
+# covered. No osx-x64 leg. A pull request runs the one leg on xcode-27: the suite and nothing
+# else, since the static-link suite is the Linux legs' and waits for a board or a release.
 
 on:
   workflow_call:
@@ -58,12 +59,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # A pull request asks whether the code broke, on linux-x64; the other platforms fan out on
-        # the board and a release. Two lists because `exclude` can't remove an `include` row.
+        # A pull request asks whether the code broke, on osx-arm64, Swift's home platform; the
+        # other platforms fan out on the board and a release. Two lists because `exclude` can't
+        # remove an `include` row.
         include: >-
           ${{ fromJSON(inputs.mode == 'pr'
           && '[
-          {"os":"ubuntu-26.04","rid":"linux-x64"}
+          {"os":"xcode-27","rid":"osx-arm64"}
           ]'
           || '[
           {"os":"ubuntu-26.04","rid":"linux-x64"},

@@ -126,6 +126,7 @@ jobs:
       # The static archives, laid out by repository path: csharp/{Project}/staticlibs/<rid>/ is what
       # the Native AOT publish links when it is there.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: inputs.mode != 'pr'
         with:
           name: static-libs
           path: .
@@ -134,7 +135,7 @@ jobs:
           global-json-file: global.json
           # An extra runtime for the older target frameworks of a multi-targeted test project
           # (see csharp_extra_runtime); the empty string installs nothing.
-          dotnet-version: ${{ inputs.csharp_extra_runtime != '' && format('{0}.x', inputs.csharp_extra_runtime) || '' }}
+          dotnet-version: ${{ inputs.mode != 'pr' && inputs.csharp_extra_runtime != '' && format('{0}.x', inputs.csharp_extra_runtime) || '' }}
 
       # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
       # the release guard alone in a release dispatch, and otherwise the pin packed (dotnet pack,
@@ -172,7 +173,13 @@ jobs:
       - name: Test C# bindings against this platform's native lib
         env:
           CSHARP_TEST_PROJECT: ${{ inputs.csharp_test_project }}
-        run: dotnet test --project "$GITHUB_WORKSPACE/$CSHARP_TEST_PROJECT" -c Release
+          MODE: ${{ inputs.mode }}
+        run: |
+          # A pull request runs the corpus on the SDK's own framework; the older ones wait for a
+          # release.
+          framework=()
+          if [ "$MODE" = pr ]; then framework=(-f "net$(dotnet --version | cut -d. -f1).0"); fi
+          dotnet test --project "$GITHUB_WORKSPACE/$CSHARP_TEST_PROJECT" -c Release "${framework[@]}"
 
       # The Native AOT project restored for this RID as `dotnet publish -r` restores it, then
       # proven the same way, right before the publish.
