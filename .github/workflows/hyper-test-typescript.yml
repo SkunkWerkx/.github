@@ -133,7 +133,7 @@ jobs:
       # 2.34 floor is a no_std library's; the addon links std, so its floor is measured here
       # first and stated in the TypeScript README from that, then enforced.
       - name: glibc the TypeScript addon references (printed, never fails)
-        if: runner.os == 'Linux'
+        if: ${{ inputs.mode != 'pr' && (runner.os == 'Linux') }}
         continue-on-error: true
         run: |
           echo "::group::glibc symbol versions referenced by typescript/*.node"
@@ -159,7 +159,7 @@ jobs:
       # Bun's own runtime on Windows ARM64 is not verified yet; until it is, this run skips that
       # leg (Bun the package manager installs there like everywhere else).
       - name: Test TypeScript bindings on Bun
-        if: matrix.rid != 'win-arm64'
+        if: ${{ inputs.mode != 'pr' && (matrix.rid != 'win-arm64') }}
         working-directory: typescript
         run: bun run test:bun
 

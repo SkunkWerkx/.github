@@ -430,7 +430,7 @@ jobs:
       # Clippy over the `php` feature, which check-core can't build (it needs PHP's headers and
       # libclang, both here): once, on the stub leg, with check-core's flags.
       - name: Clippy over the extension (the php feature)
-        if: matrix.stubs
+        if: ${{ inputs.mode != 'pr' && (matrix.stubs) }}
         working-directory: rust
         shell: bash
         run: cargo clippy --features php -- -D warnings
@@ -573,7 +573,7 @@ jobs:
           php tools/run-tests.php
 
       - name: Pack the PIE zip
-        if: matrix.kind != 'musl'
+        if: ${{ inputs.mode != 'pr' && (matrix.kind != 'musl') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -596,6 +596,7 @@ jobs:
           subject-path: php-dist/*.zip
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.mode != 'pr'
         with:
           name: ${{ matrix.artifact }}
           path: php-dist/*.zip

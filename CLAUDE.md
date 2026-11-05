@@ -86,11 +86,10 @@ Cross-building the library and testing it under Rosetta is a different thing and
 `mode: pr` skips everything only a release needs (attestations, the second Ruby ABI,
 osx-x64, native wheels, ruby.wasm, ext-php-rs). Release-only work gates on
 `inputs.mode != 'pr'`; a PR run must sign nothing. In the per-binding family below, `pr`
-also drops each workflow's osx-x64 job, Python's free-threaded rebuild off linux-x64 and R's
-floor legs, and `hyper-build-php-extension.yml`'s `pr_legs: two-paths` trims PHP to one
-glibc leg and two Windows legs (NTS on the floor, ZTS on the newest: the one leg where the
-consumers' own extern blocks link `php8ts`, kept on PRs until ZTS has shipped through a release
-train); release mode ignores `pr_legs`. `hyper-build-wasm.yml`'s `archive`
+runs linux-x64 alone: `hyper-core.yml` compiles the core and runs its suite, each binding runs its
+suite through the corpus, PHP on one leg. The platforms, musl, floors, AOT, packs, smokes and
+export checks wait for the board and a release, which `prepare-release.yml` and a `purpose=board`
+dispatch run in full. `hyper-build-wasm.yml`'s `archive`
 (default true) switches the browser-wasm archive build off for a pull request that cannot reach
 it (the Blazor check skips with it); the WASI, Rust browser and Go wasm jobs run without it.
 
@@ -139,7 +138,7 @@ artifact names, so a consumer can run one or the other, never both at once (two 
   two are in `.github/actionlint.yaml`); the shape tests (`test_hyper_core.py`,
   `test_hyper_core_checks.py`, `test_hyper_lint.py`, `test_hyper_test_bindings.py`) pin it.
   The toolchains those images ship are used where they are the current release (Rust,
-  Python, Node, Go, .NET, the JDKs, Swift on Linux, PHP on linux-x64 under `two-paths`), and
+  Python, Node, Go, .NET, the JDKs, Swift on Linux, PHP on its one PR leg), and
   a step asserts the version where the leg depends on it.
 
 ## Companions
@@ -234,7 +233,9 @@ reached 99 GB and one container 50 GB, until a 460 GB disk had 117 MB left, Dock
 read-only and other apps failed to save. `.github/scripts/dev_purge.sh` takes that back. It prints
 its plan unless given `--yes`, and `--stop` is a separate decision. It never touches tracked files,
 untracked source, toolchains, Docker volumes or a scratch folder in use. Delete a scratch checkout
-when its run ends, and never run the purge unasked: `--stop` ends the owner's other sessions.
+when its run ends. Each consumer's `local-clean.sh`, which `local-core.sh` starts with, runs
+`dev_purge.sh --yes --only scratch,docker` on every retry. Never run `--stop` or the caches and
+builds parts unasked: `--stop` ends the owner's other sessions.
 
 `dev_purge_hook.sh` is the brake, a Claude Code PreToolUse hook on Bash installed per developer in
 `~/.claude/settings.json` (its header has the JSON). Under 50 GB free (`DEV_PURGE_MIN_FREE_GB`) it

@@ -192,7 +192,7 @@ jobs:
       # because a second Swift build on Windows costs minutes. When a future toolchain removes
       # `--build-system native` (6.4 already warns), this step goes with it.
       - name: Test Swift bindings — the pre-6.4 build system's link
-        if: matrix.rid == 'win-x64'
+        if: ${{ inputs.mode != 'pr' && (matrix.rid == 'win-x64') }}
         working-directory: swift
         run: swift test --build-system native
 
@@ -206,6 +206,7 @@ jobs:
       # root, and `swift test` above runs swift/Package.swift, a different file that merely
       # has to stay in step with it.
       - name: Build the root Swift manifest (the one consumers resolve)
+        if: inputs.mode != 'pr'
         run: swift build
 
       # The static-link suite on the Linux legs, in Swift's own containers (the runner image

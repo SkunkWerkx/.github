@@ -429,7 +429,7 @@ class PhpExtensionContracts(unittest.TestCase):
         # check-core lints every other feature set but can't build this one (PHP headers and
         # libclang); the stub leg has both.
         clippy = self.step('Clippy over the extension (the php feature)')
-        self.assertEqual(clippy['if'], 'matrix.stubs')
+        self.assertEqual(clippy['if'], "${{ inputs.mode != 'pr' && (matrix.stubs) }}")
         self.assertEqual(clippy['working-directory'], 'rust')
         self.assertEqual(clippy['run'], 'cargo clippy --features php -- -D warnings')
         toolchain = next(step for step in self.steps

@@ -150,7 +150,7 @@ jobs:
       # resolve the same calls to newer symbol versions and raise the floor without a line of
       # Rust changing. This keeps the next image bump, or the next std, from moving it silently.
       - name: glibc floor — nothing newer than GLIBC_2.34 is referenced
-        if: runner.os == 'Linux'
+        if: ${{ inputs.mode != 'pr' && (runner.os == 'Linux') }}
         working-directory: rust
         run: |
           set -euo pipefail
@@ -195,7 +195,7 @@ jobs:
       # This leg's own static archive, from this commit, for the C archive below. Not
       # uploaded: what ships is hyper-build-static.yml's output.
       - name: Build this leg's static libraries
-        if: ${{ !cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs }}
+        if: ${{ inputs.mode != 'pr' && (!cancelled() && steps.native_lib.conclusion == 'success' && inputs.static_libs) }}
         uses: ./.hyperforge/.github/actions/static-libs
         with:
           crate: ${{ inputs.crate }}
@@ -206,6 +206,7 @@ jobs:
       # The export surface, from hyper.json's exports rule through hyper_config.py, and the
       # consumer's cdylib_smoke script when it names one.
       - name: Name this RID's library and the smoke script
+        if: inputs.mode != 'pr'
         id: names
         env:
           RID: ${{ matrix.rid }}
@@ -224,7 +225,7 @@ jobs:
       # Exactly the C ABI symbols the source declares, and nothing else, where the platform's
       # nm can list them (not Windows).
       - name: Check the cdylib exports
-        if: runner.os != 'Windows'
+        if: ${{ inputs.mode != 'pr' && (runner.os != 'Windows') }}
         working-directory: rust
         env:
           LIB: ${{ steps.names.outputs.lib }}
@@ -245,14 +246,14 @@ jobs:
           fi
 
       - name: Load it and call every export
-        if: steps.names.outputs.smoke != ''
+        if: ${{ inputs.mode != 'pr' && (steps.names.outputs.smoke != '') }}
         env:
           LIB: ${{ steps.names.outputs.lib }}
           SMOKE: ${{ steps.names.outputs.smoke }}
         run: python -I "$SMOKE" "rust/target/release/$LIB" rust/Cargo.toml
 
       - name: Install pkg-config
-        if: ${{ inputs.c_smoke && inputs.static_libs && runner.os != 'Windows' }}
+        if: ${{ inputs.mode != 'pr' && (inputs.c_smoke && inputs.static_libs && runner.os != 'Windows') }}
         run: |
           command -v pkg-config >/dev/null && exit 0
           if [ "$RUNNER_OS" = macOS ]; then brew install pkgconf; else sudo apt-get update && sudo apt-get install -y pkg-config; fi
@@ -272,7 +273,7 @@ jobs:
       # C++ header's build is required, never skipped. Windows' import library takes LLVM's
       # llvm-readobj and llvm-dlltool, which the image ships.
       - name: Smoke-test the C archive
-        if: ${{ inputs.c_smoke && inputs.static_libs }}
+        if: ${{ inputs.mode != 'pr' && (inputs.c_smoke && inputs.static_libs) }}
         env:
           CRATE: ${{ inputs.crate }}
           PROJECT: ${{ inputs.project }}
@@ -399,7 +400,7 @@ jobs:
           fi
 
       - name: Load it and call every export in Alpine
-        if: steps.names.outputs.smoke != ''
+        if: ${{ steps.names.outputs.smoke != '' }}
         env:
           LIB: ${{ steps.native_lib.outputs.lib }}
           SMOKE: ${{ steps.names.outputs.smoke }}
@@ -581,7 +582,7 @@ jobs:
       # An x86_64 library loads only into an x86_64 process: the system python3 is
       # universal, so it runs under Rosetta; a toolcache Python is arm64 only.
       - name: Load it and call every export, under Rosetta
-        if: steps.names.outputs.smoke != ''
+        if: ${{ steps.names.outputs.smoke != '' }}
         env:
           LIB: ${{ steps.names.outputs.lib }}
           SMOKE: ${{ steps.names.outputs.smoke }}

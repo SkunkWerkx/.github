@@ -198,7 +198,7 @@ jobs:
       # MSBuild read `p:PublishAot=true` as a second project file (MSB1008). The -p: spelling
       # is identical to MSBuild and left alone everywhere.
       - name: Native AOT publish (zero trim warnings required)
-        if: inputs.csharp_aot_project != ''
+        if: ${{ inputs.mode != 'pr' && (inputs.csharp_aot_project != '') }}
         run: |
           set -uo pipefail
           # Empty list: today's single publish into aot-out. Otherwise one -f publish per
@@ -240,7 +240,7 @@ jobs:
           done
 
       - name: Run the AOT-published binary (must exit 0)
-        if: inputs.csharp_aot_project != ''
+        if: ${{ inputs.mode != 'pr' && (inputs.csharp_aot_project != '') }}
         run: |
           set -euo pipefail
           name=$(basename "${{ inputs.csharp_aot_project }}" .csproj)
@@ -254,7 +254,7 @@ jobs:
           done
 
       - name: Upload the AOT report
-        if: inputs.csharp_aot_project != ''
+        if: ${{ inputs.mode != 'pr' && (inputs.csharp_aot_project != '') }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: aot-report-${{ matrix.rid }}
