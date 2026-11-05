@@ -2,7 +2,7 @@
 
 Every check hyper-check-core.yml ran as a job of its own runs here as a step, on the host its
 old job named (`matrix.arch`: x64, arm64 or win), soonest-failing first; the binding lints
-live in hyper-lint-<binding>.yml and the cdylib legs in hyper-core.yml.
+run in hyper-test-<binding>.yml ahead of its suite and the cdylib legs in hyper-core.yml.
 """
 from pathlib import Path
 import re

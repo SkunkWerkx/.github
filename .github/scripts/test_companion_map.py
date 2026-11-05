@@ -241,7 +241,7 @@ class MappingRowTests(unittest.TestCase):
                 self.assertEqual(arts(workflow, job, rid), [])
         # The Go lint regenerates the translated core (TestCoreIsCurrent), which builds the
         # consumer's crate, and with it the companion's: the Cargo patch as well as the replace.
-        for workflow, job, rid in (('hyper-lint-go.yml', 'lint', 'linux-arm64'), ('hyper-check-core.yml', 'lint-go', None)):
+        for workflow, job, rid in (('hyper-check-core.yml', 'lint-go', None),):
             with self.subTest(job=job):
                 self.assertEqual(ecos(workflow, job, rid), ['rust', 'go'])
                 self.assertEqual(arts(workflow, job, rid), [])
@@ -257,16 +257,12 @@ class MappingRowTests(unittest.TestCase):
                          ['pypi-wheels-linux-x64', 'pypi-wheels-sdist'])
         self.assertEqual(ecos('hyper-build-wheels.yml', 'build-pyodide-wheel', 'linux-x64'), ['rust', 'pyodide'])
         self.assertEqual(arts('hyper-build-wheels.yml', 'build-pyodide-wheel', 'linux-x64'), ['pypi-wheels-pyodide'])
-        # ruff installs nothing: the Python lint never meets the companion.
-        self.assertIn(('hyper-lint-python.yml', 'lint'), companion_map.NO_COMPANION)
-        self.assertEqual(ecos('hyper-lint-python.yml', 'lint', 'linux-arm64'), [])
 
     def test_typescript(self):
         self.assertEqual(ecos('hyper-test-typescript.yml', 'test', 'win-arm64'), ['rust', 'npm'])
         self.assertEqual(arts('hyper-test-typescript.yml', 'test', 'win-arm64'), ['node-win-arm64'])
         self.assertEqual(arts('hyper-test-typescript.yml', 'test-osx-x64', 'osx-x64'), ['node-osx-x64'])
         self.assertEqual(arts('hyper-build-wasm.yml', 'build-node-wasi', 'linux-x64'), ['node-wasm32-wasip1'])
-        self.assertEqual(arts('hyper-lint-typescript.yml', 'lint', 'linux-arm64'), ['node-linux-arm64'])
         self.assertEqual(ecos('ci.yml', 'test-npm-package'), ['npm'])
         self.assertEqual(arts('ci.yml', 'test-npm-package'),
                          sorted([f'node-{rid}' for rid in CFG.node_platforms] + ['node-wasm32-wasip1']))
@@ -280,8 +276,6 @@ class MappingRowTests(unittest.TestCase):
         # osx-x64 has no platform gem: Fiddle on the leg's native library alone.
         self.assertEqual(arts('hyper-build-native.yml', 'build-native-osx-x64', 'osx-x64'),
                          ['jni-osx-x64', 'native-osx-x64', 'node-osx-x64'])
-        self.assertEqual(ecos('hyper-lint-ruby.yml', 'lint', 'linux-arm64'), ['ruby'])
-        self.assertEqual(arts('hyper-lint-ruby.yml', 'lint', 'linux-arm64'), [])
         # The ruby.wasm build takes HyperCast's own wasm32-wasip1 archive for its minor (from
         # build-ruby-wasm on the companion's board), on any runner: no rid in the name.
         self.assertEqual(ecos('hyper-build-wasm.yml', 'build-ruby-wasm', abi='4.0'), ['rust', 'ruby'])
@@ -298,8 +292,6 @@ class MappingRowTests(unittest.TestCase):
         self.assertEqual(arts('hyper-test-java.yml', 'test-osx-x64', 'osx-x64'), ['jni-osx-x64', 'native-osx-x64'])
         # spotlessCheck resolves no dependency (measured: Gradle's module cache holds no HyperCast
         # after it), and runs before the fetch; the JNI crate's clippy and tests need the Rust core.
-        self.assertEqual(ecos('hyper-lint-java.yml', 'lint', 'linux-arm64'), ['rust'])
-        self.assertEqual(arts('hyper-lint-java.yml', 'lint', 'linux-arm64'), [])
         self.assertEqual(ecos('hyper-check-core.yml', 'lint-java-jni'), ['rust'])
         self.assertIn(('hyper-check-core.yml', 'format-java'), companion_map.NO_COMPANION)
 
@@ -317,10 +309,9 @@ class MappingRowTests(unittest.TestCase):
         self.assertEqual(arts('ci.yml', 'test-nuget-package', 'linux-x64'), ['native-linux-x64', 'static-libs'])
         # `dotnet format whitespace` restores nothing (measured: no project.assets.json, no package
         # folder), so the C# lint never meets the companion.
-        for key in (('hyper-lint-csharp.yml', 'lint'), ('hyper-check-core.yml', 'format-csharp')):
+        for key in (('hyper-check-core.yml', 'format-csharp'),):
             with self.subTest(key=key):
                 self.assertIn(key, companion_map.NO_COMPANION)
-        self.assertEqual(ecos('hyper-lint-csharp.yml', 'lint', 'linux-arm64'), [])
 
     def test_php(self):
         self.assertEqual(ecos('hyper-build-php-extension.yml', 'build', 'win-x64', minor='8.3'), ['rust', 'php'])
@@ -333,8 +324,6 @@ class MappingRowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'nts or zts'):
             arts('hyper-build-php-extension.yml', 'build', 'win-x64', minor='8.3', ts='ts')
         # phpcs, and php/'s dev tools, which load no extension: the PHP lint never meets the companion.
-        self.assertIn(('hyper-lint-php.yml', 'lint'), companion_map.NO_COMPANION)
-        self.assertEqual(ecos('hyper-lint-php.yml', 'lint', 'linux-arm64'), [])
 
     def test_swift(self):
         for workflow, job, rid in (('hyper-test-swift.yml', 'test', 'win-arm64'),
@@ -344,15 +333,14 @@ class MappingRowTests(unittest.TestCase):
                 self.assertEqual(arts(workflow, job, rid), ['swift-release-assets'])
         # SwiftLint (the static build, syntax rules only) and `swift format lint` read files and
         # resolve no package (measured: no .build, no Package.resolved, nothing in SwiftPM's caches).
-        for key in (('hyper-lint-swift.yml', 'lint'), ('hyper-check-core.yml', 'lint-swift'),
+        for key in (('hyper-check-core.yml', 'lint-swift'),
                     ('hyper-check-core.yml', 'format-swift')):
             with self.subTest(key=key):
                 self.assertIn(key, companion_map.NO_COMPANION)
-        self.assertEqual(ecos('hyper-lint-swift.yml', 'lint', 'linux-arm64'), [])
         self.assertNotIn('swift-lint', companion_map.ROLES)
 
     def test_r(self):
-        for workflow, job, rid in (('hyper-test-r.yml', 'test', 'win-x64'), ('hyper-lint-r.yml', 'lint', 'linux-arm64')):
+        for workflow, job, rid in (('hyper-test-r.yml', 'test', 'win-x64'),):
             with self.subTest(workflow=workflow):
                 self.assertEqual(ecos(workflow, job, rid), ['r'])
                 self.assertEqual(arts(workflow, job, rid), [])

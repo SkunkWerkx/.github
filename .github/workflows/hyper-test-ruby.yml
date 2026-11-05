@@ -18,6 +18,11 @@ name: HyperForge — test the Ruby binding
 on:
   workflow_call:
     inputs:
+      lint:
+        description: "Run the binding's linters ahead of its suite, on the one leg that lints (the classifier's lint_<binding>)"
+        required: false
+        type: boolean
+        default: false
       mode:
         description: "`release` (the default) attests every artifact the binding ships and runs its osx-x64 leg; `pr` drops both and trims what the PR board does once per board"
         required: false
@@ -188,6 +193,34 @@ jobs:
         run: |
           mkdir -p "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}"
           cp "out/${{ matrix.lib_name }}" "ruby/lib/${{ inputs.crate }}/native/${{ matrix.rid }}/"
+
+      # Its own Ruby ahead of the suites': the composite installs one per ABI, starting at the
+      # compat one, and its build is what the suite exercises, so the lint cannot sit inside it.
+      # With a pin, the Bundler cache's key carries its commit (cache-version), so vendor/bundle is
+      # never restored from, or saved for, a run without it; '0', the default, keeps the key as before.
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        with:
+          ruby-version: ${{ inputs.ruby_version }}
+          bundler-cache: true
+          cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '0' }}
+          working-directory: ruby
+
+      - name: Bundler took the pinned companion
+        if: inputs.lint && matrix.rid == 'linux-x64' && steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py ruby --root . --dir ruby --installed'
+
+      - name: rake docs:check
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        working-directory: ruby
+        run: bundle exec rake docs:check
+
+      - name: rubocop
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        working-directory: ruby
+        run: bundle exec rubocop
 
       # Magnus runs once per Ruby ABI, through the Forge's ruby-magnus composite (setup-ruby,
       # the win-x64 CLANG64 install, the build script, rspec, upload, attest): a Magnus

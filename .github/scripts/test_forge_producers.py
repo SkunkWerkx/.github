@@ -244,7 +244,7 @@ class PhpExtensionContracts(unittest.TestCase):
     def test_inputs(self):
         inputs = self.workflow['on']['workflow_call']['inputs']
         self.assertEqual(set(inputs), {'crate', 'mode', 'php_versions', 'php_floor_version', 'attest_native',
-                                       'php_companions'})
+                                       'php_companions', 'lint'})
         self.assertEqual(inputs['php_versions']['default'], '8.3 8.4 8.5')
         self.assertEqual(inputs['php_companions']['type'], 'string')
         self.assertEqual(inputs['php_companions']['default'], '')

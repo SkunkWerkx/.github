@@ -17,6 +17,11 @@ name: HyperForge — test the TypeScript binding
 on:
   workflow_call:
     inputs:
+      lint:
+        description: "Run the binding's linters ahead of its suite, on the one leg that lints (the classifier's lint_<binding>)"
+        required: false
+        type: boolean
+        default: false
       mode:
         description: "`release` (the default) attests every artifact the binding ships and runs its osx-x64 leg; `pr` drops both and trims what the PR board does once per board"
         required: false
@@ -95,6 +100,8 @@ jobs:
           path: .hyperforge
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: ${{ inputs.lint && matrix.rid == 'linux-x64' && 'rustfmt, clippy' || '' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ inputs.node_version }}
@@ -112,6 +119,34 @@ jobs:
         uses: ./.hyperforge/.github/actions/fetch-companions
         with:
           leg: hyper-test-typescript.yml:test:${{ matrix.rid }}
+
+      - name: Install the dev dependencies
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        working-directory: typescript
+        shell: bash
+        run: if [ -f bun.lock ]; then bun install --frozen-lockfile; else npm ci; fi
+
+      - name: The install took the pinned companion
+        if: inputs.lint && matrix.rid == 'linux-x64' && steps.companions.outputs.active == 'true'
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py npm --root . --dir typescript --installed'
+
+      # Biome (typescript/biome.json): the lint rules and the formatter, both checked.
+      - name: bun run lint
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        working-directory: typescript
+        run: bun run lint
+
+      - name: cargo fmt --check
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        working-directory: typescript
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        working-directory: typescript
+        run: cargo clippy --release -- -D warnings
 
       # The addon built for this leg's own target — every runner here is native, so napi's
       # --platform picks the host triple — then the suite on Node and on Bun. The addon is its

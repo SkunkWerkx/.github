@@ -17,6 +17,11 @@ name: HyperForge — test the Python binding
 on:
   workflow_call:
     inputs:
+      lint:
+        description: "Run the binding's linters ahead of its suite, on the one leg that lints (the classifier's lint_<binding>)"
+        required: false
+        type: boolean
+        default: false
       mode:
         description: "`release` (the default) attests every artifact the binding ships and runs its osx-x64 leg; `pr` drops both and trims what the PR board does once per board"
         required: false
@@ -114,6 +119,20 @@ jobs:
           HYPER_COMPANION_PYTHON: ${{ steps.py.outputs.python-path }}
         with:
           leg: hyper-test-python.yml:test:${{ matrix.rid }}
+
+      - name: Install ruff
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        run: pip install ruff==0.17.3
+
+      - name: ruff check
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        working-directory: python
+        run: ruff check .
+
+      - name: ruff format --check
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        working-directory: python
+        run: ruff format --check .
 
       # The PyO3 extension is the crate's `python` feature, built here from rust/ (the only
       # Python backend, and what every PyPI release ships), so it is proven on every PR.

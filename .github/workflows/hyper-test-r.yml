@@ -17,6 +17,11 @@ name: HyperForge — test the R binding
 on:
   workflow_call:
     inputs:
+      lint:
+        description: "Run the binding's linters ahead of its suite, on the one leg that lints (the classifier's lint_<binding>)"
+        required: false
+        type: boolean
+        default: false
       mode:
         description: "`release` (the default) attests every artifact the binding ships and runs its osx-x64 leg; `pr` drops both and trims what the PR board does once per board"
         required: false
@@ -91,6 +96,7 @@ jobs:
       # On Windows R builds with Rtools' MinGW, so the package's Rust half needs the gnu target.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          components: ${{ inputs.lint && matrix.rid == 'linux-x64' && 'rustfmt, clippy' || '' }}
           targets: ${{ runner.os == 'Windows' && 'x86_64-pc-windows-gnu' || '' }}
 
       - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
@@ -145,7 +151,7 @@ jobs:
           install-pandoc: ${{ steps.pandoc.outputs.install }}
           working-directory: r
           cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '1' }}
-          extra-packages: any::rcmdcheck
+          extra-packages: any::rcmdcheck ${{ inputs.lint && matrix.rid == 'linux-x64' && 'any::lintr' || '' }}
 
       - uses: r-lib/actions/setup-r-dependencies@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2.14.0
         if: steps.companions.outputs.mode == 'release'
@@ -153,7 +159,7 @@ jobs:
           install-pandoc: ${{ steps.pandoc.outputs.install }}
           working-directory: r
           cache-version: ${{ steps.companions.outputs.active == 'true' && format('companion-{0}', steps.companions.outputs.commit) || '1' }}
-          extra-packages: any::rcmdcheck ${{ steps.companion_r.outputs.package }}
+          extra-packages: any::rcmdcheck ${{ inputs.lint && matrix.rid == 'linux-x64' && 'any::lintr' || '' }} ${{ steps.companion_r.outputs.package }}
 
       # R CMD check --as-cran, failing on a NOTE as CRAN's incoming checks would, from the
       # tree vendor.sh leaves (the crates vendored with this checkout's core among them, the
@@ -163,6 +169,53 @@ jobs:
         id: r_vendor
         run: |
           bash r/tools/vendor.sh
+
+      # lintr's object_usage linter loads the package it lints: without an installed copy
+      # every exported name is a false positive (34 on HyperUuid), so the package is
+      # installed into a scratch library first. The install builds from the vendor tarball
+      # vendor.sh writes (the core among the crates); it refuses to build without one.
+      - name: Install the package for lintr
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/rlib" "$RUNNER_TEMP/rlint"
+          # From a copy: an install leaves objects in src/ that R CMD check's build would pick up.
+          cp -R r "$RUNNER_TEMP/rlint/"
+          R CMD INSTALL --library="$RUNNER_TEMP/rlib" "$RUNNER_TEMP/rlint/r"
+
+      # After the last install, in the libraries lintr loads from.
+      - name: lintr takes the pinned companion
+        if: inputs.lint && matrix.rid == 'linux-x64' && steps.companions.outputs.active == 'true'
+        shell: bash
+        env:
+          FETCH_PYTHON: ${{ steps.companions.outputs.python }}
+          R_LIBS: ${{ runner.temp }}/rlib
+        run: '"$FETCH_PYTHON" .hyperforge/.github/scripts/companion_origin.py r --root . --installed'
+
+      - name: lintr
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        shell: Rscript {0}
+        env:
+          R_LIBS: ${{ runner.temp }}/rlib
+        run: |
+          lints <- c(lintr::lint_package("r"), lintr::lint_dir("r/bench"), lintr::lint_dir("r/tools"))
+          print(lints)
+          if (length(lints)) quit(status = 1)
+
+      - name: cargo fmt --check
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        shell: bash
+        run: cargo fmt --check --manifest-path r/src/rust/Cargo.toml
+
+      # The C shim's formatter (r/.clang-format); the runner image ships clang-format.
+      - name: clang-format --dry-run
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang-format --version
+          clang-format --dry-run -Werror r/src/*.c r/src/*.h
 
       # After the last install (setup-r-dependencies') and the vendor tarball, in the R the check
       # runs: the pin's build is the copy that loads, and the tarball holds the pin's crate.

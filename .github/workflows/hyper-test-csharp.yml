@@ -15,6 +15,11 @@ name: HyperForge — test the C# binding
 on:
   workflow_call:
     inputs:
+      lint:
+        description: "Run the binding's linters ahead of its suite, on the one leg that lints (the classifier's lint_<binding>)"
+        required: false
+        type: boolean
+        default: false
       mode:
         description: "`release` (the default) attests every artifact the binding ships and runs its osx-x64 leg; `pr` drops both and trims what the PR board does once per board"
         required: false
@@ -147,6 +152,12 @@ jobs:
         uses: ./.hyperforge/.github/actions/fetch-companions
         with:
           leg: hyper-test-csharp.yml:test:${{ matrix.rid }}
+
+      # csharp/.editorconfig: tabs, LF, a final newline.
+      - name: dotnet format whitespace --verify-no-changes
+        if: inputs.lint && matrix.rid == 'linux-x64'
+        working-directory: csharp
+        run: dotnet format whitespace "${{ inputs.project }}.slnx" --verify-no-changes
 
       - name: Place native lib for C# in-repo testing
         if: inputs.csharp_runtimes_dir != ''

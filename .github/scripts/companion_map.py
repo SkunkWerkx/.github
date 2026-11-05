@@ -175,15 +175,7 @@ JOBS = {
     ('hyper-build-wheels.yml', 'sdist-fallthrough'): ('python-fallthrough',),
     ('hyper-build-wheels.yml', 'build-wheels'): ('python-wheels',),
     ('hyper-build-wheels.yml', 'build-pyodide-wheel'): ('pyodide',),
-    ('hyper-lint-go.yml', 'lint'): ('go-lint',),
-    # spotlessCheck, before the fetch, resolves no dependency; the JNI crate's clippy and tests
-    # build the Rust core.
-    ('hyper-lint-java.yml', 'lint'): ('rust',),
     ('hyper-lint-rust.yml', 'lint'): ('rust',),
-    ('hyper-lint-r.yml', 'lint'): ('r',),
-    ('hyper-lint-ruby.yml', 'lint'): ('ruby-lint',),
-    # The install takes the companion's package, so the runner's addon goes into the tarball.
-    ('hyper-lint-typescript.yml', 'lint'): ('npm',),
     ('hyper-test-c.yml', 'smoke'): ('c',),
     ('hyper-test-c.yml', 'smoke-apple-mobile'): ('c',),
     ('hyper-test-csharp.yml', 'test'): ('csharp',),
@@ -232,24 +224,16 @@ NO_COMPANION = {
     ('hyper-build-php-extension.yml', 'version'): 'reads the crate version (cargo metadata --no-deps) and computes the matrix; builds nothing',
     ('hyper-build-native.yml', 'build-php-extension'): "a call of hyper-build-php-extension.yml, whose own legs are mapped there",
     ('hyper-build-wheels.yml', 'sdist-config'): "reads the consumer's hyper.json for the sdist switch; builds nothing",
-    ('hyper-lint-python.yml', 'lint'): 'ruff over python/, which reads the sources alone and installs no dependency',
     ('hyper-check-core.yml', 'lint-python'): 'ruff over python/, which reads the sources alone and installs no dependency',
-    ('hyper-lint-php.yml', 'lint'): "phpcs over php/, after a composer install of php/'s dev tools, which "
-                                    'require no ext-<companion> and load no extension',
     ('hyper-check-core.yml', 'lint-php'): "phpcs over php/, after a composer install of php/'s dev tools, which "
                                          'require no ext-<companion> and load no extension',
     ('hyper-check-core.yml', 'check-exports'): "a static scan of the consumer's export sites and header; builds nothing",
     ('hyper-check-core.yml', 'check-corpus'): "re-derives the consumer's corpus from its own oracle script; builds nothing",
     ('hyper-check-core.yml', 'lint-workflows'): "actionlint over the consumer's workflows; builds nothing",
-    ('hyper-lint-csharp.yml', 'lint'): '`dotnet format whitespace` over the solution, which restores nothing (no '
-                                       'project.assets.json, no package folder: measured)',
     ('hyper-check-core.yml', 'format-csharp'): '`dotnet format whitespace` over the solution, which restores nothing '
                                                '(no project.assets.json, no package folder: measured)',
     ('hyper-check-core.yml', 'format-java'): "spotlessCheck, which resolves no dependency (measured: Gradle's module "
                                              'cache holds no companion after it)',
-    ('hyper-lint-swift.yml', 'lint'): 'SwiftLint (the static build, syntax rules only) over swift/Sources and `swift '
-                                      'format lint` over the manifests and sources, which read files and resolve no '
-                                      'package (measured: no .build, no Package.resolved, nothing in SwiftPM\'s caches)',
     ('hyper-check-core.yml', 'lint-swift'): 'SwiftLint over swift/Sources, which reads files and resolves no package',
     ('hyper-check-core.yml', 'format-swift'): '`swift format lint`, which reads files and resolves no package '
                                               '(measured: no .build, no Package.resolved)',

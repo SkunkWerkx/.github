@@ -19,6 +19,11 @@ name: HyperForge — test the Swift binding
 on:
   workflow_call:
     inputs:
+      lint:
+        description: "Run the binding's linters ahead of its suite, on the one leg that lints (the classifier's lint_<binding>)"
+        required: false
+        type: boolean
+        default: false
       mode:
         description: "`release` (the default) attests every artifact the binding ships and runs its osx-x64 leg; `pr` drops both and trims what the PR board does once per board"
         required: false
@@ -165,6 +170,32 @@ jobs:
         uses: ./.hyperforge/.github/actions/fetch-companions
         with:
           leg: hyper-test-swift.yml:test:${{ matrix.rid }}
+
+      # The portable macOS build, on the one leg every mode has: a pull request's only Swift leg.
+      # `missing_docs`, the only rule the repositories enable, is syntax-only.
+      - name: Install SwiftLint
+        if: inputs.lint && matrix.rid == 'osx-arm64'
+        run: |
+          set -euo pipefail
+          curl -sSfL -o swiftlint.zip "https://github.com/realm/SwiftLint/releases/download/0.65.1/portable_swiftlint.zip"
+          mkdir swiftlint_bin
+          unzip -q swiftlint.zip -d swiftlint_bin
+
+      - name: Lint
+        if: inputs.lint && matrix.rid == 'osx-arm64'
+        working-directory: swift
+        run: ../swiftlint_bin/swiftlint lint --strict Sources
+
+      # .swift-format: 4-space indent, 120 columns, every lint rule off, layout only. Named
+      # outright so it also covers the root Package.swift, which has no config beside it.
+      - name: swift format lint
+        if: inputs.lint && matrix.rid == 'osx-arm64'
+        working-directory: swift
+        run: >-
+          swift format lint --strict --recursive --configuration .swift-format
+          ../Package.swift Package.swift Sources Tests
+          StaticSmokeTest/Package.swift StaticSmokeTest/Sources
+          Benchmarks/Package.swift Benchmarks/Benchmarks
 
       # A pinned companion: the package graph takes the pin by path, and a fresh verbose build
       # links the archives extracted from its swift-release-assets, before each build below.

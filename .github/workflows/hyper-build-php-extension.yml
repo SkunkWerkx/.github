@@ -50,6 +50,11 @@ name: HyperForge — build, test and pack the PHP extension for PIE
 on:
   workflow_call:
     inputs:
+      lint:
+        description: "Run the binding's linters ahead of its suite, on the one leg that lints (the classifier's lint_<binding>)"
+        required: false
+        type: boolean
+        default: false
       crate:
         description: "Lowercase Rust core crate / PHP extension module name"
         type: string
@@ -530,6 +535,11 @@ jobs:
         working-directory: php
         shell: bash
         run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: phpcs
+        if: inputs.lint && (inputs.mode == 'pr' || matrix.stubs)
+        working-directory: php
+        run: vendor/bin/phpcs
 
       # After the suite's install, in the PHP the suite runs on: <COMPANION>_PHP_EXTENSION names
       # the pin's extension, this PHP loads no other copy, and with it the pin's version loads.

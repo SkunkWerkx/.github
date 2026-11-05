@@ -152,7 +152,7 @@ class TestBindingWorkflowTests(unittest.TestCase):
                 _, workflow = load(binding)
                 inputs = set(workflow['on']['workflow_call']['inputs'])
                 self.assertLessEqual({'mode', 'crate', 'project', 'attest_native'}, inputs)
-                allowed = native | (static if binding == 'swift' else set())
+                allowed = native | {'lint'} | (static if binding == 'swift' else set())
                 self.assertLessEqual(inputs, allowed, inputs - allowed)
                 self.assertEqual(workflow['on']['workflow_call']['inputs']['mode']['default'], 'release')
 
@@ -182,12 +182,12 @@ class DevLoopStagingTests(unittest.TestCase):
 
 class GoWorkflowTests(unittest.TestCase):
     """hyper-test-go.yml: the translated core needs no artifact, so the suite runs on the seven
-    hosts with nothing to wait for but its lint."""
+    hosts with nothing to wait for."""
 
     def test_go_downloads_no_core_and_runs_on_seven_hosts(self):
         text, workflow = load('go')
         self.assertNotIn('download-artifact', text)
-        self.assertNotIn('cargo', text)
+        self.assertNotIn('cargo build', text)
         test, musl = workflow['jobs']['test'], workflow['jobs']['test-musl']
         self.assertEqual({r['rid'] for r in companion_map.matrix_rows(test)}, RIDS)
         self.assertEqual({r['rid'] for r in companion_map.matrix_rows(musl)}, {'linux-musl-x64', 'linux-musl-arm64'})
@@ -202,7 +202,7 @@ class GoWorkflowTests(unittest.TestCase):
         alpine = next(s for s in musl['steps'] if s.get('uses') == './.hyperforge/.github/actions/musl-suite')
         self.assertEqual(alpine['with']['binding'], 'go')
         inputs = workflow['on']['workflow_call']['inputs']
-        self.assertEqual(set(inputs), {'mode', 'crate', 'go_version_file'})
+        self.assertEqual(set(inputs), {'mode', 'crate', 'go_version_file', 'linters'})
         self.assertEqual(inputs['go_version_file']['default'], 'go/go.mod')
 
 
