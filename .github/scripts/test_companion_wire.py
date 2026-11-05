@@ -2343,5 +2343,26 @@ class WireCliTests(unittest.TestCase):
         self.assertIn('_GO_REQ', str(caught.exception))
 
 
+
+class SwiftSourceWiringTests(unittest.TestCase):
+    def test_source_rewrites_the_requirement_and_needs_no_zips(self):
+        # CodeQL's Swift leg has no mirror: it builds the pin's core and takes the pin by path.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / '.companions/hypercast').mkdir(parents=True)
+            (root / '.companions/hypercast/Package.swift').write_text('// the pin\n')
+            manifest = root / 'Package.swift'
+            manifest.write_text('let p = Package(dependencies: [\n'
+                                '    .package(url: "https://github.com/SkunkWerkx/HyperCast", from: "1.1.0")\n])\n')
+            env = {'HYPERCAST_SWIFT_REQ': '.companions/hypercast', 'HYPERCAST_VERSION': '1.0.0'}
+            companion_wire.wire_swift(root, env, source=True)
+            self.assertIn('.package(path: ".companions/hypercast")', manifest.read_text())
+            self.assertFalse((root / '.companions/hypercast-swift.sums').exists())
+            manifest.write_text('let p = Package(dependencies: [\n'
+                                '    .package(url: "https://github.com/SkunkWerkx/HyperCast", from: "1.1.0")\n])\n')
+            with self.assertRaises(ValueError):  # without it, the zips are required
+                companion_wire.wire_swift(root, env)
+
+
 if __name__ == '__main__':
     unittest.main()

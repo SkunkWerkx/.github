@@ -141,45 +141,6 @@ def stage(cfg, root, assets):
     manifest.write_text(write(manifest.read_text(), crate_version(root), core, apple))
 
 
-def unpack(cfg, root, assets):
-    """Extract the two zips into the checkout, each tree under its own parent (`swift/`), so the
-    root Package.swift links the core locally as a CI leg does: for a CodeQL build on a checkout
-    that commits no core. Every member must sit inside its tree, and whatever the tree already
-    holds must be release files with the release's bytes (HyperUuid commits the bundle's
-    include/, the cbindgen header and its module map, and ignores the rest); a differing file
-    or one the release tree does not name is a refusal, and nothing is written when any check
-    refuses. The extracted files are then exactly `expected_files`."""
-    root, assets = Path(root), Path(assets)
-    plan = []
-    for asset, (tree, files) in expected_files(cfg).items():
-        name = Path(tree).name
-        archive = zipfile.ZipFile(assets / asset)
-        for member in archive.namelist():
-            parts = Path(member).parts
-            if not parts or parts[0] != name or '..' in parts or Path(member).is_absolute():
-                raise ValueError(f'{asset}: {member} is outside {name}/')
-        for present in sorted(p for p in (root / tree).rglob('*') if p.is_file()) if (root / tree).exists() else []:
-            relative = present.relative_to(root).as_posix()
-            if relative not in files:
-                raise ValueError(f'{tree} already exists ({relative} is not a release file); '
-                                 f'unpack into a checkout without a core')
-            member = present.relative_to(root / Path(tree).parent).as_posix()
-            if present.read_bytes() != archive.read(member):
-                raise ValueError(f'{relative} differs from the release tree; unpack into a checkout without a core')
-        plan.append((archive, root / Path(tree).parent, tree, files))
-    extracted = []
-    for archive, destination, tree, files in plan:
-        destination.mkdir(parents=True, exist_ok=True)
-        archive.extractall(destination)
-        archive.close()
-        present = {p.relative_to(root).as_posix() for p in (root / tree).rglob('*') if p.is_file()}
-        if present != set(files):
-            raise ValueError(f'{tree} is not the complete release tree: missing {sorted(set(files) - present)}, '
-                             f'unexpected {sorted(present - set(files))}')
-        extracted.append(root / tree)
-    return extracted
-
-
 def check(cfg, text, version, assets):
     """The zips are the ones `text` (Package.swift) names, for `version`."""
     named = read(text)
@@ -193,10 +154,10 @@ def check(cfg, text, version, assets):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('mode', choices=('zip', 'stage', 'check', 'unpack'))
+    parser.add_argument('mode', choices=('zip', 'stage', 'check'))
     parser.add_argument('--root', type=Path, default=Path('.'))
     parser.add_argument('--out', type=Path, help='zip: where the two zips are written')
-    parser.add_argument('--assets', type=Path, help='stage, check, unpack: the directory holding the two zips')
+    parser.add_argument('--assets', type=Path, help='stage, check: the directory holding the two zips')
     args = parser.parse_args()
     cfg = hyper_config.load(args.root)
     if args.mode == 'zip':
@@ -204,9 +165,6 @@ def main():
             print(f'{sha256(path)}  {path.name}')
     elif args.mode == 'stage':
         stage(cfg, args.root, args.assets)
-    elif args.mode == 'unpack':
-        for tree in unpack(cfg, args.root, args.assets):
-            print(f'unpacked {tree.relative_to(args.root)}')
     else:
         check(cfg, (args.root / MANIFEST).read_text(), crate_version(args.root), args.assets)
 

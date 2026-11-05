@@ -1781,7 +1781,7 @@ def swift_expected(root, env, name, pin, modes=None):
     return trees, expected, zips
 
 
-def wire_swift(root, env):
+def wire_swift(root, env, source=False):
     """The pinned Swift core: the leg's swift-release-assets zips (the artifact bundle and the
     XCFramework), each checked against SHA256SUMS, extracted over the pin's own trees (whatever
     its checkout held there is removed first), the files' hashes recorded in
@@ -1790,7 +1790,9 @@ def wire_swift(root, env):
     package, which links that bundle (and, on a Mac, that XCFramework) as its own. A path in the
     manifest is what every SwiftPM client reads, xcodebuild included; an edited dependency
     (`swift package edit`) lives in one .build's state, needs the remote resolvable first, and
-    xcodebuild ignores it. A requirement from the registry (`id:`) or another path is refused."""
+    xcodebuild ignores it. A requirement from the registry (`id:`) or another path is refused.
+    With `source`, the requirements alone: for a job with no mirror to take zips from, which has
+    built the pin's core into the pin's own tree (CodeQL's Swift leg, with the pin's local-core.sh)."""
     import hashlib
     import shutil
     name, pin = requirement(root, env, 'swift')
@@ -1817,23 +1819,24 @@ def wire_swift(root, env):
             manifests.append((manifest, text, found))
     if not manifests:
         raise ValueError(f'no Package.swift under {root} requires {name}: nothing for the pin to reach')
-    modes = {}
-    trees, expected, zips = swift_expected(root, env, name, pin, modes)
-    for tree in trees.values():
-        _refuse_symlinks(root, (pin / tree).relative_to(root))
-        if (pin / tree).exists():
-            shutil.rmtree(pin / tree)
-    for relative, data in expected.items():
-        target = pin / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-        _keep_mode(target, modes.get(relative))
-    record = swift_record_path(root, name)
-    record.write_text(''.join(f'{hashlib.sha256(d).hexdigest()}  {r}\n' for r, d in sorted(expected.items())),
-                      encoding='utf-8')
-    for path in zips:
-        print(f'{path.name}: extracted into {pin.relative_to(root).as_posix()}/'
-              f'{trees[path.name]} (sha256 {_sha256(path)})')
+    if not source:
+        modes = {}
+        trees, expected, zips = swift_expected(root, env, name, pin, modes)
+        for tree in trees.values():
+            _refuse_symlinks(root, (pin / tree).relative_to(root))
+            if (pin / tree).exists():
+                shutil.rmtree(pin / tree)
+        for relative, data in expected.items():
+            target = pin / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            _keep_mode(target, modes.get(relative))
+        record = swift_record_path(root, name)
+        record.write_text(''.join(f'{hashlib.sha256(d).hexdigest()}  {r}\n' for r, d in sorted(expected.items())),
+                          encoding='utf-8')
+        for path in zips:
+            print(f'{path.name}: extracted into {pin.relative_to(root).as_posix()}/'
+                  f'{trees[path.name]} (sha256 {_sha256(path)})')
     for manifest, text, found in manifests:
         path = swift_pin_path(manifest, pin)
         written = []
@@ -2152,8 +2155,13 @@ def main(argv=None):
     parser.add_argument('--python', help='python: the interpreter command to install into (else '
                         f'${PYTHON_VARIABLE}, else this one); `none` rewrites the requirement only')
     parser.add_argument('--deps', type=Path, help="pyodide: pyodide-suite's dependency_wheels directory")
+    parser.add_argument('--source', action='store_true', help="swift: the requirements alone; the job built the pin's core")
     args = parser.parse_args(argv)
     extra = {}
+    if args.source:
+        if args.ecosystem != 'swift':
+            parser.error('--source is for swift')
+        extra['source'] = True
     if args.python is not None:
         if args.ecosystem != 'python':
             parser.error('--python is for python')
