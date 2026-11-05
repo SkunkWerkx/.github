@@ -718,7 +718,7 @@ class FetchStepTests(unittest.TestCase):
     def test_every_wired_leg_fetches_the_companions_first(self):
         import companion_map
         legs = self.wired_legs()
-        self.assertEqual(len(legs), 41)
+        self.assertEqual(len(legs), 42)
         self.assertLessEqual(set(DEFERRED), set(legs))
         for (workflow, job_name), leg in sorted(legs.items()):
             with self.subTest(leg=f'{workflow}:{job_name}'):
