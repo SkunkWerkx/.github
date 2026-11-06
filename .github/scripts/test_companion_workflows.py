@@ -700,6 +700,7 @@ VERSION_ONLY = re.compile(r'(^|[\s;&|(])(cargo|go|npm|dotnet|swift)\s+--version\
 def resolves(step):
     uses = str(step.get('uses', ''))
     return (bool(RESOLVES.search(VERSION_ONLY.sub(' ', str(step.get('run', '')))))
+            or 'go_big_endian.sh' in str(step.get('run', ''))  # its cross-build resolves the module
             or any(uses.endswith('/' + a) for a in RESOLVING_ACTIONS)
             or uses.startswith(('PyO3/maturin-action@', *RESOLVING_REMOTE_ACTIONS)))
 
@@ -719,7 +720,7 @@ class FetchStepTests(unittest.TestCase):
     def test_every_wired_leg_fetches_the_companions_first(self):
         import companion_map
         legs = self.wired_legs()
-        self.assertEqual(len(legs), 36)
+        self.assertEqual(len(legs), 37)
         self.assertLessEqual(set(DEFERRED), set(legs))
         for (workflow, job_name), leg in sorted(legs.items()):
             with self.subTest(leg=f'{workflow}:{job_name}'):
@@ -1399,7 +1400,10 @@ class FetchStepTests(unittest.TestCase):
         runners = {p.relative_to(github).as_posix() for p in [*github.glob('actions/*/*'), *SCRIPTS.glob('*')]
                    if p.is_file() and p.suffix in ('.sh', '.mjs', '.py', '.rb') and not p.name.startswith('test_')
                    and starts.search(p.read_text(errors='replace'))}
-        self.assertLessEqual(runners, set(ISOLATED_ENVIRONMENTS))
+        self.assertLessEqual(runners - set(CONTAINER_SCRIPTS_EXEMPT), set(ISOLATED_ENVIRONMENTS))
+        for script in CONTAINER_SCRIPTS_EXEMPT:
+            with self.subTest(exempt=script):
+                self.assertIn(script, runners, 'runs no container now: take it off the list')
         # The spec's "sdist and fallthrough venvs" and every inline container a workflow starts:
         # each step that starts one (or installs into a fresh venv) in a WORKFLOW_ENVIRONMENTS job
         # carries that job's wiring; any other sources companion_container.sh, or is exempt by
@@ -1645,6 +1649,7 @@ NO_CACHE = {
     'actions/upload-artifact': ('uploads, never restores', lambda w: True),
     'actions/attest-build-provenance': ('signs, no cache', lambda w: True),
     'dtolnay/rust-toolchain': ('rustup, no cache', lambda w: True),
+    'docker/setup-qemu-action': ('registers binfmt handlers, no cache', lambda w: True),
     'taiki-e/install-action': ('prebuilt tool binaries, no actions cache', lambda w: True),
     'shivammathur/setup-php': ('PHP and its extensions from the runner\'s sources, no package cache',
                                lambda w: True),
@@ -1672,6 +1677,11 @@ ISOLATED_ENVIRONMENTS = (
     'actions/pyodide-suite/browser-pyodide.mjs',
     'actions/ruby-wasm-suite/suite-ruby-wasm.sh',
 )
+
+# Scripts that start a container but build nothing in it, and why they take no companion.
+CONTAINER_SCRIPTS_EXEMPT = {
+    'scripts/go_big_endian.sh': "cross-builds on the host, under the host's replace; the container only runs the static binary",
+}
 
 # The jobs whose inline steps build an environment the host's override cannot reach (the spec's
 # "sdist and fallthrough venvs", several in Docker), each with the wiring every such step carries.

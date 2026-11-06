@@ -197,6 +197,7 @@ class MappingRowTests(unittest.TestCase):
 
     def test_go(self):
         for workflow, job, rid in (('hyper-test-go.yml', 'test', 'win-x64'), ('hyper-test-go.yml', 'test-musl', 'linux-musl-arm64'),
+                                   ('hyper-test-go.yml', 'test-big-endian', 'linux-x64'),
                                    ('hyper-build-wasm.yml', 'test-go-wasm', None)):
             with self.subTest(job=job):
                 self.assertEqual(ecos(workflow, job, rid), ['go'])
