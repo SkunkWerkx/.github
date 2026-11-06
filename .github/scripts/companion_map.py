@@ -181,6 +181,7 @@ JOBS = {
     ('hyper-test-csharp.yml', 'test-musl'): ('csharp',),
     ('hyper-test-go.yml', 'test'): ('go',),
     ('hyper-test-go.yml', 'test-musl'): ('go',),
+    ('hyper-test-go.yml', 'test-big-endian'): ('go',),
     ('hyper-test-java.yml', 'test'): ('java',),
     ('hyper-test-java.yml', 'test-musl'): ('java',),
     ('hyper-test-java.yml', 'test-osx-x64'): ('java',),

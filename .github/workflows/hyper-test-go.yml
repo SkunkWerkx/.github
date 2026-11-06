@@ -9,7 +9,8 @@ name: HyperForge — test the Go binding
 # Go: the binding is wasm2go's translation of the core, committed as Go source, so the suite
 # links nothing, downloads nothing and waits for nothing: `go test ./...` with
 # CGO_ENABLED=0 on the five desktop hosts and, from the Go version go.mod declares, on the two
-# Alpine images. Ahead of it `linters` picks the tier on the one leg that lints: `core` is the
+# Alpine images and, off a pull request, on s390x under QEMU, the one host where the generated
+# helpers' big-endian path runs (go_big_endian.sh, which is also the local gate). Ahead of it `linters` picks the tier on the one leg that lints: `core` is the
 # regeneration check (that the committed translation is this commit's core, which a core change must
 # not skip), `fast` adds gofmt, go vet and revive, `sweep` is the check with the cross-compile sweep
 # and the race run off a pull request, and `none` is the suite alone.
@@ -116,7 +117,7 @@ jobs:
 
       - name: Install revive
         if: matrix.rid == 'linux-x64' && inputs.linters == 'fast'
-        run: go install github.com/mgechev/revive@v1.16.0
+        run: go install github.com/mgechev/revive@v1.17.1
 
       # The generator (go/internal/wasm2go) is its own module, so revive is pointed at it too.
       - name: revive
@@ -266,3 +267,47 @@ jobs:
           crate: ${{ inputs.crate }}
           rid: ${{ matrix.rid }}
           image: ${{ steps.images.outputs.go }}
+
+  # The generated core's load and store helpers have a path of their own for a big-endian CPU,
+  # which no host above reaches, and a regenerated core can change it.
+  test-big-endian:
+    if: inputs.mode != 'pr'
+    runs-on: ubuntu-26.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Forge workflow revision
+        env:
+          FORGE_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          [[ "$FORGE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Forge workflow revision must be a full immutable commit SHA"; exit 1; }
+      - name: Check out the executing Forge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .hyperforge
+          persist-credentials: false
+
+      # The runner's go builds the test binaries; the image only hosts them.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ inputs.go_version_file }}
+          cache: false
+
+      # The pinned companion (companion-pins): nothing without a `companions` block in
+      # hyper.json, the release guard alone in a release dispatch, and otherwise the Go
+      # replace, proven, before the cross-build resolves the companion.
+      - name: Fetch the companions
+        uses: ./.hyperforge/.github/actions/fetch-companions
+        with:
+          leg: hyper-test-go.yml:test-big-endian:linux-x64
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: s390x
+
+      - name: Go on s390x, under QEMU
+        run: .hyperforge/.github/scripts/go_big_endian.sh go

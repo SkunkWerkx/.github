@@ -560,7 +560,7 @@ jobs:
           # go-version-file only says where the Go version is read from; the module cache needs
           # cache-dependency-path pointed at go.sum or setup-go searches the repository root.
           cache-dependency-path: go/go.sum
-      - run: go install github.com/mgechev/revive@v1.16.0
+      - run: go install github.com/mgechev/revive@v1.17.1
       # The generator (go/internal/wasm2go) is its own module, so revive is pointed at it too.
       - working-directory: go
         run: |

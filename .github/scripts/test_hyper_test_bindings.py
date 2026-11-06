@@ -181,8 +181,8 @@ class DevLoopStagingTests(unittest.TestCase):
 
 
 class GoWorkflowTests(unittest.TestCase):
-    """hyper-test-go.yml: the translated core needs no artifact, so the suite runs on the seven
-    hosts with nothing to wait for."""
+    """hyper-test-go.yml: the translated core needs no artifact, so the suite runs on the eight
+    hosts (the five desktop ones, two Alpine, s390x under QEMU) with nothing to wait for."""
 
     def test_go_downloads_no_core_and_runs_on_seven_hosts(self):
         text, workflow = load('go')
@@ -204,6 +204,19 @@ class GoWorkflowTests(unittest.TestCase):
         inputs = workflow['on']['workflow_call']['inputs']
         self.assertEqual(set(inputs), {'mode', 'crate', 'go_version_file', 'linters'})
         self.assertEqual(inputs['go_version_file']['default'], 'go/go.mod')
+
+    def test_go_runs_on_a_big_endian_host_off_a_pull_request(self):
+        _, workflow = load('go')
+        job = workflow['jobs']['test-big-endian']
+        self.assertIn("inputs.mode != 'pr'", job['if'])
+        self.assertEqual(job['runs-on'], 'ubuntu-26.04')
+        uses = [s.get('uses', '') for s in job['steps']]
+        self.assertTrue(any(u.startswith('docker/setup-qemu-action@') for u in uses))
+        self.assertIn('./.hyperforge/.github/actions/fetch-companions', uses)
+        fetch = next(s for s in job['steps'] if s.get('name') == 'Fetch the companions')
+        self.assertEqual(fetch['with']['leg'], 'hyper-test-go.yml:test-big-endian:linux-x64')
+        suite = next(s for s in job['steps'] if s.get('name') == 'Go on s390x, under QEMU')
+        self.assertIn('go_big_endian.sh', suite['run'])
 
 
 
@@ -245,6 +258,9 @@ class PullRequestLegs(unittest.TestCase):
         for name, job in musl.items():
             with self.subTest(name):
                 self.assertIn("inputs.mode != 'pr'", self.jobs(name)[job]['if'])
+
+    def test_the_go_big_endian_host_is_off_on_a_pull_request(self):
+        self.assertIn("inputs.mode != 'pr'", self.jobs('hyper-test-go')['test-big-endian']['if'])
 
 
 if __name__ == '__main__':
