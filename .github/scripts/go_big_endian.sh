@@ -17,7 +17,8 @@
 # skip themselves in that Go-only container stay skipped and the output names them: the
 # regeneration tests, which need cargo, and HyperCast's downgrade test, which needs
 # HYPERCAST_DOWNGRADE_ROOT and the same prerequisites; both run on the regular host legs. Every
-# package runs even after one fails, and the status is non-zero if any did.
+# package runs even after one fails, and the status is non-zero if any did, or if the package list
+# failed or no suite ran at all.
 #
 # Docker keeps the image's tag at the architecture it last pulled, so on a developer's machine name
 # --platform on any later run of that tag.
@@ -68,14 +69,23 @@ if [ -n "${PACKAGES:-}" ]; then
   # shellcheck disable=SC2206 # the list is space-separated on purpose
   packages=($PACKAGES)
 else
+  # Assigned first, because a process substitution would lose go list's exit status.
+  listed=$(go list ./...)
   packages=()
-  while IFS= read -r package; do
-    packages+=("$package")
-  done < <(go list ./...)
+  if [ -n "$listed" ]; then
+    while IFS= read -r package; do
+      packages+=("$package")
+    done <<<"$listed"
+  fi
+fi
+if [ "${#packages[@]}" -eq 0 ]; then
+  echo "go_big_endian: no packages to run in $go_dir" >&2
+  exit 1
 fi
 
 failed=0
 n=0
+ran=0
 for package in "${packages[@]}"; do
   n=$((n + 1))
   binary=$bin_dir/$n.test
@@ -84,6 +94,7 @@ for package in "${packages[@]}"; do
     echo "$package: no test files"
     continue
   fi
+  ran=$((ran + 1))
   dir=$(go list -f '{{.Dir}}' "$package")
   log=$bin_dir/$n.log
   running=go-big-endian-$$-$n
@@ -111,5 +122,9 @@ done
 
 if [ "$failed" -ne 0 ]; then
   echo "go_big_endian: at least one suite failed on $arch" >&2
+  exit 1
+fi
+if [ "$ran" -eq 0 ]; then
+  echo "go_big_endian: no suite ran: none of the packages has test files" >&2
   exit 1
 fi
