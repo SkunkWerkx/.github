@@ -10,10 +10,11 @@ name: HyperForge — test the Go binding
 # links nothing, downloads nothing and waits for nothing: `go test ./...` with
 # CGO_ENABLED=0 on the five desktop hosts and, from the Go version go.mod declares, on the two
 # Alpine images and, off a pull request, on s390x under QEMU, the one host where the generated
-# helpers' big-endian path runs (go_big_endian.sh, which is also the local gate). Ahead of it `linters` picks the tier on the one leg that lints: `core` is the
-# regeneration check (that the committed translation is this commit's core, which a core change must
-# not skip), `fast` adds gofmt, go vet and revive, `sweep` is the check with the cross-compile sweep
-# and the race run off a pull request, and `none` is the suite alone.
+# helpers' big-endian path runs (go_big_endian.sh, which is also the local gate). Ahead of it
+# `linters` picks the tier on the one leg that lints: `core` is the regeneration check (that the
+# committed translation is this commit's core, which a core change must not skip), `fast` adds
+# gofmt, go vet and revive, `sweep` is the check with the cross-compile sweep and the race run
+# off a pull request, and `none` is the suite alone.
 
 on:
   workflow_call:

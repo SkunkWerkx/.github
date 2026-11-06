@@ -184,7 +184,7 @@ class GoWorkflowTests(unittest.TestCase):
     """hyper-test-go.yml: the translated core needs no artifact, so the suite runs on the eight
     hosts (the five desktop ones, two Alpine, s390x under QEMU) with nothing to wait for."""
 
-    def test_go_downloads_no_core_and_runs_on_seven_hosts(self):
+    def test_go_downloads_no_core_and_runs_on_the_desktop_and_alpine_hosts(self):
         text, workflow = load('go')
         self.assertNotIn('download-artifact', text)
         self.assertNotIn('cargo build', text)
