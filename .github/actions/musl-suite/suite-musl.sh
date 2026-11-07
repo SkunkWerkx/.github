@@ -313,7 +313,7 @@ case "$binding" in
       cd /work/typescript
       { if [ -f bun.lock ]; then bun install --frozen-lockfile; else npm ci; fi; } || exit 1
       companion_npm /src /work /forge /work/typescript origin --installed
-      bun run build && bun run test || exit 1
+      bun run --bun build && bun run test || exit 1
       for wrapper in index.js index.d.ts binding.js binding.d.ts; do
         cmp "$wrapper" "/src/typescript/$wrapper" || { echo "::error::napi build rewrote typescript/$wrapper"; exit 1; }
       done

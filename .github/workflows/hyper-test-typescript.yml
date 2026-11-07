@@ -160,7 +160,7 @@ jobs:
         id: node_addon
         run: |
           set -euo pipefail
-          (cd typescript && { if [ -f bun.lock ]; then bun install --frozen-lockfile; else npm ci; fi; } && bun run build)
+          (cd typescript && { if [ -f bun.lock ]; then bun install --frozen-lockfile; else npm ci; fi; } && bun run --bun build)
           git diff --exit-code -- typescript/index.js typescript/index.d.ts typescript/binding.js typescript/binding.d.ts
           ls -l typescript/*.node
 
@@ -361,7 +361,7 @@ jobs:
       - name: Cross-build the TypeScript addon for x86_64
         run: |
           set -euo pipefail
-          (cd typescript && { if [ -f bun.lock ]; then bun install --frozen-lockfile; else npm ci; fi; } && bunx napi build --release --platform --target x86_64-apple-darwin --js binding.js --dts binding.d.ts)
+          (cd typescript && { if [ -f bun.lock ]; then bun install --frozen-lockfile; else npm ci; fi; } && bunx --bun napi build --release --platform --target x86_64-apple-darwin --js binding.js --dts binding.d.ts)
           git diff --exit-code -- typescript/index.js typescript/index.d.ts typescript/binding.js typescript/binding.d.ts
           archs="$(lipo -archs typescript/*.node)"
           echo "architectures: $archs"

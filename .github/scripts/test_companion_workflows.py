@@ -1012,7 +1012,7 @@ class FetchStepTests(unittest.TestCase):
         for needle in ('companion_cargo /src /work /work/rust /work/typescript',
                        'companion_npm /src /work /forge /work/typescript wire', 'bun install --frozen-lockfile',
                        'companion_npm /src /work /forge /work/typescript origin --installed',
-                       'bun run build && bun run test || exit 1',
+                       'bun run --bun build && bun run test || exit 1',
                        'companion_npm /src /work /forge /work/typescript unpack', 'bun run test:bun'):
             at = text.index(needle, at) + len(needle)
         node = text[text.index('\n  node)'):text.index('\n  ruby)')]
@@ -1284,7 +1284,7 @@ class FetchStepTests(unittest.TestCase):
                  'pip install -q --root-user-action=ignore pytest /wheels/*.whl'),
                 ('actions/musl-suite/suite-musl.sh', 'companion_python /src /forge python3 origin', 'pytest -q'),
                 ('actions/musl-suite/suite-musl.sh', 'companion_cargo /src /work /work/rust /work/typescript',
-                 'bun run build && bun run test'),
+                 'bun run --bun build && bun run test'),
                 ('actions/musl-suite/suite-musl.sh', 'companion_npm /src /work /forge /work/typescript wire',
                  'bun install --frozen-lockfile')):
             with self.subTest(script=script):

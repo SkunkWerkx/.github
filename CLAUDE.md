@@ -182,9 +182,13 @@ companion pin" and "Release order"). What that asks of a change here:
 
 ## Bun and npm
 
-Bun installs and runs scripts on every TypeScript leg; npm is confined to publishing (`npm_package.py`'s
-`npm pkg set` and `npm pack`, `publish-npm`) and a consumer's npm scenarios. Every install site and
-the wiring still accept a `package-lock.json` (`if [ -f bun.lock ]`, `bun_lock.present`), so the Forge
+Bun installs, runs scripts on every TypeScript leg, builds the native addons and packs (those builds
+and `npm_package.py` run the napi CLI with `--bun`, or its shebang takes the leg's Node; the WASI build
+still runs on Node, and `pack-npm` sets up no Node). Node and npm come in for `npm publish` alone, in
+`publish-npm`, because Bun has no OIDC trusted publishing or provenance (oven-sh/bun#15601,
+oven-sh/bun#22423), and in a consumer's npm scenarios; Node also runs the suites, since it is the
+runtime the packages ship for. Every install site and the wiring still accept a `package-lock.json`
+(`if [ -f bun.lock ]`, `bun_lock.present`, which also packs such a package with npm), so the Forge
 could merge before the consumers moved and a pinned companion commit from before the move still packs.
 Drop that branch, with its tests, once every consumer's master and pin carry `bun.lock`.
 

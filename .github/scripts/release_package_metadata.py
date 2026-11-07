@@ -60,7 +60,7 @@ def npm_all_names(crate, platforms, wasi):
 
 
 def npm_filename(name, version):
-    """`npm pack`'s file name: a scoped name loses its `@` and its `/` becomes `-`."""
+    """A packed tarball's file name (`bun pm pack`'s and `npm pack`'s): a scoped name loses its `@` and its `/` becomes `-`."""
     return name.removeprefix('@').replace('/', '-') + f'-{version}.tgz'
 
 
@@ -249,7 +249,7 @@ def maven(path, crate, version):
 
 
 def npm_package(path):
-    """The package.json `npm pack` wrote into a tarball, parsed and never executed."""
+    """The package.json packed into a tarball, parsed and never executed."""
     entries = tar_entries(path)
     if 'package/package.json' not in entries:
         raise ValueError(f'npm tarball has no package/package.json: {path.name}')
