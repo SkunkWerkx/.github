@@ -57,6 +57,8 @@ runs:
       shell: bash
       run: python3 "$FORGE_SCRIPTS/release_inventory.py" verify --registry npm --workspace .
 
+    # The one place a release takes Node: Bun packed these tarballs, but it has no OIDC trusted
+    # publishing or provenance (oven-sh/bun#15601, oven-sh/bun#22423), so npm pushes them.
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: ${{ inputs.node_version }}

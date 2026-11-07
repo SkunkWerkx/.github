@@ -792,7 +792,7 @@ class PrepareReleaseContracts(unittest.TestCase):
         bump = names.index('Bump every committed manifest to the version')
         commit = names.index('Commit and push if anything actually changed')
         build = [i for i, s in enumerate(steps)
-                 if 'bun install --frozen-lockfile --ignore-scripts' in s.get('run', '') and 'bun run build' in s.get('run', '')]
+                 if 'bun install --frozen-lockfile --ignore-scripts' in s.get('run', '') and 'bun run --bun build' in s.get('run', '')]
         self.assertEqual(len(build), 1)
         step = steps[build[0]]
         self.assertEqual(step['if'], "hashFiles('typescript/package.json') != ''")
@@ -1070,17 +1070,19 @@ class BuildNativeContracts(unittest.TestCase):
         for job in self.jobs.values():
             for step in job.get('steps', []):
                 run = step.get('run', '')
-                for match in re.finditer(r'bun run build|napi build', run):
+                for match in re.finditer(r'bun run --bun build|napi build', run):
                     builds += 1
                     self.assertIn(self.WRAPPERS, run[match.end():], run)
         self.assertEqual(builds, 2)
+        # Without --bun the CLI's `node` shebang takes the leg's Node.
+        self.assertNotRegex(self.text, r'bun run build\b|bunx napi')
         for napi in re.findall(r'napi build[^\n]*', self.text):
             self.assertIn('--js binding.js --dts binding.d.ts', napi)
 
     def test_osx_x64_cross_builds_the_addon_and_tests_it_under_rosetta(self):
         steps = self.steps('build-native-osx-x64')
         text = '\n'.join(self.describe(s) for s in steps)
-        self.assertIn('bunx napi build --release --platform --target x86_64-apple-darwin '
+        self.assertIn('bunx --bun napi build --release --platform --target x86_64-apple-darwin '
                       '--js binding.js --dts binding.d.ts', text)
         self.assertIn('lipo -archs', text.split('napi build', 1)[1])
         x64 = [s for s in steps if s.get('uses', '').startswith('actions/setup-node@')
@@ -1113,9 +1115,9 @@ class BuildNativeContracts(unittest.TestCase):
         self.assertIn('-C target-feature=-crt-static -L native=/unwind', arm)
         # The install, then the pinned companion's proof (a no-op without one), then the build and suite.
         self.assertIn('else npm ci; fi; } || exit 1\n      companion_npm /src /work /forge /work/typescript origin --installed\n'
-                      '      bun run build && bun run test || exit 1', arm)
+                      '      bun run --bun build && bun run test || exit 1', arm)
         self.assertIn('bun install --frozen-lockfile', arm)
-        after = arm.split('bun run build', 1)[1]
+        after = arm.split('bun run --bun build', 1)[1]
         self.assertIn('for wrapper in index.js index.d.ts binding.js binding.d.ts; do\n'
                       '        cmp "$wrapper" "/src/typescript/$wrapper" || '
                       '{ echo "::error::napi build rewrote typescript/$wrapper"; exit 1; }\n'

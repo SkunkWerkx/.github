@@ -128,7 +128,7 @@ jobs:
       # The addon it compiles (typescript/*.node) is gitignored and never committed.
       - name: Regenerate the napi-rs wrappers at the version
         if: hashFiles('typescript/package.json') != ''
-        run: (cd typescript && { if [ -f bun.lock ]; then bun install --frozen-lockfile --ignore-scripts; else npm ci --ignore-scripts; fi; } && bun run build)
+        run: (cd typescript && { if [ -f bun.lock ]; then bun install --frozen-lockfile --ignore-scripts; else npm ci --ignore-scripts; fi; } && bun run --bun build)
 
       # The Go core is translated from the crate, and the crate's version is baked into its
       # <crate>_version: after the bump, regenerate so the committed core reports the new

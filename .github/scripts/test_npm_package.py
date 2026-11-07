@@ -3,6 +3,7 @@ consumer's own CI alike."""
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import tarfile
@@ -31,8 +32,9 @@ def read_json(path):
 
 
 class FakeNpm:
-    """Records every command and plays the parts of `npm ci`, `napi create-npm-dirs`, `npm pack`
-    and `npm pkg set` on the staged copy, so the pack body runs without Node."""
+    """Records every command and plays the parts of `bun install`, `npm ci`, `napi
+    create-npm-dirs` (on Bun's runtime or Node's), `bun pm pack` and `npm pack` on the staged
+    copy, so the pack body runs without either."""
 
     def __init__(self, loaders_required=True):
         self.commands = []
@@ -42,17 +44,11 @@ class FakeNpm:
         cwd = Path(cwd)
         self.commands.append((tuple(cmd), cwd))
         tool = Path(cmd[0]).name
-        if tool.startswith('napi') and cmd[1] == 'create-npm-dirs':
+        if (tool.startswith('napi') and cmd[1] == 'create-npm-dirs') or cmd[:4] == ['bun', 'run', '--bun', 'napi']:
             self.create_npm_dirs(cwd)
-        elif tool.startswith('npm') and cmd[1:3] == ['pkg', 'set']:
-            manifest = read_json(cwd / 'package.json')
-            for assignment in cmd[3:]:
-                key, value = assignment.split('=', 1)
-                section, name = key.split('.', 1)
-                manifest.setdefault(section, {})[name] = value
-            write_json(cwd / 'package.json', manifest)
-        elif tool.startswith('npm') and cmd[1] == 'pack':
-            out = Path(cmd[cmd.index('--pack-destination') + 1])
+        elif (tool.startswith('npm') and cmd[1] == 'pack') or cmd[:3] == ['bun', 'pm', 'pack']:
+            flag = '--destination' if cmd[0] == 'bun' else '--pack-destination'
+            out = Path(cmd[cmd.index(flag) + 1])
             manifest = read_json(cwd / 'package.json')
             entries = [('package/package.json', (cwd / 'package.json').read_bytes())]
             for name in manifest.get('files', []):
@@ -190,27 +186,40 @@ class NpmPackageTests(unittest.TestCase):
             npm_package.check_tarballs(paths, 'hypercast', '0.10.0', CFG, {**WASI_RUNTIME_PINS, '@emnapi/core': '1.5.1'})
 
     def test_lockfile_versions_reads_a_bun_lock_first(self):
-        (self.package / 'bun.lock').write_text('{"packages": {'
-                                               '"@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.0.0", "", {}, "sha512-a"],'
-                                               '"@emnapi/core": ["@emnapi/core@1.5.0", "", {}, "sha512-b"],'
-                                               '"@emnapi/runtime": ["@emnapi/runtime@1.5.0", "", {}, "sha512-c"],},}')
+        self.write_bun_lock()
         self.assertEqual(npm_package.lockfile_versions(self.package, WASI_RUNTIME), WASI_RUNTIME_PINS)
         with self.assertRaisesRegex(ValueError, 'bun.lock does not resolve left-pad'):
             npm_package.lockfile_versions(self.package, ('left-pad',))
 
-    def test_a_bun_lock_stages_with_bun_and_still_packs_with_npm(self):
+    def write_bun_lock(self):
         (self.package / 'bun.lock').write_text('{"packages": {'
                                                '"@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.0.0", "", {}, "sha512-a"],'
                                                '"@emnapi/core": ["@emnapi/core@1.5.0", "", {}, "sha512-b"],'
                                                '"@emnapi/runtime": ["@emnapi/runtime@1.5.0", "", {}, "sha512-c"],},}')
+
+    def test_a_bun_lock_stages_and_packs_with_bun_and_never_calls_npm_or_node(self):
+        self.write_bun_lock()
         fake = FakeNpm()
-        code = npm_package.main(['pack-wasi', '--package', str(self.package), '--artifact', str(self.wasi_artifact),
+        code = npm_package.main(['pack', '--package', str(self.package), '--artifacts', str(self.artifacts),
                                  '--out', str(self.out), '--root', str(self.tmp), '--work', str(self.tmp / 'work')],
                                 runner=fake, cfg=CFG)
         self.assertEqual(code, 0)
+        self.assertEqual({Path(cmd[0]).name for cmd, _ in fake.commands}, {'bun'}, 'npm publishes; nothing here packs with it')
         self.assertEqual(list(fake.commands[0][0]), ['bun', 'install', '--frozen-lockfile', '--ignore-scripts'])
-        self.assertEqual(Path(fake.commands[2][0][0]).name.split('.')[0], 'npm')
-        self.assertEqual(fake.commands[2][0][1], 'pack')
+        self.assertEqual(list(fake.commands[1][0]), ['bun', 'run', '--bun', 'napi', 'create-npm-dirs'],
+                         '--bun, or the CLI\'s shebang takes whatever Node the runner has')
+        packs = [cmd for cmd, _ in fake.commands[2:]]
+        self.assertEqual(len(packs), 10)
+        for cmd in packs:
+            self.assertEqual(list(cmd), ['bun', 'pm', 'pack', '--ignore-scripts', '--destination', str(self.out.resolve())])
+
+    def test_a_package_lock_still_stages_and_packs_with_npm(self):
+        fake = FakeNpm()
+        code = npm_package.main(['pack', '--package', str(self.package), '--artifacts', str(self.artifacts),
+                                 '--out', str(self.out), '--root', str(self.tmp), '--work', str(self.tmp / 'work')],
+                                runner=fake, cfg=CFG)
+        self.assertEqual(code, 0)
+        self.assertEqual({Path(cmd[0]).name.split('.')[0] for cmd, _ in fake.commands}, {'npm', 'napi'})
 
     def test_platform_and_wasi_packages_carry_the_license_texts_the_package_has(self):
         (self.package / 'LICENSE').write_text('MIT\n')
@@ -266,8 +275,7 @@ class NpmPackageTests(unittest.TestCase):
         self.assertEqual(len(packs), 10)
         self.assertEqual(packs[-1].name, 'work', 'the root is packed last')
         self.assertEqual(packs[-2].name, NODE_WASI)
-        sets = [cmd for cmd, _ in fake.commands if cmd[1:3] == ('pkg', 'set')]
-        self.assertEqual(len(sets), 1)
+        self.assertFalse([cmd for cmd, _ in fake.commands if 'pkg' in cmd], 'the copy\'s manifest is written directly')
         root = read_json(packs[-1] / 'package.json')
         self.assertEqual(root['optionalDependencies'], {f'@skunkwerkx/hypercast-{s}': '0.10.0' for s in NODE_SUFFIXES})
         self.assertEqual(root['dependencies'], {f'@skunkwerkx/hypercast-{NODE_WASI}': '0.10.0'})
@@ -329,26 +337,27 @@ if __name__ == '__main__':
 
 
 class PackDestinationTest(unittest.TestCase):
-    """`npm pack` runs inside the staged package directory under a temporary work tree, so a
+    """The packer runs inside the staged package directory under a temporary work tree, so a
     relative `--out` has to reach it absolute, or the tarball lands in the scratch and the
     caller's `npm-wasi/*.tgz` is empty (HyperUuid run 41225202643, build-node-wasi)."""
 
-    def test_pack_dir_hands_npm_an_absolute_destination_from_a_relative_out(self):
-        import os
-        tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, tmp, True)
-        package = tmp / 'staged'
-        write_json(package / 'package.json', {'name': '@skunkwerkx/hypercast-wasm32-wasip1', 'version': '0.10.0', 'files': []})
-        fake = FakeNpm()
-        before = os.getcwd()
-        os.chdir(tmp)
-        try:
-            path = npm_package.pack_dir(package, 'npm-wasi', runner=fake)
-        finally:
-            os.chdir(before)
-        (pack_cmd, pack_cwd), = fake.commands
-        destination = Path(pack_cmd[pack_cmd.index('--pack-destination') + 1])
-        self.assertEqual(pack_cwd, package, 'npm pack runs in the staged package directory')
-        self.assertTrue(destination.is_absolute(), f'npm would resolve {destination} against {pack_cwd}')
-        self.assertEqual(destination, (tmp / 'npm-wasi').resolve())
-        self.assertEqual(path, (tmp / 'npm-wasi').resolve() / 'skunkwerkx-hypercast-wasm32-wasip1-0.10.0.tgz')
+    def test_pack_dir_hands_the_packer_an_absolute_destination_from_a_relative_out(self):
+        for on_bun, flag in ((True, '--destination'), (False, '--pack-destination')):
+            with self.subTest(flag):
+                tmp = Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, tmp, True)
+                package = tmp / 'staged'
+                write_json(package / 'package.json', {'name': '@skunkwerkx/hypercast-wasm32-wasip1', 'version': '0.10.0', 'files': []})
+                fake = FakeNpm()
+                before = os.getcwd()
+                os.chdir(tmp)
+                try:
+                    path = npm_package.pack_dir(package, 'npm-wasi', on_bun, runner=fake)
+                finally:
+                    os.chdir(before)
+                (pack_cmd, pack_cwd), = fake.commands
+                destination = Path(pack_cmd[pack_cmd.index(flag) + 1])
+                self.assertEqual(pack_cwd, package, 'the packer runs in the staged package directory')
+                self.assertTrue(destination.is_absolute(), f'the packer would resolve {destination} against {pack_cwd}')
+                self.assertEqual(destination, (tmp / 'npm-wasi').resolve())
+                self.assertEqual(path, (tmp / 'npm-wasi').resolve() / 'skunkwerkx-hypercast-wasm32-wasip1-0.10.0.tgz')

@@ -377,10 +377,12 @@ class NpmAndCranActionTests(unittest.TestCase):
 
     def test_pack_npm_verifies_every_addon_then_packs_ten_tarballs_through_npm_package_py(self):
         action = self.action('pack-npm')
-        self.assertEqual(action['inputs']['node_version']['default'], '26')
         self.assertEqual(action['inputs']['bun_version']['default'], 'latest')
-        # npm_package.py stages with `bun install` beside a bun.lock, and the consumers' pack-npm
-        # jobs set up no toolchain of their own: without this step packing dies on a missing bun.
+        # Bun installs and packs (npm_package.py), and the consumers' pack-npm jobs set up no
+        # toolchain of their own: without this step packing dies on a missing bun. Node is
+        # publish-npm's alone, for `npm publish`.
+        self.assertNotIn('node_version', action['inputs'])
+        self.assertEqual(self.uses('pack-npm', 'actions/setup-node@'), [])
         steps = self.steps('pack-npm')
         setup_bun = self.uses('pack-npm', 'oven-sh/setup-bun@')
         self.assertEqual(len(setup_bun), 1)
@@ -399,7 +401,7 @@ class NpmAndCranActionTests(unittest.TestCase):
         self.assertIn('--signer-repo SkunkWerkx/.github', verify['run'])
         self.assertIn('--source-digest "$SOURCE_SHA"', verify['run'])
         # One pack body, npm_package.py, shared with the consumers' CI: it stages a copy, so
-        # `npm pkg set` never touches the committed package.json, pins the WASI package's
+        # the injected dependencies never touch the committed package.json, pins the WASI package's
         # runtime from the lockfile and checks every tarball. The action never passes the
         # developer-only flag, and napi's prepublish would publish and rewrite on its own.
         self.assertIn('npm_package.py" pack --package typescript --artifacts artifacts/node --out npm-packages', runs)

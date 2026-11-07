@@ -51,7 +51,7 @@ def npm_manifest(name, version, **fields):
 
 def write_npm(root, crate, version, platform_version=None, dependency_version=None, wasi=True,
               wasi_dependencies=None):
-    """The ten `npm pack` tarballs: the root package, one per napi platform, and the WASI
+    """The ten packed tarballs: the root package, one per napi platform, and the WASI
     fallback package the root depends on (nine without it, `wasi=False`)."""
     names = [f'@skunkwerkx/{crate}-{suffix}' for suffix in NODE_SUFFIXES]
     optional = {name: dependency_version or version for name in names}

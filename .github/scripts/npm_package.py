@@ -20,8 +20,10 @@ dependencies are therefore rewritten to the exact versions in the committed lock
 `package-lock.json` for a package not yet on Bun, a pinned companion's commit among them), the ones
 the forced-WASI suite was proven with, and the tarball is refused unless they match.
 
-npm stays for what a publish needs (`npm pkg set` and `npm pack`, whose tarball is what `npm publish`
-pushes); the dev dependencies come from the lock's own package manager.
+Beside a `bun.lock`, Bun does all of it: it installs, runs the napi CLI on its own runtime and packs,
+so no Node is involved. Node and npm come in at `npm publish` alone, in the publish-npm action, since
+Bun has no OIDC trusted publishing or provenance (oven-sh/bun#15601, oven-sh/bun#22423). A package
+still on `package-lock.json` installs and packs with npm, as it did.
 
 `--allow-missing-natives` is for a developer machine with one native built: absent natives are
 skipped, the root still pins all eight, and the output is never for release (the action never
@@ -120,7 +122,10 @@ def stage_wasi_sources(work, artifact_dir):
 
 
 def create_npm_dirs(work, runner=default_runner):
-    runner(['napi', 'create-npm-dirs'], Path(work))
+    """Beside a `bun.lock`, on Bun's runtime: `--bun` overrides the CLI's `node` shebang, which
+    would otherwise take whatever Node the runner has."""
+    command = ['bun', 'run', '--bun', 'napi'] if bun_lock.present(work) else ['napi']
+    runner([*command, 'create-npm-dirs'], Path(work))
 
 
 def carry_licenses(work, package):
@@ -182,27 +187,30 @@ def fill_native_dir(work, artifact_dir, crate, suffix):
     return native_dir
 
 
-def pack_dir(directory, out, runner=default_runner):
-    """`npm pack` one package directory into `out`; the tarball's path. `out` is resolved
-    against the caller's directory first: npm runs inside the staged package under the work
-    tree, and would otherwise write a relative `--out` there."""
+def pack_dir(directory, out, on_bun, runner=default_runner):
+    """Pack one package directory into `out` with the lock's package manager; the tarball's
+    path. `out` is resolved against the caller's directory first: the packer runs inside the
+    staged package under the work tree, and would otherwise write a relative `--out` there."""
     directory, out = Path(directory), Path(out).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    runner(['npm', 'pack', '--ignore-scripts', '--pack-destination', str(out)], directory)
+    command = ['bun', 'pm', 'pack', '--ignore-scripts', '--destination'] if on_bun \
+        else ['npm', 'pack', '--ignore-scripts', '--pack-destination']
+    runner([*command, str(out)], directory)
     manifest = read_manifest(directory)
     path = out / npm_filename(manifest['name'], manifest['version'])
     if not path.is_file():
-        raise ValueError(f'npm pack did not write {path}')
+        raise ValueError(f'{command[0]} did not write {path}')
     return path
 
 
-def set_root_dependencies(work, scope_name, version, natives, wasi, runner=default_runner):
+def set_root_dependencies(work, scope_name, version, natives, wasi):
     """Pin every platform package (optionalDependencies) and the WASI package (dependencies)
-    at this version in the copy's root manifest, in one `npm pkg set`."""
-    assignments = [f'optionalDependencies.{scope_name}-{suffix}={version}' for suffix in natives]
+    at this version in the copy's root manifest."""
+    manifest = read_manifest(work)
+    manifest['optionalDependencies'] = {f'{scope_name}-{suffix}': version for suffix in sorted(natives)}
     if wasi:
-        assignments.append(f'dependencies.{scope_name}-{wasi}={version}')
-    runner(['npm', 'pkg', 'set', *assignments], Path(work))
+        manifest['dependencies'] = {f'{scope_name}-{wasi}': version}
+    write_manifest(work, manifest)
 
 
 def check_tarballs(paths, crate, version, cfg, versions, allow_missing_natives=False, skip=()):
@@ -247,7 +255,7 @@ def pack_wasi(package_dir, artifact_dir, out, cfg, work=None, runner=default_run
         wasi_dir = fill_wasi_dir(work, artifact_dir, cfg.crate, wasi)
         pin_wasi_dependencies(wasi_dir, versions)
         check_wasi_manifest(wasi_dir)
-        path = pack_dir(wasi_dir, out, runner)
+        path = pack_dir(wasi_dir, out, bun_lock.present(work), runner)
     npm_tarball(path, cfg.crate, manifest['version'], list(cfg.node_platforms.values()), wasi, wasi_runtime=versions)
     return path
 
@@ -284,21 +292,22 @@ def pack(package_dir, artifacts_dir, out, cfg, work=None, allow_missing_natives=
     with tempfile.TemporaryDirectory(prefix='npm-package-') as scratch:
         work = Path(work) if work else Path(scratch) / 'work'
         stage(package_dir, work, runner)
+        on_bun = bun_lock.present(work)
         if wasi:
             stage_wasi_sources(work, wasi_artifact)
         create_npm_dirs(work, runner)
         paths = []
         for rid, suffix in natives.items():
-            paths.append(pack_dir(fill_native_dir(work, artifacts_dir / f'node-{rid}', cfg.crate, suffix), out, runner))
+            paths.append(pack_dir(fill_native_dir(work, artifacts_dir / f'node-{rid}', cfg.crate, suffix), out, on_bun, runner))
         if wasi:
             wasi_dir = fill_wasi_dir(work, wasi_artifact, cfg.crate, wasi)
             pin_wasi_dependencies(wasi_dir, versions)
             check_wasi_manifest(wasi_dir)
-            paths.append(pack_dir(wasi_dir, out, runner))
+            paths.append(pack_dir(wasi_dir, out, on_bun, runner))
         # The root pins all eight platform packages whether or not each was packed here: a
         # developer's partial pack still describes the published shape.
-        set_root_dependencies(work, scope_name, version, list(cfg.node_platforms.values()), wasi, runner)
-        paths.append(pack_dir(work, out, runner))
+        set_root_dependencies(work, scope_name, version, list(cfg.node_platforms.values()), wasi)
+        paths.append(pack_dir(work, out, on_bun, runner))
     check_tarballs(paths, cfg.crate, version, cfg, versions, allow_missing_natives, skip)
     return paths
 

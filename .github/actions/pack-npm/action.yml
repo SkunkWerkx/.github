@@ -20,12 +20,8 @@ inputs:
   token:
     description: "github.token"
     required: true
-  node_version:
-    description: "The Node.js that runs npm and the napi CLI"
-    required: false
-    default: "26"
   bun_version:
-    description: "The Bun that installs the staged copy's dev dependencies from its bun.lock"
+    description: "The Bun that installs the staged copy's dev dependencies from its bun.lock, runs the napi CLI and packs"
     required: false
     default: "latest"
 
@@ -61,18 +57,16 @@ runs:
           echo "::endgroup::"
         done
 
-    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-      with:
-        node-version: ${{ inputs.node_version }}
-    # npm_package.py's stage runs `bun install --frozen-lockfile` beside a bun.lock, and the
+    # npm_package.py installs, runs the napi CLI and packs with Bun beside a bun.lock, and the
     # consumers' pack jobs call this action on a bare runner, so the toolchain is set up here.
+    # No Node: it comes in at publish-npm, for `npm publish` alone.
     - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       with:
         bun-version: ${{ inputs.bun_version }}
 
     # Packed by the Forge's npm_package.py, the one pack body (the consumer's ci.yml packs its
     # test tarballs with it too, so what the consumer tests installed is shaped exactly as what
-    # ships), on a copy under $RUNNER_TEMP: `npm pkg set` rewrites the root package.json, and
+    # ships), on a copy under $RUNNER_TEMP: the packer rewrites the root package.json, and
     # the checkout's must stay as committed for every later step. Never `napi prepublish`,
     # which publishes on its own. A missing node-<rid> artifact fails before anything is
     # packed: a release never ships a root package naming a platform package that has no
