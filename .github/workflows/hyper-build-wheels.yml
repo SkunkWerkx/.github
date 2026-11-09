@@ -438,6 +438,9 @@ jobs:
             if [[ "$gil_on" == True && "$line" == *"needs a free-threaded CPython"* ]]; then continue; fi
             if [[ "$before_314" == True && "$line" == *"stdlib uuid.uuid7() was added in Python 3.14"* ]]; then continue; fi
             if [[ "$PYTHON" == pypy* && "$line" == *"mypy does not run on PyPy"* ]]; then continue; fi
+            # HyperTabular's Ctrl-C tests on a blocked FIFO open or read: PyPy doesn't cut either
+            # short on a signal, so there is no interrupted call to run the handler from.
+            if [[ "$PYTHON" == pypy* && "$line" == *"PyPy doesn't cut a blocked open or read short on a signal"* ]]; then continue; fi
             # An optional interop test (HyperTabular's numpy one) whose package this job does
             # not install, as the test-python legs do not.
             if [[ "$line" == *"could not import 'numpy'"* ]]; then continue; fi
