@@ -24,9 +24,11 @@ release attaches one C archive per platform to the GitHub Release, from the cons
 see c_package.py), `ruby.abis` and `ruby.platforms`, `node.platforms` (RID -> napi platform
 name), `node.wasi` (the napi platform of the WASI fallback package, default `wasm32-wasip1`;
 `""` for none), `swift_targets`, `xcframework_slices`, `version_files` (path -> regex
-with one group around the version; the default list adds `typescript/package.json`, and
-`r/DESCRIPTION` with the R wrapper crate's exact pin on the core in `r/src/rust/Cargo.toml`,
-only when that binding's directory exists at the consumer's root), `r_corpus` (the corpus
+with one group around the version, or three named `major`, `minor` and `patch` for a version
+spelled in parts; the default list adds `typescript/package.json`, and `r/DESCRIPTION` with
+the R wrapper crate's exact pin on the core in `r/src/rust/Cargo.toml`, only when that
+binding's directory exists at the consumer's root, and `include/<crate>.hpp`'s
+`<CRATE>_VERSION_MAJOR`, `_MINOR` and `_PATCH` macros when that header defines them), `r_corpus` (the corpus
 files every R source tarball must carry under tests/testthat/corpus/, and nothing else there,
 each by its path under corpus/: a JSON file or a fixture it reads, such as
 `workbook/basic.xlsx`; default HyperUuid's five), `big_endian_control` (the negative control
@@ -254,6 +256,14 @@ class HyperConfig:
                 # The wrapper crate's `=` pin on the core, which r/tools/vendor.sh resolves
                 # from the checkout's rust/ and refuses when it differs from the crate's.
                 files['r/src/rust/Cargo.toml'] = rf'^{self.crate} = \{{ version = "=([^"]+)"'
+            # A C++ header that states its own version, as three macros the C smoke test holds
+            # equal to the crate's.
+            header = self.root / 'include' / f'{self.crate}.hpp'
+            macro = f'#define {self.crate.upper()}_VERSION'
+            if header.is_file() and f'{macro}_MAJOR ' in header.read_text(encoding='utf-8'):
+                files[f'include/{self.crate}.hpp'] = (
+                    rf'^{macro}_MAJOR (?P<major>[0-9]+)\n{macro}_MINOR (?P<minor>[0-9]+)\n'
+                    rf'{macro}_PATCH (?P<patch>[0-9]+)$')
         return files
 
     def payload_paths(self, artifacts):
@@ -408,7 +418,8 @@ def corrupt_corpus(cfg, root):
 
 
 def bump(cfg, root, version):
-    """Set every version file's one captured group to `version`; each must match once."""
+    """Set every version file's one captured group to `version`, or its `major`, `minor` and
+    `patch` groups to the version's parts; each file must match once."""
     changed = []
     for relative, pattern in cfg.version_files.items():
         path = Path(root) / relative
@@ -417,7 +428,13 @@ def bump(cfg, root, version):
         if len(matches) != 1:
             raise ValueError(f'{relative}: expected one version match for {pattern!r}, found {len(matches)}')
         match = matches[0]
-        updated = text[:match.start(1)] + version + text[match.end(1):]
+        if 'major' in match.re.groupindex:
+            parts = dict(zip(('major', 'minor', 'patch'), version.split('.')))
+            updated = text
+            for name in sorted(parts, key=match.start, reverse=True):  # last first: offsets hold
+                updated = updated[:match.start(name)] + parts[name] + updated[match.end(name):]
+        else:
+            updated = text[:match.start(1)] + version + text[match.end(1):]
         if updated != text:
             path.write_text(updated, encoding='utf-8')
             changed.append(relative)
