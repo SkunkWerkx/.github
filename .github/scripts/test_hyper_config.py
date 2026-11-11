@@ -221,6 +221,31 @@ class HyperConfigTests(unittest.TestCase):
         changed = hyper_config.bump(cfg, self.root, '1.1.0')
         self.assertEqual(sorted(changed), sorted(self.CLASSIC))
 
+    def test_bump_sets_a_cpp_headers_version_macros(self):
+        write_config(self.root)
+        self.write_classic()
+        header = self.root / 'include' / 'hyperuuid.hpp'
+        header.parent.mkdir()
+        # A header without the macros is not a version file.
+        header.write_text('#define HYPERUUID_HPP\n')
+        self.assertEqual(list(hyper_config.load(self.root).version_files), self.CLASSIC)
+        body = ('// the version\n#define HYPERUUID_VERSION_MAJOR 1\n#define HYPERUUID_VERSION_MINOR 0\n'
+                '#define HYPERUUID_VERSION_PATCH 0\n#define HYPERUUID_VERSION_TEXT "x"\n')
+        header.write_text(body)
+        cfg = hyper_config.load(self.root)
+        self.assertEqual(list(cfg.version_files), self.CLASSIC + ['include/hyperuuid.hpp'])
+        changed = hyper_config.bump(cfg, self.root, '12.3.45')
+        self.assertIn('include/hyperuuid.hpp', changed)
+        self.assertEqual(header.read_text(), body.replace('MAJOR 1', 'MAJOR 12').replace('MINOR 0', 'MINOR 3')
+                         .replace('PATCH 0', 'PATCH 45'))
+        self.assertIn('version = "12.3.45"', (self.root / 'rust/Cargo.toml').read_text())
+        # Bumping to the same version again changes nothing.
+        self.assertNotIn('include/hyperuuid.hpp', hyper_config.bump(cfg, self.root, '12.3.45'))
+        # Macros out of order are no match: the bump fails rather than set a guess.
+        header.write_text(body.replace('MINOR', 'TMP').replace('PATCH', 'MINOR').replace('TMP', 'PATCH'))
+        with self.assertRaises(ValueError):
+            hyper_config.bump(cfg, self.root, '12.3.46')
+
     def test_bump_fails_loudly_when_a_binding_lost_its_manifest(self):
         write_config(self.root)
         self.write_classic()
