@@ -772,8 +772,14 @@ jobs:
           path: .hyperforge
           persist-credentials: false
 
+      # Rust 1.99.1, not stable: a platform constraint. Rust 1.100 moved every wasi target's
+      # thread-locals (wasm32-wasip1's among them, p3's only before) onto pthread keys, and the
+      # wasi-libc ruby_wasm 2.10.1 links has none: rbwasm's link of the extension fails on
+      # pthread_key_create, pthread_setspecific and pthread_key_delete. Back to stable once
+      # ruby.wasm's libc provides them (README, "Rust 1.100 × ruby.wasm").
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: 1.99.1
           targets: wasm32-wasip1
 
       # The pinned companion (companion-pins): nothing without a `companions` block in hyper.json,
