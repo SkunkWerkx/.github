@@ -1,3 +1,9 @@
 # Linguist treats .github/ as vendored, which hides the Forge's own Python, shell and
 # JavaScript from the language stats, and so from CodeQL's default setup.
 .github/** linguist-vendored=false
+
+# Every text file ends its lines with LF, on every platform, Windows checkouts included: eol
+# overrides a contributor's core.autocrlf, as in every Hyper* repo. Without it a Windows checkout
+# is CRLF, and the dev container's git (Linux, no autocrlf) sees every file as modified.
+* text=auto eol=lf
+*.png binary

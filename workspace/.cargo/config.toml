@@ -1,0 +1,12 @@
+# Development builds every Hyper* crate against the HyperCast checkout beside it, never crates.io's: Cargo reads this
+# file for any build run from under workspace/ (configuration is found from the working directory upward). CI checks
+# out one repository at a time and never sees it, so companion and release mode are unaffected.
+# Paths are relative to workspace/, the directory above this .cargo.
+#
+# A path override, not [patch]: it swaps in the source at build time and never writes a lock, so every Cargo.lock
+# keeps naming crates.io and stays clean. [patch] would rewrite each dependent lock to the path and add
+# [[patch.unused]] to the lock of every repo that does not depend on HyperCast.
+# Expected warning while HyperCast's working tree has dependencies its published version lacks (simdutf8 in 1.1):
+# "path override for crate `hypercast` has altered the original list of dependencies". Those dependencies are
+# resolved fresh, not locked. If Cargo ever makes that warning an error, switch to [patch].
+paths = ["HyperCast/rust"]

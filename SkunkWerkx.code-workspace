@@ -1,0 +1,10 @@
+{
+  // Multi-root workspace for the SkunkWerkx dev container: one root per repo, so each keeps its own
+  // rust-analyzer project, CLAUDE.md and git status. The repos are nested under workspace/ (see workspace/README.md).
+  "folders": [
+    { "path": "." },
+    { "path": "workspace/HyperCast" },
+    { "path": "workspace/HyperTabular" },
+    { "path": "workspace/HyperUuid" }
+  ]
+}

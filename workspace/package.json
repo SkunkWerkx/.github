@@ -1,0 +1,4 @@
+{
+  "private": true,
+  "workspaces": ["HyperCast/typescript", "HyperTabular/typescript"]
+}

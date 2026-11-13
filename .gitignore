@@ -3,3 +3,19 @@ __pycache__/
 
 # What Finder writes into any folder it opens.
 .DS_Store
+
+# The Hyper* repos, each its own git clone, nested under workspace/ so the committed workspace files there
+# (go.work and the rest) sit above them: .devcontainer/post-create.sh clones any that is missing.
+/workspace/HyperCast/
+/workspace/HyperTabular/
+/workspace/HyperUuid/
+# Bun's install for the workspace (workspace/package.json); its bun.lock is committed.
+/workspace/node_modules/
+# Visual Studio's per-user state for workspace/HyperForge.slnx.
+/workspace/.vs/
+
+# Build output an editor writes when it imports a fixture or the placeholder crate as a project.
+/.github/scripts/fixtures/**/.gradle/
+/.github/scripts/fixtures/**/build/
+/crate-placeholder/target/
+/crate-placeholder/Cargo.lock

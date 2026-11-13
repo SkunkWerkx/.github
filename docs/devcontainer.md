@@ -1,6 +1,6 @@
 # Dev container — engine-agnostic polyglot stack (plan)
 
-**Status:** design, not built. Drafted 2026-11-09. The image and container haven't been built yet. Engine checks done so far are recorded under [Verify before building](#verify-before-building), and every other claim about a tool is cited or listed there.
+**Status:** image built locally with wslc on the Spark (arm64) on 2026-11-09; the .NET layer (SDK 11.0.100, runtimes 11.0.0 and 10.0.15, dotnet-trace/counters) added at 11.0 GA on 2026-11-10. 15.2 GB before .NET. A smoke test as `vscode` ran every toolchain and tool; the results are under [Verify before building](#verify-before-building). Not yet done: opening it through VS Code, the GHCR publish workflow, and the timing check. Drafted 2026-11-09.
 
 **Ownership:** this is a Hyper* concern and HyperForge owns all of it: the doc, the Dockerfile, the install logic and the image publish workflow. There is no dependency on the owner's personal toolchain repo (`buvinghausen/buvinghausen`, TOOLCHAIN.md). That repo is prior art to read, not something to consume. Lessons learned here get ported back to it by hand later.
 
@@ -30,26 +30,35 @@ Sources: [Windows Developer Blog, WSL containers GA](https://blogs.windows.com/w
 ## Image
 
 - **Base:** `mcr.microsoft.com/devcontainers/base:trixie` (Debian 13). MCR has no Fedora variant: the tag list checked 2026-11-09 has `debian*`, `trixie`, `bookworm`, `ubuntu*`, `noble` and no `fedora*`. Debian is preferred over Ubuntu.
-- **Install logic is HyperForge's own and Debian-native:** apt for system packages, and each language's official manager where TOOLCHAIN.md already found one that works (rustup, SDKMAN, pyenv, rbenv/ruby-build, phpenv/php-build `--with-ffi`, swiftly, dotnet-install, the Go tarball). TOOLCHAIN.md's gotchas (wget2's `-P`, `cargo-php` needing `php` on `PATH`, `swiftlint-static`, GitHub API tokens) are read and carried over where they apply, not imported as code.
-- **Published prebuilt:** a multi-arch `linux/arm64` + `linux/amd64` image on GHCR, each architecture built on a native GitHub runner (no QEMU; wslc can't cross-build anyway). Repos reference it by tag, so opening a container is a pull, not a 30-minute build of 11 toolchains.
-- **Contents (current release of each):**
+- **Install logic is HyperForge's own and Debian-native:** `.devcontainer/image/` (Dockerfile + `scripts/NN-<lang>.sh`, one layer each). apt for system packages, and each language's official manager (rustup, SDKMAN, uv, rbenv/ruby-build, phpenv/php-build, swiftly, dotnet-install, the Go and Node tarballs). TOOLCHAIN.md's gotchas (wget2's `-P`, `cargo-php` needing `php` on `PATH`, `swiftlint-static`, GitHub API rate limits) are carried over where they apply, not imported as code. "Latest release" lookups follow GitHub's `/releases/latest` redirect instead of the API, so builds need no token.
+- **Toolchains live under `/opt` and `/usr/local`, never `$HOME`.** `/home/vscode` is a named volume, and a volume is only seeded from the image when it's created, so toolchains in home would never update with the image. Home holds caches and auth only. A tool whose home dir mixes the two is split: `CARGO_HOME` is `/opt/cargo`, for rustup's proxies and the prebuilt tools, and `post-create.sh` links its `registry` and `git` caches into `~/.cache/cargo` on every create. (Claude Code is the exception: its native installer lands in `~/.local` and self-updates there.)
+- **`apt-get upgrade` runs in the first layer**, so every rebuild picks up Debian security fixes the base image lacks (example: DSA-6582-1, the brotli CVE-2026-111497 fix, which PHP reaches through libcurl).
+- **Published prebuilt:** a multi-arch `linux/arm64` + `linux/amd64` image on GHCR, each architecture built on a native GitHub runner (no QEMU; wslc can't cross-build anyway), **rebuilt on a weekly schedule** as well as on change. Repos reference it by tag, so opening a container is a pull, not a long build. Dev Containers doesn't re-pull a tag by itself: "Rebuild Container" picks up the new image.
 
-| Language | Toolchain | Plus |
-|---|---|---|
-| Rust | rustup stable; clippy, rustfmt, llvm-tools, rust-src | targets `wasm32-wasip1`, `wasm32-unknown-unknown`, `thumbv7em-none-eabi`; cbindgen, cargo-nextest, cargo-semver-checks, samply |
-| C | clang/LLVM (incl. `llvm-dlltool`, `llvm-readobj`), CMake, pkg-config | clang-format |
-| .NET | SDK 11 (GA 2026-11-10) | the 10.0 runtime (CI's second TFM), dotnet-trace, dotnet-counters |
-| Java | Temurin 25 (SDKMAN), Gradle via wrapper | async-profiler |
-| Python | 3.14 (pyenv) | maturin, pytest, ruff, mypy |
-| Ruby | 4.0 (rbenv) | rbspy; rubocop per repo Gemfile |
-| PHP | 8.5 `--with-ffi` (phpenv) | cargo-php, Composer (bundled) |
-| Go | 1.26 | gopls, dlv, revive, TinyGo, wasmtime |
-| TypeScript | Node current + **Bun** | Biome per repo |
-| R | R release | devtools, lintr |
-| Swift | 6.4 (swiftly) | SwiftLint (static) |
-| Cross-cutting | gh, actionlint + ShellCheck, pwsh, Claude Code, hyperfine | |
+### Version policy (decided 2026-11-09)
 
-- **Left out on purpose:** Android NDK (no aarch64 Linux host build), emsdk and the .NET `wasm-tools` workload (add only when working on the Emscripten target), GraalVM, Mono, Ruby 3.4 / Python floors / JDK 21 / Node floors (CI matrix), `cargo no-panic` (needs GNU ld, which Debian has; add when wanted).
+**The container floats; CI holds the floors.** Every toolchain resolves to the newest stable (or newest LTS, where the language has LTS lines) **at image build time**, so a weekly rebuild keeps it current with no version edits. Floors and compat versions are CI's job, and the CI matrix is revised whenever a line drops out of support (Node 20 recently; .NET 8 and 9 on 2026-11-10). Fixed versions are exceptions with a reason:
+
+| Language | Floats | Fixed (why) | Plus |
+|---|---|---|---|
+| Rust | `stable` | **1.89** (MSRV = `rust-version` in every repo; raise with the repos), **1.99.1** (`go/internal/wasm2go/rust-toolchain.toml`) | clippy, rustfmt, llvm-tools, rust-src, rust-analyzer; targets `wasm32-wasip1`, `wasm32-unknown-unknown`, `thumbv7em-none-eabi`; cargo-nextest, cargo-semver-checks, samply, wasm-pack, wasmtime 50.0.0 (CI pin) |
+| C | Debian's clang/LLVM (19 in trixie), CMake, pkg-config | — | clang-format, clangd. `LIBCLANG_PATH`/`CLANG_PATH` point at Debian's LLVM so Swift's bundled clang can't shadow it (CI does the same) |
+| .NET | SDK, newest major (11 at GA 2026-11-10); last layer | .NET 10 runtime (CI's second TFM) | dotnet-trace, dotnet-counters |
+| Java | newest LTS Temurin, default (SDKMAN's default candidate: 25 now, 29 in Sep 2027) | **21** until it leaves support: the Gradle floor JDK, JNI path (FFM is final only from 22, JEP 454); auto-detected, never downloaded | async-profiler; Gradle via wrapper |
+| Python | newest **free-threaded** release (3.15 now; 3.16 in Oct 2027) | **3.14.x with the GIL**, default `python`: our last GIL line (a policy; CPython 3.15+ still defaults to the GIL). 3.15 is where free-threading becomes usable: abi3t, the free-threaded stable ABI (PEP 803, Final) | **uv only**: prebuilt CPython (python-build-standalone), no compiling, no pyenv; installs and tools under `/opt/uv`. uv's Pythons are externally managed (PEP 668), so projects use `uv venv`/`uv run`; ruff 0.17.3 (CI pin), mypy, maturin, pyflakes, pytest are `uv tool`s. No shared-libpython requirement (CSnakes isn't used) |
+| Ruby | newest stable, YJIT | — | gems per repo Gemfile |
+| PHP | newest stable (8.5 now; 8.6 GA 2026-11-19), **NTS (default) + ZTS** (`<ver>-zts`), since extensions install via PIE and NTS/ZTS is the delta that matters | — | PIE, Composer, cargo-php 0.2.2 (repo pin). **No FFI**: since 1.1 the bindings are native extensions; ext-ffi only backs two optional interop writers and `InteropTest` skips without it |
+| Go | newest stable | — | gopls, dlv, revive 1.17.1, actionlint 1.7.12 (CI pins), TinyGo |
+| TypeScript | Node **newest LTS** (26 now; 27 from 2027-10-20 under Node's one-major-a-year schedule), npm latest, Bun latest | — | Biome per repo |
+| R | newest release, from the newest CRAN `trixie-cranNN` suite (`trixie-cran46` now) | — | rcmdcheck, testthat, lintr (what CI's R legs use) |
+| Swift | newest release via swiftly, plus its **static Linux SDK** (`hyper-test-swift-static`) | — | SwiftLint 0.65.1 (CI pin, static binary) |
+| Cross-cutting | gh, ShellCheck, pwsh, hyperfine, Claude Code | | |
+
+Tools whose output CI compares (ruff, revive, actionlint, SwiftLint, wasmtime, cargo-php) stay pinned to CI's versions, because a different linter version gives different results.
+
+**Node's LTS policy, for the CI matrix:** CI tests the current LTS plus every LTS line still in maintenance. Today that's 26 (current) plus 22 and 24, which matches the defaults in `hyper-test-typescript.yml`, `hyper-build-native.yml` and `hyper-build-wasm.yml`. Node 22 reaches end of life on 2027-04-30.
+
+- **Left out on purpose:** Android NDK (no aarch64 Linux host build), emsdk and the .NET `wasm-tools` workload (add only when working on the Emscripten target), GraalVM, Mono, floor versions other than the fixed ones above (CI matrix), `cargo no-panic` (needs GNU ld, which Debian has; add when wanted).
 
 ## Docker mode (Testcontainers)
 
@@ -88,10 +97,15 @@ The win-arm64 CI legs can't run in a Linux container. Native, on `D:\src` (Dev D
    - **Through VS Code: done 2026-11-09.** With `dev.containers.dockerPath` set to `wslc`, "Reopen in Container" on a throwaway folder (`image` trixie, `remoteUser` vscode, a named volume over `/home/vscode` in `mounts`, a `postCreateCommand`) came up with no errors. The workspace is at `/workspaces/<folder>` over **virtiofs** (`drvfs`, rw). The home volume is ext4 and holds `.vscode-server`. `postCreateCommand` ran as uid 1000 on `aarch64` and wrote back to D:. The extension also creates its own `vscode` volume.
 
    Originally listed for this check: `dev.containers.dockerPath = wslc`, named volumes from `devcontainer.json`, and a non-root `vscode` user writing to the Windows bind mount (the community guide flags permission problems).
-2. Whether Compose or a socket has landed in wslc since the 2.9.4.0 guides.
-3. `swiftly` platform value on Debian 13 (it only recognized `debian12` among Debians in the last check, see TOOLCHAIN.md's Swift note).
-4. R release and CRAN binary availability for Debian arm64.
-5. Bind-mount build timings with and without the named-volume split, on the Spark (wslc vs Docker Desktop) and on the Mac, before calling the layout done.
+2. **Done 2026-11-09 (covered by item 1):** wslc 3.0.3 has no `compose` command and no socket. Re-checked 2026-11-10 on 3.0.5: still neither (`wslc --help`, `wslc system`, `wslc info`). Re-check on wslc upgrades.
+3. **Done 2026-11-09:** swiftly 1.2.0 detects `debian13` on its own (`config.json` platform `debian13`, no `--platform` needed). swift.org publishes Debian 13 toolchains for `x86_64` and `aarch64` (6.4.1 and 6.4.2), and `swiftly list-available 6.4` lists 6.4.2. The TOOLCHAIN.md `debian12`-only note is stale.
+4. **Done 2026-11-09:** Debian trixie ships R 4.5.0, and CRAN's `trixie-cran40` suite stops at 4.5.3 (old-release). The current release (4.6.2, 2026-10-29) is only in CRAN's **`trixie-cran46`** suite, which has amd64 and arm64 builds (`r-base-core 4.6.2-1~trixiecran.0`). CRAN created new suites for 4.6 because packages with compiled code break across the upgrade, so the image uses `trixie-cran46` from the start. CRAN packages themselves (devtools, lintr) still install from source on Linux, so build time is part of item 5.
+5. **First local build, 2026-11-09 (wslc 3.0.3, arm64).** Smoke test as `vscode`: rustc 1.99.1 (+1.89 MSRV, +1.99.1), nextest 0.9.151, semver-checks 0.51.0, samply 0.13.1, wasm-pack 0.15.1, wasmtime 50.0.0; Debian clang 19.1.7 with `which clang` = `/usr/bin/clang` (Swift's stays behind it); Go 1.27.3, gopls, dlv, revive 1.17.1, actionlint 1.7.12, TinyGo 0.44.0; Python 3.14.10 + 3.15.2 free-threaded (`gil False`; built with pyenv in that run, uv since), ruff 0.17.3, maturin 1.16.0; Ruby 4.0.9 with YJIT; PHP 8.5.12 NTS + ZTS, Composer 2.11.1, PIE 1.5.5, cargo-php 0.2.2; Temurin 25.0.5 (default) + 21.0.13; Node 26.13.0, npm 12.2.2, Bun 1.4.4; R 4.6.2, lintr 3.4.0; Swift 6.4.2 + static Linux SDK, SwiftLint 0.65.1; gh, ShellCheck, pwsh 7.6.9, hyperfine, Claude Code. Things the build found:
+   - SDKMAN: `sdk list java` is useless non-interactively, and its init script isn't `set -eu` clean. Versions come from its API (`/2/candidates/java/<platform>/versions/all`, `/2/candidates/default/java`). Temurin ids carry a build number (`25.0.5.0+8-tem`).
+   - swiftly 1.2.0 needs `binutils-gold` on debian13 (it exits 1 without it), defaults toolchains to `~/.local/share` (set `SWIFTLY_TOOLCHAINS_DIR`), and puts no `swift` proxy in its bin dir, so PATH points at `/opt/swiftly/current/usr/bin`. Swift SDKs go to `/opt/swiftly/swift-sdks`, linked from `~/.swiftpm/swift-sdks` (re-linked by `postCreateCommand`).
+   - `swift sdk install` once reported success and then aborted with a core dump on exit, so the build checks `swift sdk list` instead of the exit code.
+   - **Opened through VS Code with wslc, 2026-11-09:** works (parent folder on virtiofs, home volume ext4, `postCreateCommand` ran). The Swift extension found swiftly and ran everything as `swiftly run swift …`, which failed in each repo root: swiftly 1.2.0 resolves `swift` against the current directory first, and every Hyper* root has a `swift/` folder. Fixed with `"swift.path": "/opt/swiftly/current/usr/bin"` in `devcontainer.json`, so the extension uses the toolchain directly.
+6. Bind-mount build timings with and without the named-volume split, on the Spark (wslc vs Docker Desktop) and on the Mac, before calling the layout done.
 
 ## Open questions
 

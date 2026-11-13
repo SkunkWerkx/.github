@@ -1,0 +1,5 @@
+# Development only: each companion gem from its checkout beside this file, for a Gemfile whose hook evaluates this one
+# (HyperTabular's ruby/Gemfile). Paths are relative to this file, never to where Bundler runs. CI checks out one
+# repository and never has this file; the Forge's release guard and companion wiring fail a leg where a hooked
+# Gemfile finds it (companion_fetch.py, gemfile_evals).
+gem "hypercast", path: File.expand_path("HyperCast/ruby", __dir__)

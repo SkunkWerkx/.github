@@ -84,6 +84,10 @@ CLEAN = {
          'state': {'name': 'sourceControlCheckout', 'checkoutState': {'version': '1.1.0'}}}]}}),
 }
 PATCH = '{ path = "x" }'
+# HyperTabular's ruby/Gemfile hook for HyperForge's workspace/Gemfile.peers, two levels up: from a
+# fixture's ruby/Gemfile, the checkout's parent.
+PEERS_HOOK = ('peers = File.expand_path("../../Gemfile.peers", __dir__)\n'
+              'eval_gemfile peers if File.exist?(peers) && ENV["CI"].nil?\n')
 
 # One fixture per kind, and per location, of override release_guard finds: (files in the
 # checkout, env, home files, pip inspect entries, a word the finding must carry). A file path
@@ -153,6 +157,28 @@ KINDS = {
     'gem in a nested path block': ({'ruby/Gemfile': 'group :test do\n  path("../x") do |p|\n    gem "hypercast"\n'
                                                     '  end\nend\n'}, {}, {}, [], 'path:'),
     'gems.rb path': ({'ruby/gems.rb': 'gem "hypercast", path: "../x"\n'}, {}, {}, [], 'path:'),
+    'gemfile peers hook with its file there': ({'ruby/Gemfile': 'gemspec\n' + PEERS_HOOK,
+                                                '../Gemfile.peers': 'gem "hypercast", path: "x"\n'},
+                                               {}, {}, [], 'development peers file'),
+    'companion checkout beside': ({'../HyperCast/README.md': 'x'}, {}, {}, [], 'beside this one'),
+    'cargo paths override in an ancestor': ({'../.cargo/config.toml': 'paths = ["HyperCast/rust"]\n'},
+                                            {}, {}, [], 'paths override'),
+    'cargo paths override in the checkout': ({'rust/.cargo/config.toml': 'paths = ["../x"]\n'},
+                                             {}, {}, [], 'paths override'),
+    'go.work above the checkout': ({'../go.work': 'go 1.26\nuse ./HyperCast/go\n'}, {}, {}, [], 'go.work is above'),
+    'msbuild targets above the checkout': ({'../Directory.Build.targets': '<Project />\n'}, {}, {}, [], 'MSBuild imports'),
+    'msbuild props above the checkout': ({'../Directory.Build.props': '<Project />\n'}, {}, {}, [], 'MSBuild imports'),
+    'bun workspace above the checkout': ({'../package.json': '{"workspaces": ["HyperCast/typescript"]}'},
+                                         {}, {}, [], 'workspaces'),
+    'unreadable package.json above the checkout': ({'../package.json': '{"workspaces": ['}, {}, {}, [], 'workspaces'),
+    'gemfile evaluating another gemfile': ({'ruby/Gemfile': 'gemspec\neval_gemfile "../Gemfile.local"\n'},
+                                           {}, {}, [], 'cannot read'),
+    'gemfile peers hook without its guard': ({'ruby/Gemfile': 'gemspec\n'
+                                              'peers = File.expand_path("../../Gemfile.peers", __dir__)\n'
+                                              'eval_gemfile peers\n'}, {}, {}, [], 'cannot read'),
+    'gemfile peers hook naming another file': ({'ruby/Gemfile': 'gemspec\n' + PEERS_HOOK.replace('Gemfile.peers',
+                                                                                                 'Gemfile.local')},
+                                               {}, {}, [], 'cannot read'),
     'Gemfile.lock PATH': ({'ruby/Gemfile.lock': 'PATH\n  remote: ../HyperCast/ruby\n  specs:\n    hypercast (1.0.0)\n\n'
                                                 'GEM\n  remote: https://rubygems.org/\n  specs:\n'},
                           {}, {}, [], 'PATH source'),
@@ -240,6 +266,24 @@ class ReleaseGuardTests(unittest.TestCase):
                 found = c.guard(env=env, home_files=home_files, installed=installed)
                 self.assertEqual(len(found), 1, found)
                 self.assertIn(word, found[0])
+
+    def test_release_guard_takes_the_peers_hook_without_its_file(self):
+        # A CI checkout is one repository: the hook's file, HyperForge's workspace/Gemfile.peers,
+        # is never beside it, and the hook evaluates nothing.
+        with Checkout() as c:
+            consumer(c.root)
+            tree(c.root, CLEAN)
+            tree(c.root, {'ruby/Gemfile': CLEAN['ruby/Gemfile'] + PEERS_HOOK})
+            self.assertEqual(c.guard(installed=[{'metadata': {'name': 'hypercast', 'version': '1.1.0'}}]), [])
+
+    def test_release_guard_takes_what_is_beside_and_above_that_is_no_peer(self):
+        # Another repository beside the checkout, and a package.json above it with no workspaces,
+        # are nothing a build here takes a companion from.
+        with Checkout() as c:
+            consumer(c.root)
+            tree(c.root, CLEAN)
+            tree(c.root, {'../HyperUuid/README.md': 'x', '../package.json': '{"name": "x"}'})
+            self.assertEqual(c.guard(installed=[{'metadata': {'name': 'hypercast', 'version': '1.1.0'}}]), [])
 
     def test_release_guard_without_a_block_checks_the_generic_kinds(self):
         with Checkout() as c:
@@ -558,6 +602,24 @@ class WireTests(unittest.TestCase):
                 mock.patch.object(companion_fetch, 'available', return_value=False):
             with self.assertRaisesRegex(ValueError, 'companion_wire.wire_rust'):
                 companion_fetch.wire(root, ['rust'])
+
+    def test_wire_refuses_a_development_peer_layout(self):
+        # HyperForge's workspace/: the companion's checkout beside this one, or a file above it
+        # through which Cargo, Go, Bun or MSBuild takes one, would stand in for the pin.
+        layouts = {'checkout beside': {'../HyperCast/README.md': 'x'},
+                   'cargo paths above': {'../.cargo/config.toml': 'paths = ["HyperCast/rust"]\n'},
+                   'go.work above': {'../go.work': 'go 1.26\n'},
+                   'msbuild targets above': {'../Directory.Build.targets': '<Project />\n'},
+                   'bun workspace above': {'../package.json': '{"workspaces": ["HyperCast/typescript"]}'}}
+        for layout, files in layouts.items():
+            with self.subTest(layout=layout), Checkout() as c, \
+                    mock.patch.object(companion_fetch, 'available', return_value=True), \
+                    mock.patch.object(companion_fetch.subprocess, 'run') as run:
+                consumer(c.root)
+                tree(c.root, files)
+                with self.assertRaisesRegex(ValueError, 'companion mode tests the pin'):
+                    companion_fetch.wire(c.root, ['rust'])
+                run.assert_not_called()
 
     def test_wired_ecosystem_runs_wire_then_origin(self):
         with tempfile.TemporaryDirectory() as root, \

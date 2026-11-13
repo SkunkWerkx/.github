@@ -1041,7 +1041,7 @@ def wire_ruby(root, env):
     also takes `<name>-wasm` by path from ruby_wasm_gem, which suite-ruby-wasm.sh fills; one
     already naming that gem is refused the same way."""
     import shutil
-    from companion_fetch import _ruby_statements
+    from companion_fetch import _ruby_statements, gemfile_evals
     name, gem = requirement(root, env, 'ruby')
     version = env.get(f'{name.upper()}_VERSION')
     if not version:
@@ -1069,6 +1069,9 @@ def wire_ruby(root, env):
             if any(gem_call.match(s) for s in statements):
                 raise ValueError(f'{path.relative_to(root).as_posix()} already names {name}: the pin would override it '
                                  f'unseen')
+            evals = gemfile_evals(path, text)
+            if evals:
+                raise ValueError(f'{path.relative_to(root).as_posix()} {evals[0]}: the pin would compete with it unseen')
             if any(map(_gemspec_statement, statements)) and any(p.parent == directory for p in gemspecs):
                 gemfiles[path] = text + block
     if not gemspecs:

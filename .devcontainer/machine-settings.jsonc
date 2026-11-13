@@ -1,0 +1,33 @@
+// VS Code's machine settings inside the dev container: post-attach.sh copies this file over
+// ~/.vscode-server/data/Machine/settings.json on every attach, so it is the whole of them. Not devcontainer.json's
+// "settings": VS Code writes those into that file once and then never updates a key already in it (seen
+// 2026-11-10: java.settings.url kept its old path through a rebuild), and the file lives in the home volume.
+// Personal settings belong in User settings, which this never touches.
+{
+  "python.defaultInterpreterPath": "/opt/uv/bin/python",
+  // Each binding's package from its source tree, as the suites import it (tests/conftest.py), so
+  // HyperTabular's `import hypercast` resolves to the HyperCast checkout beside it.
+  "python.analysis.extraPaths": [
+    "/workspaces/HyperForge/workspace/HyperCast/python/src",
+    "/workspaces/HyperForge/workspace/HyperTabular/python/src",
+    "/workspaces/HyperForge/workspace/HyperUuid/python/src"
+  ],
+
+  // The dev-container-only solution over every repo's csharp/ projects (workspace/README.md). Without one, C# Dev Kit
+  // generates its own in workspaceStorage over every .csproj it finds, HyperForge's fixtures included.
+  "dotnet.defaultSolution": "workspace/HyperForge.slnx",
+
+  "java.jdt.ls.java.home": "/opt/sdkman/candidates/java/current",
+  // Check Java against JDK 25's API like Gradle does, not JDK 21's, where FFM is a preview API. Both are needed: the
+  // Java extension finds SDKMAN's JDK 21 and binds every JavaSE-21 project to it unless JavaSE-21 is mapped to the
+  // current LTS here, and with release=enabled it would still use 21's API signatures (see java.prefs).
+  "java.configuration.runtimes": [
+    { "name": "JavaSE-21", "path": "/opt/sdkman/candidates/java/current" }
+  ],
+  "java.settings.url": "/workspaces/HyperForge/.devcontainer/java.prefs",
+
+  // Use the toolchain directly, not `swiftly run`: swiftly 1.2.0 resolves "swift" against the current directory
+  // first, and every Hyper* repo root has a swift/ folder, so it fails there. The path must not start with
+  // $SWIFTLY_HOME_DIR (/opt/swiftly), or the extension wraps it in `swiftly run` anyway (see 60-swift.sh).
+  "swift.path": "/opt/swift-toolchain/usr/bin"
+}
