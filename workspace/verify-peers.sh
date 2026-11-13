@@ -17,11 +17,18 @@ LOG="$(mktemp -d)"
 results=()
 
 snapshot() { for r in HyperCast HyperTabular HyperUuid; do git -C "$W/$r" status --porcelain=v1; git -C "$W/$r" diff; done | sha256sum; }
-step() {  # step <name> <command...>: runs it with its output in $LOG/<name>.log, records the outcome
+# step <name> <command...>: runs it with its output in $LOG/<name>.log, records the outcome. The subshell runs as a
+# plain command, never as an `if` condition: bash ignores set -e for everything inside one, so a step whose early check
+# failed would pass on its last command. For the same reason each step below puts every command that must hold on its
+# own line rather than mid-way through a && list (set -e sees only a list's last command), and never negates one with
+# `!` (set -e never sees a negated command).
+step() {
   local name="$1"; shift
-  local start=$SECONDS
+  local start=$SECONDS status
   printf '== %-10s ' "$name"
-  if (set -e; "$@") > "$LOG/$name.log" 2>&1; then
+  (set -e; "$@") > "$LOG/$name.log" 2>&1
+  status=$?
+  if [ "$status" -eq 0 ]; then
     results+=("PASS $name"); echo "pass ($((SECONDS - start))s)"
   else
     results+=("FAIL $name ($LOG/$name.log)"); echo "FAIL ($((SECONDS - start))s): tail of $LOG/$name.log"; tail -15 "$LOG/$name.log"
@@ -29,9 +36,10 @@ step() {  # step <name> <command...>: runs it with its output in $LOG/<name>.log
 }
 # cargo without the paths override's expected warning (README.md), keeping cargo's own exit status.
 quiet_cargo() {
-  local out status
-  out="$(cargo "$@" 2>&1)"; status=$?
-  printf '%s\n' "$out" | grep -v 'path override for crate\|altered the original list\|known to produce buggy\|^$'
+  local out status=0
+  out="$(cargo "$@" 2>&1)" || status=$?
+  # grep -v exits 1 when it filtered every line, which a quiet success does: no failure.
+  printf '%s\n' "$out" | grep -v 'path override for crate\|altered the original list\|known to produce buggy\|^$' || true
   return "$status"
 }
 
@@ -49,21 +57,24 @@ java() {
   # The composite build stages both repositories' native pairs: each one's cdylib and JNI library (--locked: the
   # paths override leaves the locks alone).
   for r in HyperCast HyperTabular; do
-    (cd "$W/$r/rust" && quiet_cargo -q cdylib) && (cd "$W/$r/java/jni" && quiet_cargo build -q --release --locked --lib)
+    (cd "$W/$r/rust" && quiet_cargo -q cdylib)
+    (cd "$W/$r/java/jni" && quiet_cargo build -q --release --locked --lib)
   done
   cd "$HT/java" && ./gradlew -q dependencyInsight --dependency hypercast --configuration compileClasspath \
     | grep -F "project ':java' (by composite build)"
   ./gradlew test
 }
 swift_() {
-  (cd "$HC" && .github/scripts/local-core.sh) && (cd "$HT" && .github/scripts/local-core.sh)
+  (cd "$HC" && .github/scripts/local-core.sh)
+  (cd "$HT" && .github/scripts/local-core.sh)
   cd "$HT" && swift package show-dependencies | grep -F "<$HC@" && swift build && cd swift && swift test
 }
 typescript() {
   (cd "$HT/typescript" && bun install)
   node -e "console.log(require.resolve('@skunkwerkx/hypercast/package.json', {paths: ['$HT/typescript']}))" \
     | grep -F "$HC/typescript/"
-  (cd "$HC/typescript" && bun run build) && cd "$HT/typescript" && bun run build && bun run test
+  (cd "$HC/typescript" && bun run build)
+  cd "$HT/typescript" && bun run build && bun run test
 }
 python_() {
   for r in HyperCast HyperTabular; do
@@ -74,7 +85,8 @@ python_() {
   cd "$HT/python" && pytest -q -p no:cacheprovider
 }
 ruby_() {
-  (cd "$HC/rust" && quiet_cargo -q cdylib) && (cd "$HT/rust" && quiet_cargo -q cdylib)
+  (cd "$HC/rust" && quiet_cargo -q cdylib)
+  (cd "$HT/rust" && quiet_cargo -q cdylib)
   (cd "$HC/ruby" && bundle install --quiet && bundle exec rake native:dev)
   cd "$HT/ruby" && bundle install --quiet
   bundle exec ruby -e 'require "bundler/setup"; require "hypercast"; puts Gem.loaded_specs["hypercast"].full_gem_path' \
@@ -85,11 +97,12 @@ r_() {
   mkdir -p "$(Rscript -e 'cat(Sys.getenv("R_LIBS_USER"))')"
   (cd "$HC" && r/tools/vendor.sh && R CMD INSTALL r)
   cd "$HT" && r/tools/vendor.sh
-  tar -xJOf r/src/rust/vendor.tar.xz vendor/hypercast/Cargo.toml | grep -q 'dependencies.simdutf8'  # 1.1's, not 1.0's
+  tar -xJOf r/src/rust/vendor.tar.xz vendor/hypercast/Cargo.toml | grep 'dependencies.simdutf8' >/dev/null  # 1.1's, not 1.0's
   R CMD INSTALL r && Rscript -e 'testthat::test_local("r", stop_on_failure = TRUE)'
 }
 php_() {
-  (cd "$HC/rust" && quiet_cargo -q php-ext) && (cd "$HT/rust" && quiet_cargo -q php-ext)
+  (cd "$HC/rust" && quiet_cargo -q php-ext)
+  (cd "$HT/rust" && quiet_cargo -q php-ext)
   cd "$HT/php" && composer install -q
   php -r 'require "tools/extension.php"; echo implode(PHP_EOL, hypertabular_extensions(getcwd())), PHP_EOL;' \
     | grep -F "$HC/rust/target/php/release/"
@@ -98,7 +111,8 @@ php_() {
 dotnet_() {
   # Both cores as plain cdylibs (Python's step leaves extension builds in rust/target/release); each project file
   # copies its own to the output.
-  (cd "$HC/rust" && quiet_cargo -q cdylib) && (cd "$HT/rust" && quiet_cargo -q cdylib)
+  (cd "$HC/rust" && quiet_cargo -q cdylib)
+  (cd "$HT/rust" && quiet_cargo -q cdylib)
   cd "$HT/csharp"
   dotnet msbuild HyperTabular/HyperTabular.csproj -p:TargetFramework=net11.0 -getItem:ProjectReference \
     | grep -F "\"$HC/csharp/HyperCast/HyperCast.csproj\""
@@ -106,7 +120,9 @@ dotnet_() {
 }
 guard() {
   local guard="$FORGE/.github/scripts/companion_fetch.py" copy
-  ! python3 "$guard" guard --root "$HT"                   # here, in the layout: refused
+  if python3 "$guard" guard --root "$HT"; then           # here, in the layout: refused
+    echo "guard: accepted $HT inside the peer layout"; return 1
+  fi
   copy="$(mktemp -d)/HyperTabular" && mkdir -p "$copy"     # the tracked tree alone, as CI checks it out: clean
   (cd "$HT" && git ls-files -z | tar --null -T - -cf - | tar -xf - -C "$copy")
   python3 "$guard" guard --root "$copy"
@@ -127,4 +143,4 @@ if [ "$(snapshot)" = "$before" ]; then results+=("PASS no tracked file changed")
   results+=("FAIL tracked files changed during the run (git status in each repository)"); fi
 
 echo; printf '%s\n' "${results[@]}"; echo "logs: $LOG"
-! printf '%s\n' "${results[@]}" | grep -q '^FAIL'
+! printf '%s\n' "${results[@]}" | grep '^FAIL' >/dev/null

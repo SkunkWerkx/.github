@@ -21,6 +21,15 @@ done
 mkdir -p ~/.swiftpm ~/.local/bin
 ln -sfn /opt/swiftly/swift-sdks ~/.swiftpm/swift-sdks
 
+# Cargo's download caches into the home volume. CARGO_HOME is /opt/cargo, in the image, for rustup's proxies and the
+# prebuilt tools; left there, its registry and git checkouts would go with every container rebuild. The links live in
+# the container layer, so they are made again on every create; whatever the image itself left there is dropped.
+mkdir -p ~/.cache/cargo/registry ~/.cache/cargo/git
+for d in registry git; do
+  [ -L "$CARGO_HOME/$d" ] || rm -rf "${CARGO_HOME:?}/$d"
+  ln -sfn ~/.cache/cargo/$d "$CARGO_HOME/$d"
+done
+
 # R's user library (R_LIBS_USER, in the home volume): R only uses it once it exists, and the site
 # library is root's, so without it `R CMD INSTALL` of a peer package (HyperCast's, for HyperTabular)
 # has nowhere to go. The path names R's minor version, so a new R gets a new one here.
