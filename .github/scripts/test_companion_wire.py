@@ -1118,6 +1118,11 @@ def php_checkout(root, entries=None):
     return root
 
 
+# HyperTabular's ruby/Gemfile hook for HyperForge's workspace/Gemfile.peers, two levels up.
+PEERS_HOOK = ('\npeers = File.expand_path("../../Gemfile.peers", __dir__)\n'
+              'eval_gemfile peers if File.exist?(peers) && ENV["CI"].nil?\n')
+
+
 class WireRubyTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1178,6 +1183,23 @@ class WireRubyTests(unittest.TestCase):
                     self.wire()
                 self.assertIn('ruby/Gemfile', str(caught.exception))
                 self.assertEqual(gemfile.read_text(), 'source "https://rubygems.org"\ngemspec\n' + line)
+
+    def test_wire_ruby_takes_the_peers_hook_only_without_its_file(self):
+        # The development peers hook (HyperForge's workspace/Gemfile.peers) is inert in a CI
+        # checkout, where its file is never there; when it is, the pin and the peer would both
+        # name the gem, and the wiring refuses, leaving the Gemfile as it was.
+        gemfile = self.root / 'ruby' / 'Gemfile'
+        hooked = gemfile.read_text() + PEERS_HOOK
+        gemfile.write_text(hooked)
+        peers = Path(self.tmp.name) / 'Gemfile.peers'
+        peers.write_text('gem "hypercast", path: File.expand_path("HyperCast/ruby", __dir__)\n')
+        with self.assertRaises(ValueError) as caught:
+            self.wire()
+        self.assertIn('development peers file', str(caught.exception))
+        self.assertEqual(gemfile.read_text(), hooked)
+        peers.unlink()
+        self.wire()
+        self.assertTrue(gemfile.read_text().startswith(hooked))
 
     def test_wire_ruby_tampered_hash_is_rejected(self):
         (self.root / '.companions' / 'hypercast-artifacts' / 'ruby-native-osx-arm64-4.0' / 'hypercast_native.bundle').write_bytes(b'x')

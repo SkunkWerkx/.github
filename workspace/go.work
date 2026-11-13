@@ -1,0 +1,15 @@
+// Development builds every Hyper* Go module against its peers' working trees, not the published modules: Go
+// finds this file by searching parent directories, and a module listed here replaces any version of it that a
+// go.mod requires. CI checks out one repository at a time and never sees it (GOWORK=off does the same here).
+// A Go module that is not listed fails to build under this file: list every new go.mod.
+go 1.26.0
+
+use (
+	./HyperCast/go
+	./HyperCast/go/internal/wasm2go
+	./HyperTabular/go
+	./HyperTabular/go/internal/wasm2go
+	./HyperUuid/go
+	./HyperUuid/go/internal/wasm2go
+	./HyperUuid/docs/superpowers/spikes/2026-10-30-go-cgo-free/harness
+)

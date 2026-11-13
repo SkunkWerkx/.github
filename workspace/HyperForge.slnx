@@ -1,0 +1,20 @@
+<Solution>
+  <Folder Name="/HyperCast/">
+    <Project Path="HyperCast/csharp/HyperCast.AotSmokeTest/HyperCast.AotSmokeTest.csproj" />
+    <Project Path="HyperCast/csharp/HyperCast.Benchmarks/HyperCast.Benchmarks.csproj" />
+    <Project Path="HyperCast/csharp/HyperCast.Tests/HyperCast.Tests.csproj" />
+    <Project Path="HyperCast/csharp/HyperCast/HyperCast.csproj" />
+  </Folder>
+  <Folder Name="/HyperTabular/">
+    <Project Path="HyperTabular/csharp/HyperTabular.AotSmokeTest/HyperTabular.AotSmokeTest.csproj" />
+    <Project Path="HyperTabular/csharp/HyperTabular.Benchmarks/HyperTabular.Benchmarks.csproj" />
+    <Project Path="HyperTabular/csharp/HyperTabular.Tests/HyperTabular.Tests.csproj" />
+    <Project Path="HyperTabular/csharp/HyperTabular/HyperTabular.csproj" />
+  </Folder>
+  <Folder Name="/HyperUuid/">
+    <Project Path="HyperUuid/csharp/HyperUuid.AotSmokeTest/HyperUuid.AotSmokeTest.csproj" />
+    <Project Path="HyperUuid/csharp/HyperUuid.Benchmarks/HyperUuid.Benchmarks.csproj" />
+    <Project Path="HyperUuid/csharp/HyperUuid.Tests/HyperUuid.Tests.csproj" />
+    <Project Path="HyperUuid/csharp/HyperUuid/HyperUuid.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,58 @@
+// SkunkWerkx dev container: the whole Hyper* stack in one container. Design: docs/devcontainer.md.
+// Engine-agnostic on purpose (wslc, Docker Desktop, Docker on macOS): a prebuilt image, plain mounts,
+// no Features, no Compose, no build.platform.
+{
+  "name": "SkunkWerkx",
+  "image": "ghcr.io/skunkwerkx/skunkwerkx-dev:latest",
+
+  // HyperForge itself, with the other Hyper* repos cloned under workspace/ (post-create.sh clones any that is
+  // missing; see workspace/README.md). A fixed target, whatever the local folder is called: paths below use it.
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/HyperForge,type=bind",
+  "workspaceFolder": "/workspaces/HyperForge",
+  "remoteUser": "vscode",
+
+  // Caches and auth (cargo/bun/pip/gradle/go module caches, gh, claude) survive rebuilds.
+  // Toolchains are NOT in here: they live under /opt and /usr/local in the image.
+  "mounts": [
+    "source=skunkwerkx-home,target=/home/vscode,type=volume"
+  ],
+
+  // Docker engine only (Testcontainers): set dev.containers.dockerPath to docker and add
+  //   "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  // to mounts. wslc has no socket.
+
+  // Clones missing Hyper* repos into workspace/, then home-volume setup (Swift SDK link, agent CLIs): see
+  // post-create.sh.
+  "postCreateCommand": "bash /workspaces/HyperForge/.devcontainer/post-create.sh",
+  // VS Code's machine settings, from machine-settings.jsonc: see post-attach.sh.
+  "postAttachCommand": "bash /workspaces/HyperForge/.devcontainer/post-attach.sh",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb",
+        "tamasfe.even-better-toml",
+        "ms-dotnettools.csdevkit",
+        "llvm-vs-code-extensions.vscode-clangd",
+        "golang.go",
+        "vscjava.vscode-java-pack",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "biomejs.biome",
+        "shopify.ruby-lsp",
+        "bmewburn.vscode-intelephense-client",
+        "reditorsupport.r",
+        "swiftlang.swift-vscode",
+        "github.vscode-github-actions",
+        "editorconfig.editorconfig",
+        "anthropic.claude-code",
+        "openai.chatgpt",
+        "sst-dev.opencode"
+      ]
+      // No "settings" here: VS Code writes them into the container once and never updates them. They are
+      // machine-settings.jsonc, which post-attach.sh copies in on every attach.
+    }
+  }
+}

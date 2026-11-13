@@ -233,6 +233,72 @@ def _lock_paths(text, name):
     return False
 
 
+# The one Gemfile that may evaluate another: the development peers hook, whose file is HyperForge's
+# workspace/Gemfile.peers (`gem "<companion>", path:` for each sibling checkout), named by a path
+# relative to the Gemfile and evaluated only when it is there. CI checks out one repository, so the
+# file is never there, and this guard fails a leg where it is. Exactly these two statements: any
+# other eval_gemfile is Ruby this guard cannot read, and is a finding too.
+GEMFILE_PEERS = 'Gemfile.peers'
+_PEERS_PATH = re.compile(r'peers\s*=\s*File\.expand_path\(\s*"((?:\.\./)+' + re.escape(GEMFILE_PEERS)
+                         + r')"\s*,\s*__dir__\s*\)')
+_PEERS_HOOK = 'eval_gemfile peers if File.exist?(peers) && ENV["CI"].nil?'
+
+
+def gemfile_evals(path, text):
+    """What a Gemfile evaluates that a CI leg must not: the peers file, when the hook's path
+    reaches one, or any eval_gemfile but the hook. One phrase each, naming the file."""
+    statements = _ruby_statements(text)
+    found = []
+    targets = [m.group(1) for s in statements if (m := _PEERS_PATH.fullmatch(s))]
+    for statement in statements:
+        if not re.search(r'\beval_gemfile\b', statement):
+            continue
+        if statement != _PEERS_HOOK or len(targets) != 1:
+            found.append(f'evaluates another Gemfile ({statement}), which this guard cannot read')
+            continue
+        peers = (Path(path).parent / targets[0]).resolve()
+        if peers.exists():
+            found.append(f'evaluates {peers}, the development peers file, which takes companions from a path:')
+    return found
+
+
+def peer_findings(root, block, env, home):
+    """The development peer layout (HyperForge's workspace/, each repository built against the
+    working trees beside it), which no CI leg may sit in. Each development switch in a repository
+    takes a companion only from its checkout beside this one: both Package.swift, Java's
+    settings.gradle.kts, Python's tests/conftest.py, R's tools/vendor.sh, PHP's tools/extension.php,
+    and the Ruby hook's Gemfile.peers (gemfile_evals). Cargo, Go, Bun and MSBuild take one through
+    a file above the checkout: a `paths` override (the Cargo configs), a go.work, a package.json
+    with workspaces, a Directory.Build.props or .targets (which MSBuild imports from any parent
+    directory). A CI checkout has none of them, which makes every switch inert; this is what proves
+    it, rather than the switches' own CI checks."""
+    root = Path(root).resolve()
+    found = []
+    for path in _cargo_configs(root, env, home):
+        data = _toml(path)
+        if isinstance(data, dict) and 'paths' in data:
+            found.append(f'{_rel(root, path)} has a paths override: Cargo builds here against the crates it names')
+    for companion in block.values():
+        beside = root.parent / companion.repo.split('/', 1)[1]
+        if beside.is_dir():
+            found.append(f'{beside} is a companion checkout beside this one, which development switches build against')
+    for parent in root.parents:
+        if (parent / 'go.work').is_file():
+            found.append(f'{parent / "go.work"} is above the checkout: Go builds here against the modules it uses')
+        for name in ('Directory.Build.props', 'Directory.Build.targets'):
+            if (parent / name).is_file():
+                found.append(f'{parent / name} is above the checkout: MSBuild imports it into every project here')
+        manifest = parent / 'package.json'
+        if manifest.is_file():
+            try:
+                data = json.loads(_read(manifest))
+            except ValueError:
+                data = {'workspaces': 'unreadable'}  # it could hide one
+            if isinstance(data, dict) and 'workspaces' in data:
+                found.append(f'{manifest} is above the checkout with workspaces: Bun and npm link its members here')
+    return found
+
+
 # What npm reads as a path: file: and link: specs, and bare relative, absolute or home paths.
 _NPM_PATH = re.compile(r'^(file:|link:|\.{1,2}/|/|~/)')
 
@@ -343,6 +409,10 @@ def release_guard(root, env=None, home=None, inspect=None):
             found.append(data)
         elif isinstance(data.get('patch'), dict) and 'crates-io' in data['patch']:
             found.append(f'{_rel(root, path)} has a [patch.crates-io] table')
+    found += peer_findings(root, block, env, home)
+    # Ruby: a Gemfile evaluating the development peers file, or any other Gemfile.
+    for path in _walk(root, ['Gemfile', 'gems.rb']):
+        found += [f'{_rel(root, path)} {finding}' for finding in gemfile_evals(path, _read(path))]
     for name, companion in sorted(block.items()):
         project = companion.repo.split('/', 1)[1]
         scope = companion.repo.split('/', 1)[0].lower()
@@ -586,6 +656,14 @@ def available(eco):
 
 
 def wire(root, ecosystems):
+    # The pin is what this leg tests: a development peer layout around the checkout would take
+    # the companion from a working tree instead, past the wiring.
+    # (Without a hyper.json, the scripts below fail on it themselves; the files above still count.)
+    config = Path(root) / hyper_config.CONFIG_PATH
+    block = hyper_config.load_companions(root) if config.is_file() else {}
+    found = peer_findings(root, block, os.environ, Path.home())
+    if found:
+        raise ValueError('companion mode tests the pin, but ' + '; '.join(found))
     for eco in ecosystems:
         if not available(eco):
             raise ValueError(f'no companion_wire.wire_{eco} or companion_origin.origin_{eco}: this leg would test '

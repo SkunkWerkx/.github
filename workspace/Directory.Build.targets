@@ -1,0 +1,15 @@
+<Project>
+	<!-- The go.work of MSBuild (README.md). No Hyper* repository has a Directory.Build.targets of its
+	     own, so MSBuild finds this one above every project here. Each PackageReference to a package
+	     whose project is checked out beside it, at <Repo>/csharp/<Repo>/<Repo>.csproj, becomes a
+	     ProjectReference to that project: development builds against the peer's working tree, whose
+	     project file copies its freshly built native library (rust/target/release) to the output.
+	     Targets time on purpose: every PackageReference is declared by then. CI never sees this
+	     file; the Forge's guard fails a leg that has it above the checkout (peer_findings). -->
+	<ItemGroup Condition="'$(CI)' == ''">
+		<_HyperPeerCandidate Include="@(PackageReference->'$(MSBuildThisFileDirectory)%(Identity)/csharp/%(Identity)/%(Identity).csproj')" />
+		<_HyperPeer Include="@(_HyperPeerCandidate->Exists())" />
+		<PackageReference Remove="@(_HyperPeer->'%(Filename)')" />
+		<ProjectReference Include="@(_HyperPeer)" />
+	</ItemGroup>
+</Project>
